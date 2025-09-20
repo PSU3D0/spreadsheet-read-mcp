@@ -1,9 +1,10 @@
 [package]
 name = "spreadsheet-read-mcp"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "An MCP server that lets LLM agents explore spreadsheet workbooks safely and deterministically"
 authors = ["Frankie Colson"]
+repository = "https://github.com/PSU3D0/spreadsheet-read-mcp"
 license = "Apache-2.0"
 
 [dependencies]
