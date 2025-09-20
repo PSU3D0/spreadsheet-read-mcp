@@ -13,7 +13,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_with = "3.8"
 serde_yaml = "0.9"
-rmcp = "0.6.4"
+rmcp = { version = "0.6.4", features = ["transport-io"] }
 rmcp-macros = "0.6.4"
 tokio = { version = "1.37", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "signal"] }
 parking_lot = "0.12"
@@ -21,7 +21,7 @@ lru = "0.12"
 ahash = "0.8"
 smallvec = "1.13"
 umya-spreadsheet = "2.3.3"
-formualizer-parse = { path = "../formualizer/crates/formualizer-parse" }
+formualizer-parse = { version = "0.1.0" }
 walkdir = "2.5"
 globset = "0.4"
 rand = "0.8"
