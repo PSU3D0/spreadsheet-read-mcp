@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use spreadsheet_read_mcp::state::AppState;
-use spreadsheet_read_mcp::{ServerConfig, SpreadsheetServer};
+use spreadsheet_read_mcp::{ServerConfig, SpreadsheetServer, TransportKind};
 use tempfile::{TempDir, tempdir};
 use umya_spreadsheet::{self, Spreadsheet};
 
@@ -77,6 +77,8 @@ impl TestWorkspace {
                 .collect(),
             single_workbook: None,
             enabled_tools: None,
+            transport: TransportKind::Http,
+            http_bind_address: "127.0.0.1:8079".parse().unwrap(),
         }
     }
 

@@ -22,9 +22,6 @@ jobs:
           - os: windows-latest
             artifact_suffix: windows
             binary_path: target/release/spreadsheet-read-mcp.exe
-    defaults:
-      run:
-        working-directory: spreadsheet-read-mcp
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -42,8 +39,8 @@ jobs:
             ~/.cargo/bin
             ~/.cargo/registry
             ~/.cargo/git
-            spreadsheet-read-mcp/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('spreadsheet-read-mcp/Cargo.lock') }}
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
@@ -61,5 +58,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: spreadsheet-read-mcp-${{ matrix.artifact_suffix }}
-          path: spreadsheet-read-mcp/${{ matrix.binary_path }}
+          path: ${{ matrix.binary_path }}
           if-no-files-found: error

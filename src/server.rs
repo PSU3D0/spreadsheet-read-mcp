@@ -28,13 +28,17 @@ impl SpreadsheetServer {
     pub async fn new(config: Arc<ServerConfig>) -> Result<Self> {
         config.ensure_workspace_root()?;
         let state = Arc::new(AppState::new(config));
-        Ok(Self {
-            state,
-            tool_router: Self::tool_router(),
-        })
+        Ok(Self::from_state(state))
     }
 
-    pub async fn run(self) -> Result<()> {
+    pub fn from_state(state: Arc<AppState>) -> Self {
+        Self {
+            state,
+            tool_router: Self::tool_router(),
+        }
+    }
+
+    pub async fn run_stdio(self) -> Result<()> {
         let service = self
             .serve(stdio())
             .await
@@ -43,7 +47,12 @@ impl SpreadsheetServer {
         Ok(())
     }
 
+    pub async fn run(self) -> Result<()> {
+        self.run_stdio().await
+    }
+
     fn ensure_tool_enabled(&self, tool: &str) -> Result<()> {
+        tracing::info!(tool = tool, "tool invocation requested");
         if self.state.config().is_tool_enabled(tool) {
             Ok(())
         } else {

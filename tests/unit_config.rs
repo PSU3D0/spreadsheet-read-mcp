@@ -1,7 +1,7 @@
 use std::fs;
 
 use clap::Parser;
-use spreadsheet_read_mcp::{CliArgs, ServerConfig};
+use spreadsheet_read_mcp::{CliArgs, ServerConfig, TransportKind};
 
 #[test]
 fn merges_config_file_and_cli_overrides() {
@@ -39,6 +39,11 @@ fn merges_config_file_and_cli_overrides() {
     assert!(enabled.remove("list_workbooks"));
     assert!(enabled.remove("sheet_page"));
     assert!(enabled.is_empty());
+    assert_eq!(config.transport, TransportKind::Http);
+    assert_eq!(
+        config.http_bind_address,
+        "127.0.0.1:8079".parse().expect("default bind")
+    );
 }
 
 #[test]
@@ -51,6 +56,8 @@ fn empty_extensions_is_error() {
         extensions: Some(Vec::new()),
         workbook: None,
         enabled_tools: None,
+        transport: None,
+        http_bind: None,
     };
     let err = ServerConfig::from_args(args).expect_err("expected failure");
     assert!(err.to_string().contains("at least one file extension"));
@@ -64,6 +71,8 @@ fn ensure_workspace_root_errors_for_missing_dir() {
         supported_extensions: vec!["xlsx".to_string()],
         single_workbook: None,
         enabled_tools: None,
+        transport: TransportKind::Http,
+        http_bind_address: "127.0.0.1:8079".parse().unwrap(),
     };
     let err = config.ensure_workspace_root().expect_err("missing dir");
     assert!(
@@ -89,4 +98,34 @@ fn single_workbook_sets_default_workspace_root() {
             .to_path_buf(),
         workbook
     );
+}
+
+#[test]
+fn transport_cli_override_parses() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let args = CliArgs::parse_from([
+        "gridbench-mcp",
+        "--workspace-root",
+        workspace.path().to_str().unwrap(),
+        "--transport",
+        "stdio",
+    ]);
+    let config = ServerConfig::from_args(args).expect("config");
+
+    assert_eq!(config.transport, TransportKind::Stdio);
+}
+
+#[test]
+fn http_bind_override_from_cli() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let args = CliArgs::parse_from([
+        "gridbench-mcp",
+        "--workspace-root",
+        workspace.path().to_str().unwrap(),
+        "--http-bind",
+        "127.0.0.1:0",
+    ]);
+    let config = ServerConfig::from_args(args).expect("config");
+
+    assert_eq!(config.http_bind_address, "127.0.0.1:0".parse().unwrap());
 }

@@ -17,7 +17,7 @@
 
 ## Quick Start
 ```bash
-# Run directly from the repository
+# Run directly from the repository (HTTP transport on 127.0.0.1:8079/mcp)
 cargo run --release -- \
   --workspace-root /path/to/workbooks \
   --cache-capacity 10
@@ -29,7 +29,7 @@ cargo install --path spreadsheet-read-mcp
 spreadsheet-read-mcp --workspace-root /path/to/workbooks
 ```
 
-The server speaks MCP over stdio; pair it with an MCP-aware client to issue tool calls once it is running.
+By default the server speaks MCP over HTTP using the streamable transport at `http://127.0.0.1:8079/mcp`. Provide `--http-bind <ADDR>` to choose a different address, or `--transport stdio` to retain the classic stdio mode.
 
 ## Configuration Options
 You can configure the server through CLI flags, environment variables, or a YAML/JSON config file.
@@ -42,6 +42,8 @@ You can configure the server through CLI flags, environment variables, or a YAML
 | `--extensions ext1,ext2` | `SPREADSHEET_MCP_EXTENSIONS` | Allowed file extensions (defaults to `xlsx,xls,xlsb`). |
 | `--workbook <FILE>` | `SPREADSHEET_MCP_WORKBOOK` | Lock the server to a single workbook without scanning the workspace. |
 | `--enabled-tools tool1,tool2` | `SPREADSHEET_MCP_ENABLED_TOOLS` | Restrict execution to the named tools; others return an MCP `invalid_request`. |
+| `--transport <http|stdio>` | `SPREADSHEET_MCP_TRANSPORT` | Select the transport implementation (defaults to `http`). |
+| `--http-bind <ADDR>` | `SPREADSHEET_MCP_HTTP_BIND` | Bind address for HTTP transport, defaults to `127.0.0.1:8079`. |
 | `--config <FILE>` | – | Load settings from a YAML or JSON file. CLI/env values override file entries. |
 
 ### Config File Example (`config.yaml`)
@@ -52,6 +54,10 @@ extensions: ["xlsx", "xlsb"]
 ```
 
 Start the server with `spreadsheet-read-mcp --config config.yaml`.
+
+## Transports
+- `http` (default): Serves the MCP streamable HTTP interface at `/mcp` on the configured bind address. Suitable for local development workflows where an MCP client connects over HTTP.
+- `stdio`: Keeps compatibility with stdio-based clients. Use `--transport stdio` to enable it.
 
 ## Tool Surface
 | Tool | Why It Matters |

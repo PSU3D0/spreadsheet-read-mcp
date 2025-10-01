@@ -1,12 +1,30 @@
 use anyhow::{Context, Result};
-use clap::Parser;
-use serde::Deserialize;
+use clap::{Parser, ValueEnum};
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_CACHE_CAPACITY: usize = 5;
 const DEFAULT_EXTENSIONS: &[&str] = &["xlsx", "xls", "xlsb"];
+const DEFAULT_HTTP_BIND: &str = "127.0.0.1:8079";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TransportKind {
+    Http,
+    Stdio,
+}
+
+impl std::fmt::Display for TransportKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TransportKind::Http => write!(f, "http"),
+            TransportKind::Stdio => write!(f, "stdio"),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -15,6 +33,8 @@ pub struct ServerConfig {
     pub supported_extensions: Vec<String>,
     pub single_workbook: Option<PathBuf>,
     pub enabled_tools: Option<HashSet<String>>,
+    pub transport: TransportKind,
+    pub http_bind_address: SocketAddr,
 }
 
 impl ServerConfig {
@@ -26,6 +46,8 @@ impl ServerConfig {
             extensions: cli_extensions,
             workbook: cli_single_workbook,
             enabled_tools: cli_enabled_tools,
+            transport: cli_transport,
+            http_bind: cli_http_bind,
         } = args;
 
         let file_config = if let Some(path) = config.as_ref() {
@@ -40,6 +62,8 @@ impl ServerConfig {
             extensions: file_extensions,
             single_workbook: file_single_workbook,
             enabled_tools: file_enabled_tools,
+            transport: file_transport,
+            http_bind: file_http_bind,
         } = file_config;
 
         let single_workbook = cli_single_workbook.or(file_single_workbook);
@@ -127,12 +151,24 @@ impl ServerConfig {
             })
             .filter(|set| !set.is_empty());
 
+        let transport = cli_transport
+            .or(file_transport)
+            .unwrap_or(TransportKind::Http);
+
+        let http_bind_address = cli_http_bind.or(file_http_bind).unwrap_or_else(|| {
+            DEFAULT_HTTP_BIND
+                .parse()
+                .expect("default bind address valid")
+        });
+
         Ok(Self {
             workspace_root,
             cache_capacity,
             supported_extensions,
             single_workbook,
             enabled_tools,
+            transport,
+            http_bind_address,
         })
     }
 
@@ -236,6 +272,23 @@ pub struct CliArgs {
         help = "Restrict execution to the provided tool names"
     )]
     pub enabled_tools: Option<Vec<String>>,
+
+    #[arg(
+        long,
+        env = "SPREADSHEET_MCP_TRANSPORT",
+        value_enum,
+        value_name = "TRANSPORT",
+        help = "Transport to expose (http or stdio)"
+    )]
+    pub transport: Option<TransportKind>,
+
+    #[arg(
+        long,
+        env = "SPREADSHEET_MCP_HTTP_BIND",
+        value_name = "ADDR",
+        help = "HTTP bind address when using http transport"
+    )]
+    pub http_bind: Option<SocketAddr>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -245,6 +298,8 @@ struct PartialConfig {
     extensions: Option<Vec<String>>,
     single_workbook: Option<PathBuf>,
     enabled_tools: Option<Vec<String>>,
+    transport: Option<TransportKind>,
+    http_bind: Option<SocketAddr>,
 }
 
 fn load_config_file(path: &Path) -> Result<PartialConfig> {

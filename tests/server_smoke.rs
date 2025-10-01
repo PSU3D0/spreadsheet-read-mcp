@@ -4,10 +4,22 @@ use rmcp::model::ErrorCode;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use spreadsheet_read_mcp::SpreadsheetServer;
 use spreadsheet_read_mcp::tools::{ListWorkbooksParams, SheetPageParams};
+use spreadsheet_read_mcp::{SpreadsheetServer, startup_scan};
 
 mod support;
+
+#[test]
+fn startup_scan_discovers_workspace_workbooks() {
+    let workspace = support::TestWorkspace::new();
+    workspace.create_workbook("reports/summary.xlsx", |_| {});
+
+    let state = workspace.app_state();
+    let response = startup_scan(&state).expect("startup scan");
+
+    assert_eq!(response.workbooks.len(), 1);
+    assert_eq!(response.workbooks[0].slug, "summary");
+}
 
 #[tokio::test(flavor = "current_thread")]
 async fn server_tool_handlers_return_json() -> Result<()> {
