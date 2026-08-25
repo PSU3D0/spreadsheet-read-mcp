@@ -5,12 +5,12 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/PSU3D0/spreadsheet-mcp.git",
+    "url": "git+https://github.com/PSU3D0/agent-spreadsheet.git",
     "directory": "npm/agent-spreadsheet"
   },
-  "homepage": "https://github.com/PSU3D0/spreadsheet-mcp",
+  "homepage": "https://github.com/PSU3D0/agent-spreadsheet",
   "bugs": {
-    "url": "https://github.com/PSU3D0/spreadsheet-mcp/issues"
+    "url": "https://github.com/PSU3D0/agent-spreadsheet/issues"
   },
   "keywords": [
     "spreadsheet",

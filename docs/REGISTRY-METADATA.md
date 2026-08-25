@@ -10,7 +10,7 @@ This repository is prepared for distribution through:
 Canonical server name:
 
 ```text
-io.github.PSU3D0/spreadsheet-mcp
+io.github.PSU3D0/agent-spreadsheet-mcp
 ```
 
 Metadata file:
@@ -22,7 +22,7 @@ server.json
 The registry package points at the full GHCR image because that image exposes the write/recalc-capable MCP surface:
 
 ```text
-ghcr.io/psu3d0/spreadsheet-mcp:0.10.1-full
+ghcr.io/psu3d0/agent-spreadsheet-mcp:0.10.1-full
 ```
 
 The package is configured for stdio transport and expects clients/runtimes to mount a host workbook directory at `/data`.
@@ -49,7 +49,7 @@ mcp-publisher publish server.json
 Dockerfiles include the required OCI ownership label:
 
 ```dockerfile
-LABEL io.modelcontextprotocol.server.name="io.github.PSU3D0/spreadsheet-mcp"
+LABEL io.modelcontextprotocol.server.name="io.github.PSU3D0/agent-spreadsheet-mcp"
 ```
 
 Docker Catalog submission happens in the Docker registry repo:
@@ -62,8 +62,8 @@ Submission is normally a PR adding `servers/<server-name>/server.yaml`. Use Dock
 
 ```bash
 task create -- --category productivity \
-  --image ghcr.io/psu3d0/spreadsheet-mcp:0.10.1-full \
-  https://github.com/PSU3D0/spreadsheet-mcp
+  --image ghcr.io/psu3d0/agent-spreadsheet-mcp:0.10.1-full \
+  https://github.com/PSU3D0/agent-spreadsheet
 ```
 
 Suggested category/tags:

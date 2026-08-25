@@ -15,8 +15,8 @@ If a change conflicts with these rules, the change must be redesigned (not waive
 - CLI mutation mode flags (`--dry-run`, `--in-place`, `--output`, `--force`) are **CLI adapter concerns** and are not parity requirements for MCP/WASM.
 
 Primary implementation boundary:
-- `crates/spreadsheet-kit/src/cli/**`
-- `crates/spreadsheet-kit/src/runtime/stateless.rs`
+- `crates/agent-spreadsheet/src/cli/**`
+- `crates/agent-spreadsheet/src/runtime/stateless.rs`
 
 ### 2) MCP owns session/fork/staging orchestration
 
@@ -25,8 +25,8 @@ Primary implementation boundary:
 - MCP transport contracts (tool envelopes, tool-level guardrails/timeouts) are **adapter-mcp concerns**.
 
 Primary implementation boundary:
-- `crates/spreadsheet-mcp/src/server.rs`
-- `crates/spreadsheet-kit/src/tools/fork.rs`
+- `crates/agent-spreadsheet-mcp/src/server.rs`
+- `crates/agent-spreadsheet/src/tools/fork.rs`
 
 ### 3) WASM is byte/session oriented (not workspace/path oriented)
 
@@ -58,7 +58,7 @@ Primary architecture projection boundary:
   - `scripts/check_surface_matrix_drift.py`
 - Local enforcement command:
   - `python3 scripts/check_surface_matrix_drift.py`
-  - `cargo test -p spreadsheet-kit surface_matrix_drift_check`
+  - `cargo test -p agent-spreadsheet surface_matrix_drift_check`
 
 ## Change control
 

@@ -40,7 +40,7 @@ jobs:
           else
             IMAGE_TAG="${VERSION}-full"
           fi
-          IMAGE="ghcr.io/psu3d0/spreadsheet-mcp:${IMAGE_TAG}"
+          IMAGE="ghcr.io/psu3d0/agent-spreadsheet-mcp:${IMAGE_TAG}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
           echo "Publishing MCP registry metadata for ${IMAGE}"

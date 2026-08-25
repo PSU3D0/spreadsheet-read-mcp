@@ -1,6 +1,6 @@
 # Spreadsheet Recalc & Write Architecture
 
-This document describes the "Fork & Recalc" architecture for `spreadsheet-mcp`, enabling safe "what-if" analysis.
+This document describes the "Fork & Recalc" architecture for `agent-spreadsheet-mcp`, enabling safe "what-if" analysis.
 
 ## Overview
 
@@ -30,12 +30,12 @@ To show the impact of changes, we compare the "Fork" against the "Base" workbook
 
 ## Docker Requirements
 
-The `spreadsheet-mcp:full` image includes:
+The `agent-spreadsheet-mcp:full` image includes:
 - `libreoffice-calc`
 - `default-jre-headless` (for macros)
 - `fonts-liberation`
 
-The standard `spreadsheet-mcp:latest` image is read-only and much smaller (~15MB vs ~600MB).
+The standard `agent-spreadsheet-mcp:latest` image is read-only and much smaller (~15MB vs ~600MB).
 
 ## Usage Workflow
 

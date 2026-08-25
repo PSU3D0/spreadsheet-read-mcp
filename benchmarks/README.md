@@ -5,7 +5,7 @@ This directory stores sanitized, checked-in budget baselines for representative 
 ## Current anchor
 
 - `scenario-01-roll-forward`
-  - implemented by `crates/spreadsheet-kit/tests/scenario_benchmark_harness.rs`
+  - implemented by `crates/agent-spreadsheet/tests/scenario_benchmark_harness.rs`
   - uses a generated workbook fixture (no customer/project workbook dependency)
   - exercises a real CLI workflow: `edit -> recalculate -> verify`
 
@@ -14,7 +14,7 @@ This directory stores sanitized, checked-in budget baselines for representative 
 When an intentional workflow change improves or legitimately expands the scenario budget, refresh the checked-in baseline explicitly:
 
 ```bash
-UPDATE_SCENARIO_BUDGETS=1 cargo test -p spreadsheet-kit --test scenario_benchmark_harness -- --nocapture
+UPDATE_SCENARIO_BUDGETS=1 cargo test -p agent-spreadsheet --test scenario_benchmark_harness -- --nocapture
 ```
 
 That command rewrites `benchmarks/scenario-01-roll-forward/budget.json` with the latest observed metrics and derived headroom.

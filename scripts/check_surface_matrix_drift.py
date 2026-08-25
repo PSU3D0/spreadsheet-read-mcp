@@ -21,13 +21,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 CLI_MOD_RS = Path(
     os.environ.get(
         "SURFACE_CLI_MOD_RS",
-        str(REPO_ROOT / "crates/spreadsheet-kit/src/cli/mod.rs"),
+        str(REPO_ROOT / "crates/agent-spreadsheet/src/cli/mod.rs"),
     )
 )
 MCP_SERVER_RS = Path(
     os.environ.get(
         "SURFACE_MCP_SERVER_RS",
-        str(REPO_ROOT / "crates/spreadsheet-mcp/src/server.rs"),
+        str(REPO_ROOT / "crates/agent-spreadsheet-mcp/src/server.rs"),
     )
 )
 MATRIX_MD = Path(

@@ -15,10 +15,10 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact_suffix: linux
-            binary_path: target/release/spreadsheet-mcp
+            binary_path: target/release/agent-spreadsheet-mcp
           - os: macos-latest
             artifact_suffix: macos
-            binary_path: target/release/spreadsheet-mcp
+            binary_path: target/release/agent-spreadsheet-mcp
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -48,13 +48,13 @@ jobs:
         run: cargo test --workspace --locked
 
       - name: Build release binaries
-        run: cargo build --release --locked -p spreadsheet-mcp -p spreadsheet-kit
+        run: cargo build --release --locked -p agent-spreadsheet-mcp -p agent-spreadsheet
 
       - name: Upload MCP artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: spreadsheet-mcp-${{ matrix.artifact_suffix }}
+          name: agent-spreadsheet-mcp-${{ matrix.artifact_suffix }}
           path: ${{ matrix.binary_path }}
           if-no-files-found: error
 
@@ -96,7 +96,7 @@ jobs:
           node-version: '20'
 
       - name: Run SDK backend tests
-        run: node --test npm/spreadsheet-kit-sdk/test/backend.test.js
+        run: node --test npm/agent-spreadsheet-sdk/test/backend.test.js
 
       - name: Run parity harness
         run: node scripts/parity-harness.js
@@ -128,4 +128,4 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Run docker integration tests
-        run: cargo test -p spreadsheet-mcp --test recalc_docker --locked --features docker-tests
+        run: cargo test -p agent-spreadsheet-mcp --test recalc_docker --locked --features docker-tests

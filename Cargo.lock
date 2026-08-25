@@ -20,6 +20,117 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-spreadsheet"
+version = "0.11.1"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "assert_cmd",
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "formualizer",
+ "formualizer-parse",
+ "getrandom 0.3.4",
+ "globset",
+ "image",
+ "indexmap 2.13.0",
+ "lru",
+ "once_cell",
+ "ovba",
+ "parking_lot",
+ "quick-xml 0.31.0",
+ "rand 0.8.5",
+ "regex",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "serde_yaml",
+ "sha2",
+ "smallvec",
+ "strum",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "umya-spreadsheet",
+ "uuid",
+ "walkdir",
+ "xxhash-rust",
+ "zip 0.6.6",
+]
+
+[[package]]
+name = "agent-spreadsheet-mcp"
+version = "0.11.1"
+dependencies = [
+ "agent-spreadsheet",
+ "ahash",
+ "anyhow",
+ "assert_cmd",
+ "assert_matches",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "bollard",
+ "chrono",
+ "clap",
+ "formualizer",
+ "formualizer-parse",
+ "globset",
+ "image",
+ "indexmap 2.13.0",
+ "lru",
+ "once_cell",
+ "ovba",
+ "parking_lot",
+ "quick-xml 0.31.0",
+ "rand 0.8.5",
+ "regex",
+ "reqwest",
+ "rmcp",
+ "rmcp-macros",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "serde_yaml",
+ "serial_test",
+ "sha2",
+ "smallvec",
+ "strum",
+ "tempfile",
+ "testcontainers",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "umya-spreadsheet",
+ "uuid",
+ "walkdir",
+ "xxhash-rust",
+ "zip 0.6.6",
+]
+
+[[package]]
+name = "agent-spreadsheet-wasm"
+version = "0.1.0"
+dependencies = [
+ "agent-spreadsheet",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "thiserror 1.0.69",
+ "umya-spreadsheet",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3281,117 +3392,6 @@ checksum = "86f4aa3ad99f2088c990dfa82d367e19cb29268ed67c574d10d0a4bfe71f07e0"
 dependencies = [
  "libc",
  "windows-sys 0.60.2",
-]
-
-[[package]]
-name = "spreadsheet-kit"
-version = "0.11.1"
-dependencies = [
- "ahash",
- "anyhow",
- "assert_cmd",
- "async-trait",
- "base64 0.22.1",
- "chrono",
- "clap",
- "formualizer",
- "formualizer-parse",
- "getrandom 0.3.4",
- "globset",
- "image",
- "indexmap 2.13.0",
- "lru",
- "once_cell",
- "ovba",
- "parking_lot",
- "quick-xml 0.31.0",
- "rand 0.8.5",
- "regex",
- "schemars 1.2.1",
- "serde",
- "serde_json",
- "serde_with",
- "serde_yaml",
- "sha2",
- "smallvec",
- "strum",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "umya-spreadsheet",
- "uuid",
- "walkdir",
- "xxhash-rust",
- "zip 0.6.6",
-]
-
-[[package]]
-name = "spreadsheet-kit-wasm"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde-wasm-bindgen",
- "serde_json",
- "spreadsheet-kit",
- "thiserror 1.0.69",
- "umya-spreadsheet",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "spreadsheet-mcp"
-version = "0.11.1"
-dependencies = [
- "ahash",
- "anyhow",
- "assert_cmd",
- "assert_matches",
- "async-trait",
- "axum",
- "base64 0.22.1",
- "bollard",
- "chrono",
- "clap",
- "formualizer",
- "formualizer-parse",
- "globset",
- "image",
- "indexmap 2.13.0",
- "lru",
- "once_cell",
- "ovba",
- "parking_lot",
- "quick-xml 0.31.0",
- "rand 0.8.5",
- "regex",
- "reqwest",
- "rmcp",
- "rmcp-macros",
- "schemars 1.2.1",
- "serde",
- "serde_json",
- "serde_with",
- "serde_yaml",
- "serial_test",
- "sha2",
- "smallvec",
- "spreadsheet-kit",
- "strum",
- "tempfile",
- "testcontainers",
- "thiserror 1.0.69",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "umya-spreadsheet",
- "uuid",
- "walkdir",
- "xxhash-rust",
- "zip 0.6.6",
 ]
 
 [[package]]

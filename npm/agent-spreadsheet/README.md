@@ -1,9 +1,9 @@
 # agent-spreadsheet
 
 [![npm](https://img.shields.io/npm/v/agent-spreadsheet.svg)](https://www.npmjs.com/package/agent-spreadsheet)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/PSU3D0/spreadsheet-mcp/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/PSU3D0/agent-spreadsheet/blob/main/LICENSE)
 
-**`agent-spreadsheet` is the npm distribution of the spreadsheet-kit CLI — the tool interaction surface for agent-based spreadsheet work.**
+**`agent-spreadsheet` is the npm distribution of the agent-spreadsheet CLI — the tool interaction surface for agent-based spreadsheet work.**
 
 This package installs a prebuilt native binary and exposes:
 - `asp` — primary command
@@ -330,7 +330,7 @@ npm i -g agent-spreadsheet
 And verify release access:
 
 ```bash
-curl -I https://github.com/PSU3D0/spreadsheet-mcp/releases/latest
+curl -I https://github.com/PSU3D0/agent-spreadsheet/releases/latest
 ```
 
 ### Unsupported platform
@@ -338,7 +338,7 @@ curl -I https://github.com/PSU3D0/spreadsheet-mcp/releases/latest
 If your platform is not covered by prebuilt assets, build from source:
 
 ```bash
-cargo install spreadsheet-kit --features recalc --bin asp --bin agent-spreadsheet
+cargo install agent-spreadsheet --features recalc --bin asp --bin agent-spreadsheet
 ```
 
 ### Use a local binary in CI or development
@@ -367,9 +367,9 @@ AGENT_SPREADSHEET_DOWNLOAD_BASE_URL=https://internal-mirror.example.com/releases
 
 ## See also
 
-- Root project README: <https://github.com/PSU3D0/spreadsheet-mcp#readme>
-- MCP server crate: <https://github.com/PSU3D0/spreadsheet-mcp/tree/main/crates/spreadsheet-mcp>
-- JS SDK: <https://github.com/PSU3D0/spreadsheet-mcp/tree/main/npm/spreadsheet-kit-sdk>
+- Root project README: <https://github.com/PSU3D0/agent-spreadsheet#readme>
+- MCP server crate: <https://github.com/PSU3D0/agent-spreadsheet/tree/main/crates/agent-spreadsheet-mcp>
+- JS SDK: <https://github.com/PSU3D0/agent-spreadsheet/tree/main/npm/agent-spreadsheet-sdk>
 
 ---
 

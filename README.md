@@ -1,13 +1,13 @@
-# spreadsheet-kit
+# agent-spreadsheet
 
-[![CI](https://github.com/PSU3D0/spreadsheet-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/PSU3D0/spreadsheet-mcp/actions/workflows/ci.yml)
-[![Crates.io](https://img.shields.io/crates/v/spreadsheet-mcp.svg)](https://crates.io/crates/spreadsheet-mcp)
+[![CI](https://github.com/PSU3D0/agent-spreadsheet/actions/workflows/ci.yml/badge.svg)](https://github.com/PSU3D0/agent-spreadsheet/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/agent-spreadsheet-mcp.svg)](https://crates.io/crates/agent-spreadsheet-mcp)
 [![npm](https://img.shields.io/npm/v/agent-spreadsheet.svg)](https://www.npmjs.com/package/agent-spreadsheet)
-[![License](https://img.shields.io/crates/l/spreadsheet-mcp.svg)](https://github.com/PSU3D0/spreadsheet-mcp/blob/main/LICENSE)
+[![License](https://img.shields.io/crates/l/agent-spreadsheet-mcp.svg)](https://github.com/PSU3D0/agent-spreadsheet/blob/main/LICENSE)
 
-![spreadsheet-kit](https://raw.githubusercontent.com/PSU3D0/spreadsheet-mcp/main/assets/banner.jpeg)
+![agent-spreadsheet](https://raw.githubusercontent.com/PSU3D0/agent-spreadsheet-mcp/main/assets/banner.jpeg)
 
-**spreadsheet-kit is the tool interaction service for agent-based spreadsheet usage.**
+**agent-spreadsheet is the tool interaction service for agent-based spreadsheet usage.**
 
 It gives agents a safe, inspectable, token-efficient way to **read, analyze, mutate, verify, and operationalize Excel workbooks** without falling back to brittle UI automation.
 
@@ -17,14 +17,14 @@ If you want an agent to work with spreadsheets like a real system instead of a s
 
 ## What this project is
 
-spreadsheet-kit ships a unified spreadsheet interaction layer across four surfaces:
+agent-spreadsheet ships a unified spreadsheet interaction layer across four surfaces:
 
 | Surface | Binary / Package | Mode | Best for |
 | --- | --- | --- | --- |
 | **CLI** | `asp` / `agent-spreadsheet` | Stateless | One-shot reads, safe edits, pipelines, CI, agent tool calls |
-| **MCP server** | `spreadsheet-mcp` | Stateful | Multi-turn agent sessions, workbook caching, fork/recalc workflows |
-| **JS SDK** | `spreadsheet-kit-sdk` | Backend-agnostic | App integrations that can target MCP today and WASM/session backends over time |
-| **WASM runtime** | `spreadsheet-kit-wasm` | In-process | Experimental byte/session embedding for local runtimes |
+| **MCP server** | `agent-spreadsheet-mcp` | Stateful | Multi-turn agent sessions, workbook caching, fork/recalc workflows |
+| **JS SDK** | `agent-spreadsheet-sdk` | Backend-agnostic | App integrations that can target MCP today and WASM/session backends over time |
+| **WASM runtime** | `agent-spreadsheet-wasm` | In-process | Experimental byte/session embedding for local runtimes |
 
 Supported workbook modes:
 
@@ -33,7 +33,7 @@ Supported workbook modes:
 
 ---
 
-## Why agents use spreadsheet-kit
+## Why agents use agent-spreadsheet
 
 ### Built for tool use, not just humans
 - deterministic JSON contracts
@@ -102,10 +102,10 @@ Downloads a prebuilt native binary for your platform. No Rust toolchain required
 
 ```bash
 # CLI
-cargo install spreadsheet-kit --features recalc --bin asp --bin agent-spreadsheet
+cargo install agent-spreadsheet --features recalc --bin asp --bin agent-spreadsheet
 
 # MCP server
-cargo install spreadsheet-mcp
+cargo install agent-spreadsheet-mcp
 ```
 
 Formualizer (the native Rust recalc engine) is included by default.
@@ -114,21 +114,21 @@ Formualizer (the native Rust recalc engine) is included by default.
 
 ```bash
 # Read-only / slim
-docker pull ghcr.io/psu3d0/spreadsheet-mcp:latest
+docker pull ghcr.io/psu3d0/agent-spreadsheet-mcp:latest
 
 # Write + recalc + screenshots
-docker pull ghcr.io/psu3d0/spreadsheet-mcp:latest-full
+docker pull ghcr.io/psu3d0/agent-spreadsheet-mcp:latest-full
 ```
 
 ### JavaScript SDK
 
 ```bash
-npm i spreadsheet-kit-sdk
+npm i agent-spreadsheet-sdk
 ```
 
 ### Prebuilt binaries
 
-Download from [GitHub Releases](https://github.com/PSU3D0/spreadsheet-mcp/releases).
+Download from [GitHub Releases](https://github.com/PSU3D0/agent-spreadsheet/releases).
 
 Published native assets include:
 - Linux x86_64
@@ -410,7 +410,7 @@ asp write name delete data.xlsx RevenueInput --in-place
 
 Most spreadsheet automation tools stop at “the edit applied.”
 
-spreadsheet-kit goes further:
+agent-spreadsheet goes further:
 - did the target cells change the way we expected?
 - did the workbook introduce new errors?
 - which changes were direct edits vs recalculation fallout?
@@ -626,7 +626,7 @@ Global `--output-format csv` is currently unsupported; use command-specific CSV 
 
 ## MCP server quickstart
 
-The MCP surface is the stateful server version of spreadsheet-kit.
+The MCP surface is the stateful server version of agent-spreadsheet.
 
 Use it when you want:
 - workbook caching across calls
@@ -642,7 +642,7 @@ Add to `~/.claude.json` or project `.mcp.json`:
 {
   "mcpServers": {
     "spreadsheet": {
-      "command": "spreadsheet-mcp",
+      "command": "agent-spreadsheet-mcp",
       "args": ["--workspace-root", "/path/to/workbooks", "--transport", "stdio"]
     }
   }
@@ -659,7 +659,7 @@ Add to `~/.claude.json` or project `.mcp.json`:
       "args": [
         "run", "-i", "--rm",
         "-v", "/path/to/workbooks:/data",
-        "ghcr.io/psu3d0/spreadsheet-mcp:latest-full",
+        "ghcr.io/psu3d0/agent-spreadsheet-mcp:latest-full",
         "--transport", "stdio"
       ]
     }
@@ -672,13 +672,13 @@ Add to `~/.claude.json` or project `.mcp.json`:
 ### HTTP mode
 
 ```bash
-spreadsheet-mcp --workspace-root /path/to/workbooks
+agent-spreadsheet-mcp --workspace-root /path/to/workbooks
 # -> http://127.0.0.1:8079  (POST /mcp)
 ```
 
 ### Configuration
 
-Every setting is available as a CLI flag (`spreadsheet-mcp --help`), an environment variable, or a config file key (`--config file.yaml`). CLI takes precedence over the config file.
+Every setting is available as a CLI flag (`agent-spreadsheet-mcp --help`), an environment variable, or a config file key (`--config file.yaml`). CLI takes precedence over the config file.
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -769,7 +769,7 @@ Setting any of the timeout/limit variables (`TOOL_TIMEOUT_MS`, `MAX_RESPONSE_BYT
 
 ## JS SDK and WASM status
 
-## `spreadsheet-kit-sdk`
+## `agent-spreadsheet-sdk`
 
 The JS SDK is the app-facing integration layer.
 
@@ -786,17 +786,17 @@ It is designed so an integration can target:
 Install:
 
 ```bash
-npm i spreadsheet-kit-sdk
+npm i agent-spreadsheet-sdk
 ```
 
-## `spreadsheet-kit-wasm`
+## `agent-spreadsheet-wasm`
 
 The Rust crate exists in this repository and provides a WASM-facing byte/session wrapper around the shared engine.
 
 Current status:
 - the crate exists and is tested in-repo
 - it is **not yet published as a general-purpose public package**
-- the npm `spreadsheet-kit-wasm` distribution remains planned
+- the npm `agent-spreadsheet-wasm` distribution remains planned
 
 So the right framing today is:
 - **WASM is real inside the repo**
@@ -822,7 +822,7 @@ Feature notes:
 
 ## Docker images
 
-Published at `ghcr.io/psu3d0/spreadsheet-mcp`:
+Published at `ghcr.io/psu3d0/agent-spreadsheet-mcp`:
 
 | Image | Size | Recalc | Best for |
 | --- | --- | --- | --- |
@@ -833,10 +833,10 @@ Examples:
 
 ```bash
 # Read-only
-docker run -v /path/to/workbooks:/data -p 8079:8079 ghcr.io/psu3d0/spreadsheet-mcp:latest
+docker run -v /path/to/workbooks:/data -p 8079:8079 ghcr.io/psu3d0/agent-spreadsheet-mcp:latest
 
 # Write + recalc
-docker run -v /path/to/workbooks:/data -p 8079:8079 ghcr.io/psu3d0/spreadsheet-mcp:latest-full
+docker run -v /path/to/workbooks:/data -p 8079:8079 ghcr.io/psu3d0/agent-spreadsheet-mcp:latest-full
 ```
 
 ---
@@ -844,14 +844,14 @@ docker run -v /path/to/workbooks:/data -p 8079:8079 ghcr.io/psu3d0/spreadsheet-m
 ## Workspace layout
 
 ```text
-spreadsheet-kit/
+agent-spreadsheet/
 ├── crates/
-│   ├── spreadsheet-kit/        # shared engine + asp / agent-spreadsheet CLI
-│   ├── spreadsheet-mcp/        # MCP server adapter
-│   └── spreadsheet-kit-wasm/   # experimental WASM-facing wrapper
+│   ├── agent-spreadsheet/        # shared engine + asp / agent-spreadsheet CLI
+│   ├── agent-spreadsheet-mcp/        # MCP server adapter
+│   └── agent-spreadsheet-wasm/   # experimental WASM-facing wrapper
 ├── npm/
 │   ├── agent-spreadsheet/      # npm CLI wrapper
-│   └── spreadsheet-kit-sdk/    # JS SDK
+│   └── agent-spreadsheet-sdk/    # JS SDK
 ├── docs/                       # architecture and design docs
 ├── benchmarks/                 # scenario budget regression harnesses
 └── .github/workflows/          # CI, release, docker builds
@@ -861,17 +861,17 @@ spreadsheet-kit/
 
 | Package | Role |
 | --- | --- |
-| `spreadsheet-kit` | shared engine and CLI binaries |
-| `spreadsheet-mcp` | stateful MCP transport + server surface |
-| `spreadsheet-kit-wasm` | WASM-facing byte/session wrapper |
+| `agent-spreadsheet` | shared engine and CLI binaries |
+| `agent-spreadsheet-mcp` | stateful MCP transport + server surface |
+| `agent-spreadsheet-wasm` | WASM-facing byte/session wrapper |
 | `agent-spreadsheet` | npm wrapper for the CLI binary |
-| `spreadsheet-kit-sdk` | JS SDK for MCP/WASM-style integrations |
+| `agent-spreadsheet-sdk` | JS SDK for MCP/WASM-style integrations |
 
 ---
 
 ## Architecture notes
 
-![Architecture Overview](https://raw.githubusercontent.com/PSU3D0/spreadsheet-mcp/main/assets/architecture_overview.jpeg)
+![Architecture Overview](https://raw.githubusercontent.com/PSU3D0/agent-spreadsheet-mcp/main/assets/architecture_overview.jpeg)
 
 Core ideas:
 - **one semantic core** shared across CLI, MCP, session, and WASM-facing work
@@ -882,7 +882,7 @@ Core ideas:
 
 Token-efficient workflow reference:
 
-![Token Efficiency Workflow](https://raw.githubusercontent.com/PSU3D0/spreadsheet-mcp/main/assets/token_efficiency.jpeg)
+![Token Efficiency Workflow](https://raw.githubusercontent.com/PSU3D0/agent-spreadsheet-mcp/main/assets/token_efficiency.jpeg)
 
 Recommended progression:
 1. discover workbook + sheets
@@ -918,7 +918,7 @@ Or point your MCP client directly at the local binary:
 {
   "mcpServers": {
     "spreadsheet": {
-      "command": "./target/release/spreadsheet-mcp",
+      "command": "./target/release/agent-spreadsheet-mcp",
       "args": ["--workspace-root", "/path/to/workbooks", "--transport", "stdio"]
     }
   }
@@ -930,10 +930,10 @@ Or point your MCP client directly at the local binary:
 ## Read more
 
 - CLI package README: [`npm/agent-spreadsheet`](./npm/agent-spreadsheet/)
-- Core crate README: [`crates/spreadsheet-kit`](./crates/spreadsheet-kit/)
-- MCP crate README: [`crates/spreadsheet-mcp`](./crates/spreadsheet-mcp/)
-- JS SDK README: [`npm/spreadsheet-kit-sdk`](./npm/spreadsheet-kit-sdk/)
-- WASM wrapper README: [`crates/spreadsheet-kit-wasm`](./crates/spreadsheet-kit-wasm/README.md)
+- Core crate README: [`crates/agent-spreadsheet`](./crates/agent-spreadsheet/)
+- MCP crate README: [`crates/agent-spreadsheet-mcp`](./crates/agent-spreadsheet-mcp/)
+- JS SDK README: [`npm/agent-spreadsheet-sdk`](./npm/agent-spreadsheet-sdk/)
+- WASM wrapper README: [`crates/agent-spreadsheet-wasm`](./crates/agent-spreadsheet-wasm/README.md)
 - Packaging/versioning notes: [`docs/PACKAGING.md`](./docs/PACKAGING.md)
 - Heuristics and region detection: [`docs/HEURISTICS.md`](./docs/HEURISTICS.md)
 - Recalc architecture: [`docs/RECALC.md`](./docs/RECALC.md)

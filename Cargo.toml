@@ -1,8 +1,8 @@
 [workspace]
 members = [
-    "crates/spreadsheet-kit",
-    "crates/spreadsheet-kit-wasm",
-    "crates/spreadsheet-mcp",
+    "crates/agent-spreadsheet",
+    "crates/agent-spreadsheet-wasm",
+    "crates/agent-spreadsheet-mcp",
 ]
 resolver = "2"
 
