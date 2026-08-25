@@ -78,7 +78,7 @@ ENV SPREADSHEET_MCP_RECALC_ENABLED=true
 LABEL org.opencontainers.image.source="https://github.com/PSU3D0/spreadsheet-mcp"
 LABEL org.opencontainers.image.description="MCP server for spreadsheet analysis and editing (full image with LibreOffice for write/recalc)"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
-LABEL io.modelcontextprotocol.server.name="io.github.PSU3D0/spreadsheet-mcp"
+LABEL io.modelcontextprotocol.server.name="io.github.PSU3D0/agent-spreadsheet"
 
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh

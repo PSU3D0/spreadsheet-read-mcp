@@ -20,7 +20,7 @@ ENV SPREADSHEET_MCP_WORKSPACE=/data
 LABEL org.opencontainers.image.source="https://github.com/PSU3D0/spreadsheet-mcp"
 LABEL org.opencontainers.image.description="MCP server for spreadsheet analysis and editing"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
-LABEL io.modelcontextprotocol.server.name="io.github.PSU3D0/spreadsheet-mcp"
+LABEL io.modelcontextprotocol.server.name="io.github.PSU3D0/agent-spreadsheet"
 
 ENTRYPOINT ["spreadsheet-mcp"]
 CMD ["--workspace-root", "/data", "--transport", "http", "--http-bind", "0.0.0.0:8079"]

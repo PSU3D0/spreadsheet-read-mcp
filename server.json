@@ -33,7 +33,7 @@
           "value": "{workbook_dir}:/data",
           "variables": {
             "workbook_dir": {
-              "description": "Host directory containing Excel workbooks to expose to "agent-spreadsheet",
+              "description": "Host directory containing Excel workbooks to expose to agent-spreadsheet-mcp",
               "format": "filepath",
               "isRequired": true,
               "placeholder": "/path/to/workbooks"
