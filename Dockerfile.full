@@ -10,13 +10,13 @@ WORKDIR /build
 
 # Copy manifests first for dependency caching
 COPY Cargo.toml Cargo.lock ./
-COPY crates/agent-agent-spreadsheet-mcp/Cargo.toml crates/agent-agent-spreadsheet-mcp/Cargo.toml
+COPY crates/agent-spreadsheet-mcp/Cargo.toml crates/agent-spreadsheet-mcp/Cargo.toml
 COPY crates/agent-spreadsheet/Cargo.toml crates/agent-spreadsheet/Cargo.toml
 COPY crates/agent-spreadsheet-wasm/Cargo.toml crates/agent-spreadsheet-wasm/Cargo.toml
 
 # Create dummy src to build deps
-RUN mkdir -p crates/agent-agent-spreadsheet-mcp/src crates/agent-spreadsheet/src crates/agent-spreadsheet-wasm/src \
-    && echo "fn main() {}" > crates/agent-agent-spreadsheet-mcp/src/main.rs \
+RUN mkdir -p crates/agent-spreadsheet-mcp/src crates/agent-spreadsheet/src crates/agent-spreadsheet-wasm/src \
+    && echo "fn main() {}" > crates/agent-spreadsheet-mcp/src/main.rs \
     && echo "" > crates/agent-spreadsheet/src/lib.rs \
     && echo "" > crates/agent-spreadsheet-wasm/src/lib.rs
 
@@ -31,7 +31,7 @@ COPY crates ./crates
 # Build the real binary
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
-    touch crates/agent-agent-spreadsheet-mcp/src/main.rs crates/agent-spreadsheet/src/lib.rs && \
+    touch crates/agent-spreadsheet-mcp/src/main.rs crates/agent-spreadsheet/src/lib.rs && \
     cargo build --release --locked --no-default-features --features recalc-libreoffice -p agent-spreadsheet-mcp && \
     cp target/release/agent-spreadsheet-mcp /usr/local/bin/agent-spreadsheet-mcp
 
