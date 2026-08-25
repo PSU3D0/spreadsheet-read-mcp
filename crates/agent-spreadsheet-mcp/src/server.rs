@@ -191,7 +191,36 @@ fn build_instructions(recalc_enabled: bool, vba_enabled: bool) -> String {
 #[derive(Clone)]
 pub struct SpreadsheetServer {
     state: Arc<AppState>,
-    tool_router: ToolRouter<SpreadsheetServer>,
+    tool_router: SlimToolRouter,
+}
+
+/// Wrapper around [`ToolRouter`] whose `list_all()` omits `outputSchema`.
+///
+/// Output schemas accounted for ~57% of the `tools/list` payload (100KB+ of
+/// ~178KB compact) while contributing nothing to tool *selection*: callers
+/// read actual responses (`structuredContent`), which remain untouched. The
+/// byte budget belongs to input schemas and descriptions.
+#[derive(Clone)]
+struct SlimToolRouter(ToolRouter<SpreadsheetServer>);
+
+impl SlimToolRouter {
+    fn list_all(&self) -> Vec<rmcp::model::Tool> {
+        self.0
+            .list_all()
+            .into_iter()
+            .map(|mut tool| {
+                tool.output_schema = None;
+                tool
+            })
+            .collect()
+    }
+
+    async fn call(
+        &self,
+        context: rmcp::handler::server::tool::ToolCallContext<'_, SpreadsheetServer>,
+    ) -> Result<rmcp::model::CallToolResult, McpError> {
+        self.0.call(context).await
+    }
 }
 
 impl SpreadsheetServer {
@@ -203,15 +232,15 @@ impl SpreadsheetServer {
 
     pub fn from_state(state: Arc<AppState>) -> Self {
         #[allow(unused_mut)]
-        let mut router = Self::tool_router();
+        let mut router = SlimToolRouter(Self::tool_router());
 
         #[cfg(feature = "recalc")]
         {
-            router.merge(Self::fork_tool_router());
+            router.0.merge(Self::fork_tool_router());
         }
 
         if state.config().vba_enabled {
-            router.merge(Self::vba_tool_router());
+            router.0.merge(Self::vba_tool_router());
         }
 
         Self {

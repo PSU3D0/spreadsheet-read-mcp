@@ -38,8 +38,8 @@ fn edit_batch_accepts_shorthand_and_formula() {
     assert_eq!(normalized.edits[5].value, "SUM(B1:B2)");
     assert!(normalized.edits[5].is_formula);
 
-    assert!(warnings.iter().any(|w| w.code == "WARN_SHORTHAND_EDIT"));
-    assert!(warnings.iter().any(|w| w.code == "WARN_FORMULA_PREFIX"));
+    // Noise warnings on documented syntax were removed; edits parse silently.
+    assert!(warnings.is_empty());
 }
 
 #[test]
@@ -70,5 +70,5 @@ fn edit_batch_shorthand_allows_space_before_formula() {
     assert_eq!(normalized.edits[0].address, "A1");
     assert_eq!(normalized.edits[0].value, "SUM(A1:A2)");
     assert!(normalized.edits[0].is_formula);
-    assert!(warnings.iter().any(|w| w.code == "WARN_FORMULA_PREFIX"));
+    assert!(warnings.is_empty());
 }

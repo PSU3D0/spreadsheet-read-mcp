@@ -172,17 +172,14 @@ async fn test_edit_batch_applies_values() -> Result<()> {
 
     assert_eq!(edit_response.edits_applied, 3);
     assert_eq!(edit_response.total_edits, 3);
+    // Successful shorthand edits must not emit noise warnings (they trained
+    // agents to ignore warnings entirely).
     assert!(
         edit_response
             .warnings
             .iter()
-            .any(|warning| warning.code == "WARN_SHORTHAND_EDIT")
-    );
-    assert!(
-        edit_response
-            .warnings
-            .iter()
-            .any(|warning| warning.code == "WARN_FORMULA_PREFIX")
+            .all(|warning| !warning.code.starts_with("WARN_SHORTHAND")
+                && warning.code != "WARN_FORMULA_PREFIX")
     );
 
     Ok(())

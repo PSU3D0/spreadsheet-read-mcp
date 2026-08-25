@@ -473,10 +473,20 @@ pub async fn edit(
     let mut normalized_edits = Vec::with_capacity(edits.len());
     let mut warnings = Vec::new();
     for (idx, entry) in edits.into_iter().enumerate() {
+        // Validate cell bounds first so out-of-range addresses surface their
+        // real reason instead of being masked by the shorthand-parse context.
+        if let Some((address_part, _)) = entry.split_once('=') {
+            let address_part = address_part.trim();
+            if !address_part.is_empty() {
+                crate::write::validate_cell_address(address_part).map_err(|err| {
+                    anyhow::anyhow!("invalid edit at index {idx} ('{entry}'): {err}")
+                })?;
+            }
+        }
         let (edit, entry_warnings) = crate::core::write::normalize_shorthand_edit(&entry)
             .with_context(|| {
                 format!(
-                    "invalid shorthand edit at index {}. {} {}",
+                    "invalid shorthand edit at index {} ({entry}). {} {}",
                     idx, EDIT_FORMULA_HINT, SHELL_QUOTING_HINT
                 )
             })?;

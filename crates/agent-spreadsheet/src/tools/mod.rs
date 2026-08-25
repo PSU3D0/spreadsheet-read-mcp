@@ -1268,7 +1268,17 @@ pub async fn verify_workbook(
     params: VerifyWorkbookParams,
 ) -> Result<VerifyResponse> {
     let options = VerifyOptions {
-        targets: params.targets.clone(),
+        // Auto-qualify bare A1 targets with `sheet_name` when provided: the
+        // schema exposes both params, and every read tool teaches the
+        // sheet_name+bare-address convention — qualify instead of rejecting.
+        targets: params
+            .targets
+            .iter()
+            .map(|target| match (params.sheet_name.as_deref(), target) {
+                (Some(sheet), t) if !t.contains('!') => format!("{sheet}!{t}"),
+                _ => target.clone(),
+            })
+            .collect(),
         sheet_filter: params.sheet_name.clone(),
         include_named_range_deltas: params.include_named_range_deltas,
         errors_only: params.errors_only,
@@ -4229,22 +4239,32 @@ pub async fn range_values(
     }
     let max_cells = config.max_cells();
     let max_payload_bytes = config.max_payload_bytes();
+    // Fail loudly on unparseable ranges: silently dropping them produced an
+    // exit-0 response with no values (the worst failure shape for an agent).
+    let mut parsed_ranges = Vec::with_capacity(params.ranges.len());
+    for range in &params.ranges {
+        match parse_range(range) {
+            Some(bounds) => parsed_ranges.push((range.as_str(), bounds)),
+            None => {
+                return Err(anyhow!(
+                    "INVALID_RANGE: '{}' is not a valid A1-style range (expected 'A1:C10' or a single cell like 'B2'). To read a named range, resolve it first with `asp read names` and use its refers_to address.",
+                    range
+                ));
+            }
+        }
+    }
     #[cfg(feature = "recalc")]
-    let requested_bounds: Vec<((u32, u32), (u32, u32))> = params
-        .ranges
-        .iter()
-        .filter_map(|r| parse_range(r))
-        .collect();
+    let requested_bounds: Vec<((u32, u32), (u32, u32))> =
+        parsed_ranges.iter().map(|(_, b)| *b).collect();
 
     #[cfg(feature = "recalc")]
     let (values, has_formula_in_target) = workbook.with_sheet(&params.sheet_name, |sheet| {
         let has_formula_in_target = sheet_has_formula_in_bounds(sheet, &requested_bounds);
-        let values = params
-            .ranges
+        let values = parsed_ranges
             .iter()
-            .filter_map(|range| {
-                parse_range(range).map(|((start_col, start_row), (end_col, end_row))| {
-                    let total_rows = (end_row - start_row + 1) as usize;
+            .map(|(range, bounds)| {
+                let ((start_col, start_row), (end_col, end_row)) = *bounds;
+                let total_rows = (end_row - start_row + 1) as usize;
                     let total_cols = (end_col - start_col + 1) as usize;
                     let mut row_limit = total_rows;
                     if let Some(page_size) = params.page_size {
@@ -4320,7 +4340,6 @@ pub async fn range_values(
                         formula_rows.as_deref(),
                         next_start_row,
                     )
-                })
             })
             .collect();
 

@@ -3782,18 +3782,25 @@ fn cli_range_values_shape_continuation_representable_canonical_and_compact() {
 }
 
 #[test]
-fn cli_range_values_invalid_range_omits_values_in_both_shapes() {
+fn cli_range_values_invalid_range_fails_loudly_in_both_shapes() {
     let tmp = tempdir().expect("tempdir");
     let workbook_path = tmp.path().join("shape-invalid-range.xlsx");
     write_fixture(&workbook_path);
     let file = workbook_path.to_str().expect("path utf8");
 
+    // An unparseable range must produce a structured error (non-zero exit),
+    // never a silent exit-0 success with no values.
     let canonical = run_cli(&["range-values", file, "Sheet1", "NOT_A_RANGE"]);
-    assert!(canonical.status.success(), "stderr: {:?}", canonical.stderr);
-    let canonical_payload = parse_stdout_json(&canonical);
-    assert!(canonical_payload.get("workbook_id").is_some());
-    assert!(canonical_payload.get("sheet_name").is_some());
-    assert!(canonical_payload.get("values").is_none());
+    assert!(
+        !canonical.status.success(),
+        "invalid range must fail: stderr: {:?}",
+        canonical.stderr
+    );
+    let stderr = String::from_utf8_lossy(&canonical.stderr);
+    assert!(
+        stderr.contains("INVALID_RANGE"),
+        "error should mention INVALID_RANGE: {stderr}"
+    );
 
     let compact = run_cli(&[
         "--shape",
@@ -3803,12 +3810,7 @@ fn cli_range_values_invalid_range_omits_values_in_both_shapes() {
         "Sheet1",
         "NOT_A_RANGE",
     ]);
-    assert!(compact.status.success(), "stderr: {:?}", compact.stderr);
-    let compact_payload = parse_stdout_json(&compact);
-    assert!(compact_payload.get("workbook_id").is_some());
-    assert!(compact_payload.get("sheet_name").is_some());
-    assert!(compact_payload.get("values").is_none());
-    assert!(compact_payload.get("range").is_none());
+    assert!(!compact.status.success());
 }
 
 #[test]

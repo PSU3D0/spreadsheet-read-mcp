@@ -451,7 +451,7 @@ enum SurfaceWorkbookCommands {
 
 #[derive(Debug, Subcommand)]
 enum SurfaceVerifyCommands {
-    #[command(about = "Compare two workbook states and verify target deltas plus error provenance")]
+    #[command(about = "Compare two workbook states and verify target deltas plus error provenance", after_help = "Also available:\n  asp verify diff <BASELINE> <CURRENT>    Diff two workbook versions with summary-first, paged details\n\nRun `asp verify diff --help` for the full diff contract.")]
     Proof(SurfaceLeafArgs),
     #[command(about = "Diff two workbook versions with summary-first, paged details")]
     Diff(SurfaceLeafArgs),

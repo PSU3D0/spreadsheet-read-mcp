@@ -5371,6 +5371,11 @@ pub struct RecalculateResponse {
     pub fork_id: String,
     pub duration_ms: u64,
     pub backend: String,
+    /// "completed" or "completed_with_errors" — lets a skimming agent detect
+    /// partial failure without inspecting eval_errors.
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cells_evaluated: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -5425,10 +5430,20 @@ pub async fn recalculate_with_backend(
     let fork_workbook_id = WorkbookId(params.fork_id.clone());
     let _ = state.close_workbook(&fork_workbook_id);
 
+    let status = if result.eval_errors.is_some() {
+        "completed_with_errors"
+    } else {
+        "completed"
+    };
     Ok(RecalculateResponse {
         fork_id: params.fork_id,
         duration_ms: result.duration_ms,
         backend: result.backend,
+        status: status.to_string(),
+        error_count: result
+            .eval_errors
+            .as_ref()
+            .map(|errors| errors.len()),
         cells_evaluated: result.cells_evaluated,
         eval_errors: result.eval_errors,
     })
