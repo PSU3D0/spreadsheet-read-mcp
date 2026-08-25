@@ -97,6 +97,7 @@ impl TestWorkspace {
             max_cells: Some(10_000),
             max_items: Some(500),
             allow_overwrite: false,
+            slim_surface: true,
         }
     }
 

@@ -114,7 +114,7 @@ Fork-based editing allows 'what-if' analysis without modifying original files.
 WORKFLOW:
 1) create_fork: Create editable copy of a workbook. Returns fork_id.
 2) Optional: checkpoint_fork before large edits.
-3) edit_batch/transform_batch/style_batch/structure_batch/apply_formula_pattern/sheet_layout_batch/rules_batch/column_size_batch/replace_in_formulas: Apply edits to the fork.
+3) mutate_batch (range/structure/style/rule/layout ops, one batched call) or edit_batch (per-cell): Apply edits to the fork.
 4) recalculate: Trigger the configured recalc backend to recompute all formulas.
 5) verify_workbook: Compare baseline/current workbook_or_fork ids for target proof plus new/resolved/preexisting errors.
 6) get_changeset: Diff fork against original. Use filters/limit/offset to keep it small.
@@ -124,15 +124,22 @@ WORKFLOW:
 
 SAFETY:
 - checkpoint_fork before large/structural edits; restore_checkpoint to rollback if needed.
-- Tools with mode='preview' create staged changes (transform_batch/style_batch/structure_batch/apply_formula_pattern); use list_staged_changes + apply_staged_change/discard_staged_change.
+- mutate_batch and edit_batch accept mode='preview' to stage changes without mutating the fork \
+(preview responses report ops_staged/edits_staged, never 'applied'); \
+use list_staged_changes + apply_staged_change/discard_staged_change.
 
 TOOL DETAILS:
 - create_fork: Only .xlsx supported. Returns fork_id for subsequent operations.
 - edit_batch: {fork_id, sheet_name, edits:[{address, value, is_formula} | `A1=100`]}. \
 Shorthand edits like `A1=100` or `B2==SUM(A1:A2)` are accepted. \
 Leading '=' in value/formula is accepted and stripped; prefer formula or is_formula=true for clarity.
-- transform_batch: Range-first clear/fill/replace. Prefer for bulk edits (blank/fill/rename) to avoid per-cell edit_batch bloat.
-- recalculate: Required after edit_batch to update formula results. \
+- mutate_batch: {fork_id, mode:'apply'|'preview', ops:[{kind, ...}]}. One call for bulk edits: \
+kinds cover clear_range/fill_range/replace_in_range/write_matrix (transforms), \
+insert_rows/delete_cols/create_sheet/copy_range/... (structure), style, set_data_validation/conditional formats (rules), \
+freeze_panes/set_zoom/... (layout), column_size, formula_pattern (autofill), replace_in_formulas. \
+Consecutive same-family ops run as one batch; on failure the response names the failing op index \
+and states whether earlier ops were applied. Prefer over per-cell edit_batch for bulk work.
+- recalculate: Required after any edit to update formula results. \
 May take several seconds for complex workbooks.
 - verify_workbook: Compare {baseline_workbook_or_fork_id, current_workbook_or_fork_id}. \
 Optional: targets:[Sheet!A1], sheet_name, include_named_range_deltas, errors_only, targets_only. \
@@ -164,11 +171,14 @@ Use summary_only=true when you only need counts.
 - discard_staged_change: Discard a staged change.
 
 BEST PRACTICES:
-- Always recalculate after edit_batch before get_changeset.
+- Always recalculate after edits before get_changeset.
 - Review changeset before save_fork to verify expected changes.
 - Use screenshot_sheet for quick visual inspection; save_fork is ONLY for exporting a workbook file.
 - Discard forks when done to free resources (fork TTL is disabled by default).
-- For large edits, batch multiple cells in single edit_batch call.";
+- For large edits, use one mutate_batch call (or batch many cells per edit_batch call).
+- Compat mode (SPREADSHEET_MCP_SLIM_SURFACE=false) additionally registers the per-family batch tools \
+(transform_batch, style_batch, structure_batch, sheet_layout_batch, rules_batch, column_size_batch, \
+apply_formula_pattern, replace_in_formulas); they behave exactly as their mutate_batch op kinds.";
 
 fn build_instructions(recalc_enabled: bool, vba_enabled: bool) -> String {
     let mut instructions = BASE_INSTRUCTIONS.to_string();
@@ -237,6 +247,9 @@ impl SpreadsheetServer {
         #[cfg(feature = "recalc")]
         {
             router.0.merge(Self::fork_tool_router());
+            if !state.config().slim_surface {
+                router.0.merge(Self::legacy_write_tool_router());
+            }
         }
 
         if state.config().vba_enabled {
@@ -247,6 +260,16 @@ impl SpreadsheetServer {
             state,
             tool_router: router,
         }
+    }
+
+    /// Names of all tools currently registered in the router (post feature /
+    /// slim-surface filtering). Exposed for tests and diagnostics.
+    pub fn tool_names(&self) -> Vec<String> {
+        self.tool_router
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect()
     }
 
     pub async fn run_stdio(self) -> Result<()> {
@@ -416,7 +439,10 @@ impl SpreadsheetServer {
         .map_err(|e| to_mcp_error_for_tool("sheet_overview", e))
     }
 
-    #[tool(name = "sheet_page", description = "Page through sheet cells")]
+    #[tool(
+        name = "sheet_page",
+        description = "Raw paged cell dump. Use for unstructured sheets or when region detection fails; prefer read_table for tabular data. Works on forks (recalculate first or values are stale). Truncated responses include a budget object with continuation hints."
+    )]
     pub async fn sheet_page(
         &self,
         Parameters(params): Parameters<tools::SheetPageParams>,
@@ -444,7 +470,7 @@ impl SpreadsheetServer {
 
     #[tool(
         name = "read_table",
-        description = "Read structured data from a range or table"
+        description = "Structured table extraction (headers, filters, sampling) — the go-to read for tabular data. Prefer region_id from sheet_overview or a tight range; defaults to format=csv with limit/sample_mode for large tables. Use range_values for raw spot reads."
     )]
     pub async fn read_table(
         &self,
@@ -476,7 +502,7 @@ impl SpreadsheetServer {
 
     #[tool(
         name = "range_values",
-        description = "Fetch raw values for specific ranges"
+        description = "Fetch raw values for specific A1 ranges — the default way to read computed results, including from a fork after recalculate. Defaults to format=values; csv/json available. Prefer read_table for header-aware tabular extraction."
     )]
     pub async fn range_values(
         &self,
@@ -495,7 +521,7 @@ impl SpreadsheetServer {
 
     #[tool(
         name = "inspect_cells",
-        description = "Detail-view: inspect up to 25 individual cells with full metadata (value, formula, style, number format). Use sheet-page or range-values for bulk reads."
+        description = "Deep per-cell detail (value, formula, style, number format) for up to 25 addresses. NOT for bulk reads — use sheet_page or range_values. Use to spot-check cells found via sheet_overview/find_value; on a fork, recalculate first for fresh values."
     )]
     pub async fn inspect_cells(
         &self,
@@ -587,7 +613,7 @@ impl SpreadsheetServer {
 
     #[tool(
         name = "verify_workbook",
-        description = "Compare baseline/current workbook or fork ids and report target proof plus new/resolved/preexisting errors"
+        description = "Compares two workbook/fork states (baseline vs current) reporting target proof plus new/resolved/preexisting errors. Only meaningful when the current side has been recalculated; unevaluated formulas have empty caches and diff as clean."
     )]
     pub async fn verify_workbook(
         &self,
@@ -816,7 +842,7 @@ impl SpreadsheetServer {
 impl SpreadsheetServer {
     #[tool(
         name = "create_fork",
-        description = "Create a temporary editable copy of a workbook for what-if analysis"
+        description = "Start of every write workflow: creates an editable copy of a workbook and returns fork_id; the original file is never modified. Pass fork_id to mutate_batch/edit_batch/recalculate/get_changeset/save_fork. Only .xlsx is supported."
     )]
     pub async fn create_fork(
         &self,
@@ -835,7 +861,7 @@ impl SpreadsheetServer {
 
     #[tool(
         name = "edit_batch",
-        description = "Apply batch edits (values or formulas) to a fork"
+        description = "Per-cell value/formula edits on a fork: {fork_id, sheet_name, edits:[`A1=100` | {address,value,is_formula}]}. mode=preview stages instead of applying. For bulk fills/clears/structure prefer mutate_batch. Run recalculate before reading computed values."
     )]
     pub async fn edit_batch(
         &self,
@@ -853,43 +879,22 @@ impl SpreadsheetServer {
     }
 
     #[tool(
-        name = "transform_batch",
-        description = "Range-oriented transforms for a fork (clear/fill/replace). Supports targets by range, region_id, or explicit cells. \
-Mode: preview or apply (default apply)."
+        name = "mutate_batch",
+        description = "Unified fork write tool: ops is a batch of tagged ops (fill_range/clear_range/write_matrix, insert_rows/delete_cols/create_sheet, style, set_data_validation, freeze_panes, column_size, formula_pattern, replace_in_formulas, ...). mode=preview stages without mutating (returns ops_staged); mode=apply mutates. Recalculate after applying."
     )]
-    pub async fn transform_batch(
+    pub async fn mutate_batch(
         &self,
-        Parameters(params): Parameters<tools::fork::TransformBatchParams>,
-    ) -> Result<Json<tools::fork::TransformBatchResponse>, McpError> {
-        self.ensure_recalc_enabled("transform_batch")
-            .map_err(|e| to_mcp_error_for_tool("transform_batch", e))?;
+        Parameters(params): Parameters<tools::mutate_batch::MutateBatchParams>,
+    ) -> Result<Json<tools::mutate_batch::MutateBatchResponse>, McpError> {
+        self.ensure_recalc_enabled("mutate_batch")
+            .map_err(|e| to_mcp_error_for_tool("mutate_batch", e))?;
         self.run_tool_with_timeout(
-            "transform_batch",
-            tools::fork::transform_batch(self.state.clone(), params),
+            "mutate_batch",
+            tools::mutate_batch::mutate_batch(self.state.clone(), params),
         )
         .await
         .map(json)
-        .map_err(|e| to_mcp_error_for_tool("transform_batch", e))
-    }
-
-    #[tool(
-        name = "style_batch",
-        description = "Apply batch style edits to a fork. Supports targets by range, region_id, or explicit cells. \
-Mode: preview or apply (default apply). Op mode: merge (default), set, or clear."
-    )]
-    pub async fn style_batch(
-        &self,
-        Parameters(params): Parameters<tools::fork::StyleBatchParamsInput>,
-    ) -> Result<Json<tools::fork::StyleBatchResponse>, McpError> {
-        self.ensure_recalc_enabled("style_batch")
-            .map_err(|e| to_mcp_error_for_tool("style_batch", e))?;
-        self.run_tool_with_timeout(
-            "style_batch",
-            tools::fork::style_batch(self.state.clone(), params),
-        )
-        .await
-        .map(json)
-        .map_err(|e| to_mcp_error_for_tool("style_batch", e))
+        .map_err(|e| to_mcp_error_for_tool("mutate_batch", e))
     }
 
     #[tool(
@@ -909,89 +914,6 @@ Mode: preview or apply (default apply). Op mode: merge (default), set, or clear.
         .await
         .map(json)
         .map_err(|e| to_mcp_error_for_tool("grid_import", e))
-    }
-
-    #[tool(
-        name = "column_size_batch",
-        description = "Set column widths or compute auto-widths in a fork. Targets column ranges like 'A:A' or 'A:C'. \
-Mode: preview or apply (default apply). Auto computes and sets widths immediately (persisted). \
-Note: autosize uses cached/formatted cell values; if a column is mostly formulas with no cached results, widths may be too narrow unless you recalculate first."
-    )]
-    pub async fn column_size_batch(
-        &self,
-        Parameters(params): Parameters<tools::fork::ColumnSizeBatchParamsInput>,
-    ) -> Result<Json<tools::fork::ColumnSizeBatchResponse>, McpError> {
-        self.ensure_recalc_enabled("column_size_batch")
-            .map_err(|e| to_mcp_error_for_tool("column_size_batch", e))?;
-        self.run_tool_with_timeout(
-            "column_size_batch",
-            tools::fork::column_size_batch(self.state.clone(), params),
-        )
-        .await
-        .map(json)
-        .map_err(|e| to_mcp_error_for_tool("column_size_batch", e))
-    }
-
-    #[tool(
-        name = "sheet_layout_batch",
-        description = "Apply sheet layout/view/print settings in a fork (freeze panes, zoom, gridlines, margins, setup, print area, page breaks). Mode: preview or apply (default apply)."
-    )]
-    pub async fn sheet_layout_batch(
-        &self,
-        Parameters(params): Parameters<tools::sheet_layout::SheetLayoutBatchParams>,
-    ) -> Result<Json<tools::sheet_layout::SheetLayoutBatchResponse>, McpError> {
-        self.ensure_recalc_enabled("sheet_layout_batch")
-            .map_err(|e| to_mcp_error_for_tool("sheet_layout_batch", e))?;
-        self.run_tool_with_timeout(
-            "sheet_layout_batch",
-            tools::sheet_layout::sheet_layout_batch(self.state.clone(), params),
-        )
-        .await
-        .map(json)
-        .map_err(|e| to_mcp_error_for_tool("sheet_layout_batch", e))
-    }
-
-    #[tool(
-        name = "apply_formula_pattern",
-        description = "Autofill-like formula pattern application over a target range in a fork. \
-Provide base_formula at anchor_cell, then fill across target_range. \
-Mode: preview or apply (default apply). relative_mode: excel (default), abs_cols, abs_rows. \
-fill_direction: down, right, both (default both)."
-    )]
-    pub async fn apply_formula_pattern(
-        &self,
-        Parameters(params): Parameters<tools::fork::ApplyFormulaPatternParams>,
-    ) -> Result<Json<tools::fork::ApplyFormulaPatternResponse>, McpError> {
-        self.ensure_recalc_enabled("apply_formula_pattern")
-            .map_err(|e| to_mcp_error_for_tool("apply_formula_pattern", e))?;
-        self.run_tool_with_timeout(
-            "apply_formula_pattern",
-            tools::fork::apply_formula_pattern(self.state.clone(), params),
-        )
-        .await
-        .map(json)
-        .map_err(|e| to_mcp_error_for_tool("apply_formula_pattern", e))
-    }
-
-    #[tool(
-        name = "structure_batch",
-        description = "Apply structural edits to a fork (rows/cols/sheets). \
-Mode: preview or apply (default apply). Aliases: op for kind, add_sheet for create_sheet. \
-Note: structural edits may not fully rewrite formulas/named ranges like Excel; run recalculate and review get_changeset after applying."
-    )]
-    pub async fn structure_batch(
-        &self,
-        Parameters(params): Parameters<tools::fork::StructureBatchParamsInput>,
-    ) -> Result<Json<tools::fork::StructureBatchResponse>, McpError> {
-        self.ensure_recalc_enabled("structure_batch")
-            .map_err(|e| to_mcp_error_for_tool("structure_batch", e))?;
-        self.run_tool_with_timeout(
-            "structure_batch",
-            tools::fork::structure_batch(self.state.clone(), params),
-        )
-        .await
-        .map(json)
-        .map_err(|e| to_mcp_error_for_tool("structure_batch", e))
     }
 
     #[tool(
@@ -1054,48 +976,6 @@ Scope filter: 'workbook' or 'sheet' to disambiguate."
         .map_err(|e| to_mcp_error_for_tool("delete_name", e))
     }
 
-    #[tool(
-        name = "rules_batch",
-        description = "Apply rule operations to a fork (DV v1: set_data_validation; CF v1: add/set/clear conditional formats). Mode: preview or apply (default apply)."
-    )]
-    pub async fn rules_batch(
-        &self,
-        Parameters(params): Parameters<tools::rules_batch::RulesBatchParams>,
-    ) -> Result<Json<tools::rules_batch::RulesBatchResponse>, McpError> {
-        self.ensure_recalc_enabled("rules_batch")
-            .map_err(|e| to_mcp_error_for_tool("rules_batch", e))?;
-        self.run_tool_with_timeout(
-            "rules_batch",
-            tools::rules_batch::rules_batch(self.state.clone(), params),
-        )
-        .await
-        .map(json)
-        .map_err(|e| to_mcp_error_for_tool("rules_batch", e))
-    }
-
-    #[tool(
-        name = "replace_in_formulas",
-        description = "Find and replace text in formula bodies only (not cell values). \
-Supports plain text and regex modes with optional case sensitivity. \
-Scope to a range or default to the used range. \
-Mode: preview or apply (default apply). \
-Returns count of changed formulas and sample diffs."
-    )]
-    pub async fn replace_in_formulas(
-        &self,
-        Parameters(params): Parameters<tools::fork::ReplaceInFormulasParams>,
-    ) -> Result<Json<tools::fork::ReplaceInFormulasResponse>, McpError> {
-        self.ensure_recalc_enabled("replace_in_formulas")
-            .map_err(|e| to_mcp_error_for_tool("replace_in_formulas", e))?;
-        self.run_tool_with_timeout(
-            "replace_in_formulas",
-            tools::fork::replace_in_formulas(self.state.clone(), params),
-        )
-        .await
-        .map(json)
-        .map_err(|e| to_mcp_error_for_tool("replace_in_formulas", e))
-    }
-
     #[tool(name = "get_edits", description = "List all edits applied to a fork")]
     pub async fn get_edits(
         &self,
@@ -1133,7 +1013,7 @@ Returns count of changed formulas and sample diffs."
 
     #[tool(
         name = "recalculate",
-        description = "Recalculate all formulas in a fork"
+        description = "Recompute all formulas in a fork. Required after any edit before reading computed values; reads on a dirty fork return stale caches. Also required before verify_workbook or get_changeset can prove anything. May take seconds on complex workbooks."
     )]
     pub async fn recalculate(
         &self,
@@ -1184,7 +1064,7 @@ Returns count of changed formulas and sample diffs."
 
     #[tool(
         name = "save_fork",
-        description = "Save fork changes to target path (defaults to overwriting original)"
+        description = "Exports the fork to a file on disk (target_path) and discards the fork by default (drop_fork=false keeps it). NOT for reading results — use range_values on the fork instead. Overwriting the original requires server --allow-overwrite."
     )]
     pub async fn save_fork(
         &self,
@@ -1398,6 +1278,170 @@ Returns count of changed formulas and sample diffs."
     }
 }
 
+/// Per-family write tools subsumed by `mutate_batch`. Registered only in
+/// compat mode (`SPREADSHEET_MCP_SLIM_SURFACE=false`).
+#[cfg(feature = "recalc")]
+#[tool_router(router = legacy_write_tool_router)]
+impl SpreadsheetServer {
+    #[tool(
+        name = "transform_batch",
+        description = "Range-oriented transforms for a fork (clear/fill/replace). Supports targets by range, region_id, or explicit cells. \
+Mode: preview or apply (default apply)."
+    )]
+    pub async fn transform_batch(
+        &self,
+        Parameters(params): Parameters<tools::fork::TransformBatchParams>,
+    ) -> Result<Json<tools::fork::TransformBatchResponse>, McpError> {
+        self.ensure_recalc_enabled("transform_batch")
+            .map_err(|e| to_mcp_error_for_tool("transform_batch", e))?;
+        self.run_tool_with_timeout(
+            "transform_batch",
+            tools::fork::transform_batch(self.state.clone(), params),
+        )
+        .await
+        .map(json)
+        .map_err(|e| to_mcp_error_for_tool("transform_batch", e))
+    }
+    #[tool(
+        name = "style_batch",
+        description = "Apply batch style edits to a fork. Supports targets by range, region_id, or explicit cells. \
+Mode: preview or apply (default apply). Op mode: merge (default), set, or clear."
+    )]
+    pub async fn style_batch(
+        &self,
+        Parameters(params): Parameters<tools::fork::StyleBatchParamsInput>,
+    ) -> Result<Json<tools::fork::StyleBatchResponse>, McpError> {
+        self.ensure_recalc_enabled("style_batch")
+            .map_err(|e| to_mcp_error_for_tool("style_batch", e))?;
+        self.run_tool_with_timeout(
+            "style_batch",
+            tools::fork::style_batch(self.state.clone(), params),
+        )
+        .await
+        .map(json)
+        .map_err(|e| to_mcp_error_for_tool("style_batch", e))
+    }
+    #[tool(
+        name = "column_size_batch",
+        description = "Set column widths or compute auto-widths in a fork. Targets column ranges like 'A:A' or 'A:C'. \
+Mode: preview or apply (default apply). Auto computes and sets widths immediately (persisted). \
+Note: autosize uses cached/formatted cell values; if a column is mostly formulas with no cached results, widths may be too narrow unless you recalculate first."
+    )]
+    pub async fn column_size_batch(
+        &self,
+        Parameters(params): Parameters<tools::fork::ColumnSizeBatchParamsInput>,
+    ) -> Result<Json<tools::fork::ColumnSizeBatchResponse>, McpError> {
+        self.ensure_recalc_enabled("column_size_batch")
+            .map_err(|e| to_mcp_error_for_tool("column_size_batch", e))?;
+        self.run_tool_with_timeout(
+            "column_size_batch",
+            tools::fork::column_size_batch(self.state.clone(), params),
+        )
+        .await
+        .map(json)
+        .map_err(|e| to_mcp_error_for_tool("column_size_batch", e))
+    }
+    #[tool(
+        name = "sheet_layout_batch",
+        description = "Apply sheet layout/view/print settings in a fork (freeze panes, zoom, gridlines, margins, setup, print area, page breaks). Mode: preview or apply (default apply)."
+    )]
+    pub async fn sheet_layout_batch(
+        &self,
+        Parameters(params): Parameters<tools::sheet_layout::SheetLayoutBatchParams>,
+    ) -> Result<Json<tools::sheet_layout::SheetLayoutBatchResponse>, McpError> {
+        self.ensure_recalc_enabled("sheet_layout_batch")
+            .map_err(|e| to_mcp_error_for_tool("sheet_layout_batch", e))?;
+        self.run_tool_with_timeout(
+            "sheet_layout_batch",
+            tools::sheet_layout::sheet_layout_batch(self.state.clone(), params),
+        )
+        .await
+        .map(json)
+        .map_err(|e| to_mcp_error_for_tool("sheet_layout_batch", e))
+    }
+    #[tool(
+        name = "apply_formula_pattern",
+        description = "Autofill-like formula pattern application over a target range in a fork. \
+Provide base_formula at anchor_cell, then fill across target_range. \
+Mode: preview or apply (default apply). relative_mode: excel (default), abs_cols, abs_rows. \
+fill_direction: down, right, both (default both)."
+    )]
+    pub async fn apply_formula_pattern(
+        &self,
+        Parameters(params): Parameters<tools::fork::ApplyFormulaPatternParams>,
+    ) -> Result<Json<tools::fork::ApplyFormulaPatternResponse>, McpError> {
+        self.ensure_recalc_enabled("apply_formula_pattern")
+            .map_err(|e| to_mcp_error_for_tool("apply_formula_pattern", e))?;
+        self.run_tool_with_timeout(
+            "apply_formula_pattern",
+            tools::fork::apply_formula_pattern(self.state.clone(), params),
+        )
+        .await
+        .map(json)
+        .map_err(|e| to_mcp_error_for_tool("apply_formula_pattern", e))
+    }
+    #[tool(
+        name = "structure_batch",
+        description = "Apply structural edits to a fork (rows/cols/sheets). \
+Mode: preview or apply (default apply). Aliases: op for kind, add_sheet for create_sheet. \
+Note: structural edits may not fully rewrite formulas/named ranges like Excel; run recalculate and review get_changeset after applying."
+    )]
+    pub async fn structure_batch(
+        &self,
+        Parameters(params): Parameters<tools::fork::StructureBatchParamsInput>,
+    ) -> Result<Json<tools::fork::StructureBatchResponse>, McpError> {
+        self.ensure_recalc_enabled("structure_batch")
+            .map_err(|e| to_mcp_error_for_tool("structure_batch", e))?;
+        self.run_tool_with_timeout(
+            "structure_batch",
+            tools::fork::structure_batch(self.state.clone(), params),
+        )
+        .await
+        .map(json)
+        .map_err(|e| to_mcp_error_for_tool("structure_batch", e))
+    }
+    #[tool(
+        name = "rules_batch",
+        description = "Apply rule operations to a fork (DV v1: set_data_validation; CF v1: add/set/clear conditional formats). Mode: preview or apply (default apply)."
+    )]
+    pub async fn rules_batch(
+        &self,
+        Parameters(params): Parameters<tools::rules_batch::RulesBatchParams>,
+    ) -> Result<Json<tools::rules_batch::RulesBatchResponse>, McpError> {
+        self.ensure_recalc_enabled("rules_batch")
+            .map_err(|e| to_mcp_error_for_tool("rules_batch", e))?;
+        self.run_tool_with_timeout(
+            "rules_batch",
+            tools::rules_batch::rules_batch(self.state.clone(), params),
+        )
+        .await
+        .map(json)
+        .map_err(|e| to_mcp_error_for_tool("rules_batch", e))
+    }
+    #[tool(
+        name = "replace_in_formulas",
+        description = "Find and replace text in formula bodies only (not cell values). \
+Supports plain text and regex modes with optional case sensitivity. \
+Scope to a range or default to the used range. \
+Mode: preview or apply (default apply). \
+Returns count of changed formulas and sample diffs."
+    )]
+    pub async fn replace_in_formulas(
+        &self,
+        Parameters(params): Parameters<tools::fork::ReplaceInFormulasParams>,
+    ) -> Result<Json<tools::fork::ReplaceInFormulasResponse>, McpError> {
+        self.ensure_recalc_enabled("replace_in_formulas")
+            .map_err(|e| to_mcp_error_for_tool("replace_in_formulas", e))?;
+        self.run_tool_with_timeout(
+            "replace_in_formulas",
+            tools::fork::replace_in_formulas(self.state.clone(), params),
+        )
+        .await
+        .map(json)
+        .map_err(|e| to_mcp_error_for_tool("replace_in_formulas", e))
+    }
+}
+
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for SpreadsheetServer {
     fn get_info(&self) -> ServerInfo {
@@ -1534,6 +1578,9 @@ fn format_invalid_params_message(
 
 fn tool_minimal_example(tool: &str) -> Option<&'static str> {
     match tool {
+        "mutate_batch" => Some(
+            r#"{"fork_id":"<fork_id>","mode":"apply","ops":[{"kind":"fill_range","sheet_name":"Sheet1","target":{"kind":"range","range":"A1:A3"},"value":"0"},{"kind":"insert_rows","sheet_name":"Sheet1","at_row":2,"count":1}]}"#,
+        ),
         "structure_batch" => Some(
             r#"{"fork_id":"<fork_id>","ops":[{"kind":"insert_rows","sheet_name":"Sheet1","at_row":2,"count":1}],"mode":"apply"}"#,
         ),
@@ -1622,6 +1669,12 @@ fn tool_variants(tool: &str, problem: &str) -> Option<Vec<&'static str>> {
     let p = problem.to_ascii_lowercase();
 
     match tool {
+        "mutate_batch" => {
+            if p.contains("kind") {
+                return Some(agent_spreadsheet::tools::mutate_batch::all_mutate_op_kinds());
+            }
+            None
+        }
         "structure_batch" => {
             if p.contains("structure op")
                 || p.contains("structureop")
@@ -1807,6 +1860,7 @@ mod typed_errors_tests {
                 "A1".to_string(),
             )],
 
+            mode: None,
             formula_parse_policy: None,
         };
 

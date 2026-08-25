@@ -4356,6 +4356,7 @@ fn local_workbook_config(source: &Path) -> ServerConfig {
         max_cells: Some(10_000),
         max_items: Some(500),
         allow_overwrite: false,
+        slim_surface: true,
     }
 }
 
@@ -5166,6 +5167,7 @@ fn apply_grid_import_to_path(
         max_cells: Some(10_000),
         max_items: Some(500),
         allow_overwrite: true,
+        slim_surface: true,
     });
 
     let sheet_name = sheet_name.to_string();
