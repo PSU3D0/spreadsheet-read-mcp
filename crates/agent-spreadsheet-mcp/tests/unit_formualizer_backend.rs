@@ -1,6 +1,5 @@
 #![cfg(all(feature = "recalc", feature = "recalc-formualizer"))]
 
-use anyhow::Result;
 use agent_spreadsheet_mcp::model::WorkbookId;
 use agent_spreadsheet_mcp::tools::fork::{
     CreateForkParams, RecalculateParams, create_fork, edit_batch, recalculate,
@@ -8,6 +7,7 @@ use agent_spreadsheet_mcp::tools::fork::{
 use agent_spreadsheet_mcp::tools::write_normalize::{CellEditInput, EditBatchParamsInput};
 use agent_spreadsheet_mcp::tools::{ListWorkbooksParams, list_workbooks};
 use agent_spreadsheet_mcp::{RecalcBackendKind, state::AppState};
+use anyhow::Result;
 use std::sync::Arc;
 
 mod support;
@@ -61,6 +61,7 @@ async fn recalculate_uses_formualizer_backend_and_updates_formula_cache() -> Res
             sheet_name: "Sheet1".to_string(),
             edits: vec![CellEditInput::Shorthand("A1=11".to_string())],
 
+            mode: None,
             formula_parse_policy: None,
         },
     )

@@ -80,6 +80,9 @@ pub struct ServerConfig {
     pub max_cells: Option<u64>,
     pub max_items: Option<u64>,
     pub allow_overwrite: bool,
+    /// When true (default), register only the consolidated write surface
+    /// (mutate_batch + edit_batch) and hide the per-family batch tools.
+    pub slim_surface: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +131,7 @@ impl ServerConfig {
             max_concurrent_recalcs: cli_max_concurrent_recalcs,
             tool_timeout_ms: cli_tool_timeout_ms,
             max_response_bytes: cli_max_response_bytes,
+            slim_surface: cli_slim_surface,
             output_profile: cli_output_profile,
             max_payload_bytes: cli_max_payload_bytes,
             max_cells: cli_max_cells,
@@ -157,6 +161,7 @@ impl ServerConfig {
             max_concurrent_recalcs: file_max_concurrent_recalcs,
             tool_timeout_ms: file_tool_timeout_ms,
             max_response_bytes: file_max_response_bytes,
+            slim_surface: file_slim_surface,
             output_profile: file_output_profile,
             max_payload_bytes: file_max_payload_bytes,
             max_cells: file_max_cells,
@@ -344,6 +349,8 @@ impl ServerConfig {
 
         let allow_overwrite = cli_allow_overwrite || file_allow_overwrite.unwrap_or(false);
 
+        let slim_surface = cli_slim_surface.or(file_slim_surface).unwrap_or(true);
+
         Ok(Self {
             workspace_root,
             screenshot_dir,
@@ -365,6 +372,7 @@ impl ServerConfig {
             max_cells,
             max_items,
             allow_overwrite,
+            slim_surface,
         })
     }
 
@@ -488,7 +496,11 @@ impl ServerConfig {
 }
 
 #[derive(Parser, Debug, Default, Clone)]
-#[command(name = "agent-spreadsheet-mcp", about = "Spreadsheet MCP server", version)]
+#[command(
+    name = "agent-spreadsheet-mcp",
+    about = "Spreadsheet MCP server",
+    version
+)]
 pub struct CliArgs {
     #[arg(
         long,
@@ -666,6 +678,14 @@ pub struct CliArgs {
         help = "Allow save_fork to overwrite original workbook files"
     )]
     pub allow_overwrite: bool,
+
+    #[arg(
+        long,
+        env = "SPREADSHEET_MCP_SLIM_SURFACE",
+        value_name = "BOOL",
+        help = "Register only the consolidated write surface (mutate_batch + edit_batch). Set to false to also register the per-family batch tools (default: true)"
+    )]
+    pub slim_surface: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -690,6 +710,7 @@ struct PartialConfig {
     max_cells: Option<u64>,
     max_items: Option<u64>,
     allow_overwrite: Option<bool>,
+    slim_surface: Option<bool>,
 }
 
 fn load_config_file(path: &Path) -> Result<PartialConfig> {

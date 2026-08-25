@@ -76,9 +76,11 @@ pub struct EditBatchParams {
     pub fork_id: String,
     pub sheet_name: String,
     pub edits: Vec<CellEdit>,
+    #[serde(default)]
+    pub mode: Option<BatchMode>,
 }
 
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CellEdit {
     pub address: String,
     pub value: String,
@@ -89,7 +91,17 @@ pub struct CellEdit {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct EditBatchResponse {
     pub fork_id: String,
-    pub edits_applied: usize,
+    /// "apply" or "preview".
+    pub mode: String,
+    /// Staged change id (preview mode only); apply via apply_staged_change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub change_id: Option<String>,
+    /// Number of edits written to the fork (apply mode only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edits_applied: Option<usize>,
+    /// Number of edits staged without mutating the fork (preview mode only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edits_staged: Option<usize>,
     pub total_edits: usize,
     pub recalc_needed: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -155,6 +167,78 @@ pub async fn edit_batch(
     let fork_ctx = registry.get_fork(&params.fork_id)?;
     let work_path = fork_ctx.work_path.clone();
 
+    let mode = params.mode.unwrap_or_default();
+
+    if mode.is_preview() {
+        let edit_count = edits_to_write.len();
+        let change_id = make_short_random_id("chg", 12);
+        let snapshot_path = stage_snapshot_path(&params.fork_id, &change_id);
+        fs::create_dir_all(snapshot_path.parent().unwrap())?;
+        fs::copy(&work_path, &snapshot_path)?;
+
+        // Apply to the snapshot only: validates the edits without touching the fork.
+        tokio::task::spawn_blocking({
+            let sheet_name = params.sheet_name.clone();
+            let edits = edits_to_write.clone();
+            let snapshot_path = snapshot_path.clone();
+            move || {
+                let core_edits = edits
+                    .into_iter()
+                    .map(|edit| crate::core::types::CellEdit {
+                        address: edit.address,
+                        value: edit.value,
+                        is_formula: edit.is_formula,
+                    })
+                    .collect::<Vec<_>>();
+                crate::core::write::apply_edits_to_file(&snapshot_path, &sheet_name, &core_edits)
+            }
+        })
+        .await??;
+
+        let mut summary = ChangeSummary {
+            op_kinds: vec!["edit_batch".to_string()],
+            affected_sheets: vec![params.sheet_name.clone()],
+            ..ChangeSummary::default()
+        };
+        summary
+            .counts
+            .insert("cells_edited".to_string(), edit_count as u64);
+        set_recalc_needed_flag(&mut summary, fork_ctx.recalc_needed);
+
+        let staged_op = StagedOp {
+            kind: "edit_batch".to_string(),
+            payload: serde_json::to_value(EditBatchStagedPayload {
+                sheet_name: params.sheet_name.clone(),
+                edits: edits_to_write.clone(),
+            })?,
+        };
+
+        let staged = StagedChange {
+            change_id: change_id.clone(),
+            created_at: Utc::now(),
+            label: None,
+            ops: vec![staged_op],
+            summary,
+            fork_path_snapshot: Some(snapshot_path),
+        };
+
+        registry.add_staged_change(&params.fork_id, staged)?;
+
+        let total = registry.get_fork(&params.fork_id)?.edits.len();
+
+        return Ok(EditBatchResponse {
+            fork_id: params.fork_id,
+            mode: mode.as_str().to_string(),
+            change_id: Some(change_id),
+            edits_applied: None,
+            edits_staged: Some(edit_count),
+            total_edits: total,
+            recalc_needed: fork_ctx.recalc_needed,
+            warnings,
+            formula_parse_diagnostics,
+        });
+    }
+
     let edits_to_apply: Vec<_> = edits_to_write
         .iter()
         .map(|e| EditOp {
@@ -196,7 +280,10 @@ pub async fn edit_batch(
 
     Ok(EditBatchResponse {
         fork_id: params.fork_id,
-        edits_applied: edit_count,
+        mode: mode.as_str().to_string(),
+        change_id: None,
+        edits_applied: Some(edit_count),
+        edits_staged: None,
         total_edits: total,
         recalc_needed: true,
         warnings,
@@ -5440,10 +5527,7 @@ pub async fn recalculate_with_backend(
         duration_ms: result.duration_ms,
         backend: result.backend,
         status: status.to_string(),
-        error_count: result
-            .eval_errors
-            .as_ref()
-            .map(|errors| errors.len()),
+        error_count: result.eval_errors.as_ref().map(|errors| errors.len()),
         cells_evaluated: result.cells_evaluated,
         eval_errors: result.eval_errors,
     })
@@ -5804,7 +5888,7 @@ pub struct ApplyStagedChangeResponse {
     pub summary: ChangeSummary,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct EditBatchStagedPayload {
     sheet_name: String,
     edits: Vec<CellEdit>,

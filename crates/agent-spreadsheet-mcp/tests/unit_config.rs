@@ -1,7 +1,9 @@
 use std::fs;
 
+use agent_spreadsheet_mcp::{
+    CliArgs, OutputProfile, RecalcBackendKind, ServerConfig, TransportKind,
+};
 use clap::Parser;
-use agent_spreadsheet_mcp::{CliArgs, OutputProfile, RecalcBackendKind, ServerConfig, TransportKind};
 
 #[test]
 fn merges_config_file_and_cli_overrides() {
@@ -72,6 +74,7 @@ fn empty_extensions_is_error() {
         max_cells: None,
         max_items: None,
         allow_overwrite: false,
+        slim_surface: None,
     };
     let err = ServerConfig::from_args(args).expect_err("expected failure");
     assert!(err.to_string().contains("at least one file extension"));
@@ -100,6 +103,7 @@ fn ensure_workspace_root_errors_for_missing_dir() {
         max_cells: Some(10_000),
         max_items: Some(500),
         allow_overwrite: false,
+        slim_surface: true,
     };
     let err = config.ensure_workspace_root().expect_err("missing dir");
     assert!(

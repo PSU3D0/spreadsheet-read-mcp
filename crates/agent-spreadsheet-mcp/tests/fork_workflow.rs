@@ -6,7 +6,6 @@
 
 use std::sync::Arc;
 
-use anyhow::Result;
 use agent_spreadsheet_mcp::ServerConfig;
 use agent_spreadsheet_mcp::diff::Change; // Add Change import
 use agent_spreadsheet_mcp::diff::merge::{CellDiff, ModificationType};
@@ -17,8 +16,11 @@ use agent_spreadsheet_mcp::tools::fork::{
     SaveForkParams, TransformBatchParams, TransformOp, TransformTarget, create_fork, discard_fork,
     edit_batch, get_changeset, get_edits, list_forks, save_fork, transform_batch,
 };
-use agent_spreadsheet_mcp::tools::write_normalize::{CellEditInput, CellEditV2, EditBatchParamsInput};
+use agent_spreadsheet_mcp::tools::write_normalize::{
+    CellEditInput, CellEditV2, EditBatchParamsInput,
+};
 use agent_spreadsheet_mcp::tools::{ListWorkbooksParams, list_workbooks};
+use anyhow::Result;
 
 #[path = "./support/mod.rs"]
 mod support;
@@ -165,12 +167,13 @@ async fn test_edit_batch_applies_values() -> Result<()> {
                 input_edit("A3", "SUM(A1:A2)", true),
             ],
 
+            mode: None,
             formula_parse_policy: None,
         },
     )
     .await?;
 
-    assert_eq!(edit_response.edits_applied, 3);
+    assert_eq!(edit_response.edits_applied, Some(3));
     assert_eq!(edit_response.total_edits, 3);
     // Successful shorthand edits must not emit noise warnings (they trained
     // agents to ignore warnings entirely).
@@ -212,6 +215,7 @@ async fn test_edit_batch_clears_cached_value_on_formula() -> Result<()> {
             sheet_name: "Data".to_string(),
             edits: vec![input_edit("A1", "A1*2", true)],
 
+            mode: None,
             formula_parse_policy: None,
         },
     )
@@ -265,6 +269,7 @@ async fn test_get_edits_returns_history() -> Result<()> {
             sheet_name: "Sheet1".to_string(),
             edits: vec![input_edit("A1", "10", false)],
 
+            mode: None,
             formula_parse_policy: None,
         },
     )
@@ -277,6 +282,7 @@ async fn test_get_edits_returns_history() -> Result<()> {
             sheet_name: "Sheet1".to_string(),
             edits: vec![input_edit("B1", "A1*2", true)],
 
+            mode: None,
             formula_parse_policy: None,
         },
     )
@@ -336,6 +342,7 @@ async fn test_get_changeset_detects_modifications() -> Result<()> {
                 input_edit("A2", "modified", false),
             ],
 
+            mode: None,
             formula_parse_policy: None,
         },
     )
@@ -414,6 +421,7 @@ async fn test_get_changeset_with_sheet_filter() -> Result<()> {
             sheet_name: "Sheet1".to_string(),
             edits: vec![input_edit("A1", "10", false)],
 
+            mode: None,
             formula_parse_policy: None,
         },
     )
@@ -426,6 +434,7 @@ async fn test_get_changeset_with_sheet_filter() -> Result<()> {
             sheet_name: "Sheet2".to_string(),
             edits: vec![input_edit("A1", "20", false)],
 
+            mode: None,
             formula_parse_policy: None,
         },
     )
@@ -566,6 +575,7 @@ async fn test_save_fork_overwrites_original() -> Result<()> {
             sheet_name: "Data".to_string(),
             edits: vec![input_edit("A1", "999", false)],
 
+            mode: None,
             formula_parse_policy: None,
         },
     )
@@ -623,6 +633,7 @@ async fn test_save_fork_to_new_path() -> Result<()> {
             sheet_name: "Data".to_string(),
             edits: vec![input_edit("A1", "modified", false)],
 
+            mode: None,
             formula_parse_policy: None,
         },
     )
@@ -701,11 +712,12 @@ async fn test_full_workflow_without_recalc() -> Result<()> {
             sheet_name: "Budget".to_string(),
             edits: vec![input_edit("B2", "1200", false)],
 
+            mode: None,
             formula_parse_policy: None,
         },
     )
     .await?;
-    assert_eq!(edit_result.edits_applied, 1);
+    assert_eq!(edit_result.edits_applied, Some(1));
 
     // Step 3: Review edits
     let edits = get_edits(
@@ -812,6 +824,7 @@ async fn test_edit_nonexistent_sheet_error() -> Result<()> {
             sheet_name: "FakeSheet".to_string(),
             edits: vec![input_edit("A1", "test", false)],
 
+            mode: None,
             formula_parse_policy: None,
         },
     )
@@ -971,6 +984,7 @@ async fn test_get_changeset_exclude_recalc_result() -> Result<()> {
             sheet_name: "Sheet1".to_string(),
             edits: vec![input_edit("A1", "2", false)],
 
+            mode: None,
             formula_parse_policy: None,
         },
     )

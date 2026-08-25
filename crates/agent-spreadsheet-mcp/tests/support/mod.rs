@@ -6,9 +6,9 @@ pub mod mcp;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::Result;
 use agent_spreadsheet_mcp::state::AppState;
 use agent_spreadsheet_mcp::{OutputProfile, ServerConfig, SpreadsheetServer, TransportKind};
+use anyhow::Result;
 use tempfile::{TempDir, tempdir};
 use umya_spreadsheet::{self, Spreadsheet};
 
@@ -102,6 +102,7 @@ impl TestWorkspace {
             max_cells: Some(10_000),
             max_items: Some(500),
             allow_overwrite: false,
+            slim_surface: true,
         }
     }
 

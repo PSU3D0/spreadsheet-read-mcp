@@ -96,6 +96,7 @@ async fn formula_edit_sets_recalc_needed_true() -> Result<()> {
             sheet_name: "Sheet1".to_string(),
             edits: vec![CellEditInput::Shorthand("B1==SUM(1,2)".to_string())],
 
+            mode: None,
             formula_parse_policy: None,
         },
     )
@@ -137,6 +138,7 @@ async fn recalculate_clears_recalc_needed() -> Result<()> {
             sheet_name: "Sheet1".to_string(),
             edits: vec![CellEditInput::Shorthand("A1=11".to_string())],
 
+            mode: None,
             formula_parse_policy: None,
         },
     )
@@ -188,6 +190,7 @@ async fn range_values_warns_when_stale_formulas_present() -> Result<()> {
             sheet_name: "Sheet1".to_string(),
             edits: vec![CellEditInput::Shorthand("A1=11".to_string())],
 
+            mode: None,
             formula_parse_policy: None,
         },
     )

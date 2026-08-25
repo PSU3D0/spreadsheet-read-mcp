@@ -5,7 +5,7 @@
 [![npm](https://img.shields.io/npm/v/agent-spreadsheet.svg)](https://www.npmjs.com/package/agent-spreadsheet)
 [![License](https://img.shields.io/crates/l/agent-spreadsheet-mcp.svg)](https://github.com/PSU3D0/agent-spreadsheet/blob/main/LICENSE)
 
-![agent-spreadsheet](https://raw.githubusercontent.com/PSU3D0/agent-spreadsheet-mcp/main/assets/banner.jpeg)
+![agent-spreadsheet](https://raw.githubusercontent.com/PSU3D0/agent-spreadsheet/main/assets/banner.jpeg)
 
 **agent-spreadsheet is the tool interaction service for agent-based spreadsheet usage.**
 
@@ -17,19 +17,28 @@ If you want an agent to work with spreadsheets like a real system instead of a s
 
 ## What this project is
 
-agent-spreadsheet ships a unified spreadsheet interaction layer across four surfaces:
+agent-spreadsheet ships a unified spreadsheet interaction layer across three surfaces:
 
 | Surface | Binary / Package | Mode | Best for |
 | --- | --- | --- | --- |
-| **CLI** | `asp` / `agent-spreadsheet` | Stateless | One-shot reads, safe edits, pipelines, CI, agent tool calls |
+| **CLI** | `agent-spreadsheet` / `asp` | Stateless | One-shot reads, safe edits, pipelines, CI, agent tool calls |
 | **MCP server** | `agent-spreadsheet-mcp` | Stateful | Multi-turn agent sessions, workbook caching, fork/recalc workflows |
-| **JS SDK** | `agent-spreadsheet-sdk` | Backend-agnostic | App integrations that can target MCP today and WASM/session backends over time |
-| **WASM runtime** | `agent-spreadsheet-wasm` | In-process | Experimental byte/session embedding for local runtimes |
+| **JS SDK** | `agent-spreadsheet-sdk` | Library | App integrations — talks to the MCP server, or runs fully in-process via the embedded WASM engine (no server required) |
+
+The WASM build (`agent-spreadsheet-wasm`) is the SDK's in-process backend, not a separate product surface: JS code targets the SDK API and the execution substrate (server vs embedded engine) is a configuration choice.
 
 Supported workbook modes:
 
 - `.xlsx` / `.xlsm` — read + write
 - `.xls` / `.xlsb` — discovery/read-oriented workflows only
+
+## Powered by Formualizer
+
+Every computed value in this stack comes from **[Formualizer](https://github.com/PSU3D0/formualizer)** — a permissively licensed (MIT/Apache-2.0) spreadsheet engine written in Rust: formula parsing, dependency-graph recalculation, 400+ Excel functions, dynamic arrays, and deterministic evaluation built for agents. No Excel COM, no headless LibreOffice.
+
+That native engine is why this project can offer what most spreadsheet tooling for agents cannot: **recalculate the actual workbook, trace which cells changed and why, and prove it** — not just read cached values or push blind edits.
+
+Embedding spreadsheet logic in your own product rather than driving workbooks as an agent? Use [Formualizer](https://github.com/PSU3D0/formualizer) directly (Rust, Python, JS/WASM).
 
 ---
 
@@ -767,11 +776,9 @@ Setting any of the timeout/limit variables (`TOOL_TIMEOUT_MS`, `MAX_RESPONSE_BYT
 
 ---
 
-## JS SDK and WASM status
+## JS SDK
 
-## `agent-spreadsheet-sdk`
-
-The JS SDK is the app-facing integration layer.
+`agent-spreadsheet-sdk` is the app-facing integration layer — the one surface JS/TS code should target.
 
 It normalizes:
 - method names
@@ -779,9 +786,9 @@ It normalizes:
 - output shapes
 - typed capability errors
 
-It is designed so an integration can target:
-- **MCP backends** now
-- **WASM/session backends** as they mature in embedded runtimes
+**Backends** are a configuration choice, not separate APIs:
+- **MCP backend** — connect to a running `agent-spreadsheet-mcp` server (shared state, forks, multi-client)
+- **Embedded WASM backend** — the engine runs in-process on workbook bytes, no server or filesystem required (browser, Node, serverless). The `agent-spreadsheet-wasm` crate in this repo is that backend's build artifact; it is an internal dependency of the SDK, not a package you consume directly.
 
 Install:
 
@@ -789,18 +796,7 @@ Install:
 npm i agent-spreadsheet-sdk
 ```
 
-## `agent-spreadsheet-wasm`
-
-The Rust crate exists in this repository and provides a WASM-facing byte/session wrapper around the shared engine.
-
-Current status:
-- the crate exists and is tested in-repo
-- it is **not yet published as a general-purpose public package**
-- the npm `agent-spreadsheet-wasm` distribution remains planned
-
-So the right framing today is:
-- **WASM is real inside the repo**
-- **public distribution and broader packaging are still evolving**
+Backend status: MCP backend is stable; the embedded WASM backend is tested in-repo and shipping through the SDK as it hardens.
 
 ---
 
