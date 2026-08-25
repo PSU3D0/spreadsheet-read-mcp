@@ -293,6 +293,15 @@ impl FormulaGraph {
                             .or_default()
                             .insert(table_str);
                     }
+                    // 3D references span multiple sheets; track them as opaque
+                    // precedent strings (same treatment as tables/external refs).
+                    ReferenceType::Cell3D { .. } | ReferenceType::Range3D { .. } => {
+                        let ref_str = reference.to_string();
+                        precedents_build
+                            .entry(address.clone())
+                            .or_default()
+                            .insert(ref_str);
+                    }
                 }
             }
         }

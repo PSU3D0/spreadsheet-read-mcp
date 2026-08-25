@@ -213,7 +213,7 @@ fn evaluate_with_optional_timeout(
         }
     });
 
-    let result = engine.evaluate_all_cancellable(cancel_flag);
+    let result = engine.evaluate_all_cancellable(cancel_flag.into());
     done_flag.store(true, Ordering::Relaxed);
     let _ = handle.join();
 

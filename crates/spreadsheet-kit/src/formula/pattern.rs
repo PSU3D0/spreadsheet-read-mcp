@@ -69,6 +69,13 @@ fn shift_refs_in_place(
                 shift_refs_in_place(arg, delta_col, delta_row, mode)?;
             }
         }
+        ASTNodeType::Call { callee, args } => {
+            shift_refs_in_place(callee, delta_col, delta_row, mode)?;
+            for arg in args.iter_mut() {
+                shift_refs_in_place(arg, delta_col, delta_row, mode)?;
+            }
+        }
+        ASTNodeType::Omitted => {}
         ASTNodeType::Array(rows) => {
             for row in rows.iter_mut() {
                 for cell in row.iter_mut() {
@@ -139,6 +146,56 @@ fn shift_reference_in_place(
         }
         // Table refs and named ranges don't shift
         ReferenceType::Table(_) | ReferenceType::NamedRange(_) | ReferenceType::External(_) => {}
+        // 3D references cross sheets; shifting rows/cols within each sheet is
+        // valid, so treat them like their 2D counterparts.
+        ReferenceType::Cell3D {
+            row,
+            col,
+            row_abs,
+            col_abs,
+            ..
+        } => {
+            if mode == RelativeMode::AbsCols {
+                *col_abs = true;
+            }
+            if mode == RelativeMode::AbsRows {
+                *row_abs = true;
+            }
+            *col = shift_u32(*col, *col_abs, delta_col)?;
+            *row = shift_u32(*row, *row_abs, delta_row)?;
+        }
+        ReferenceType::Range3D {
+            start_row,
+            start_col,
+            end_row,
+            end_col,
+            start_row_abs,
+            start_col_abs,
+            end_row_abs,
+            end_col_abs,
+            ..
+        } => {
+            if mode == RelativeMode::AbsCols {
+                if start_col.is_some() {
+                    *start_col_abs = true;
+                }
+                if end_col.is_some() {
+                    *end_col_abs = true;
+                }
+            }
+            if mode == RelativeMode::AbsRows {
+                if start_row.is_some() {
+                    *start_row_abs = true;
+                }
+                if end_row.is_some() {
+                    *end_row_abs = true;
+                }
+            }
+            *start_col = shift_opt_u32(*start_col, *start_col_abs, delta_col)?;
+            *end_col = shift_opt_u32(*end_col, *end_col_abs, delta_col)?;
+            *start_row = shift_opt_u32(*start_row, *start_row_abs, delta_row)?;
+            *end_row = shift_opt_u32(*end_row, *end_row_abs, delta_row)?;
+        }
     }
     // Update the original string to match the mutated reference
     *original = reference.to_string();
