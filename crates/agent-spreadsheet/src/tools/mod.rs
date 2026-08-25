@@ -1,6 +1,8 @@
 pub mod filters;
 #[cfg(feature = "recalc")]
 pub mod fork;
+#[cfg(feature = "recalc")]
+pub mod mutate_batch;
 pub mod param_enums;
 #[cfg(feature = "recalc")]
 pub mod rules_batch;
@@ -4265,81 +4267,80 @@ pub async fn range_values(
             .map(|(range, bounds)| {
                 let ((start_col, start_row), (end_col, end_row)) = *bounds;
                 let total_rows = (end_row - start_row + 1) as usize;
-                    let total_cols = (end_col - start_col + 1) as usize;
-                    let mut row_limit = total_rows;
-                    if let Some(page_size) = params.page_size {
-                        row_limit = row_limit.min(page_size as usize);
-                    }
+                let total_cols = (end_col - start_col + 1) as usize;
+                let mut row_limit = total_rows;
+                if let Some(page_size) = params.page_size {
+                    row_limit = row_limit.min(page_size as usize);
+                }
 
-                    let include_formula_matrix = include_formulas
-                        && matches!(format, TableOutputFormat::Json | TableOutputFormat::Dense);
-                    let mut rows = Vec::new();
-                    let mut formula_rows = include_formula_matrix.then(Vec::new);
-                    for r in start_row..=end_row {
-                        if rows.len() >= row_limit {
-                            break;
-                        }
-                        let mut row_vals = Vec::new();
-                        let mut row_formulas = include_formula_matrix.then(Vec::new);
-                        for c in start_col..=end_col {
-                            let row_index = if include_headers && r == start_row && start_row == 1 {
-                                1u32
-                            } else {
-                                r
-                            };
-                            let cell = sheet.get_cell((c, row_index));
-                            row_vals.push(cell.and_then(cell_to_value));
-                            if let Some(formulas) = row_formulas.as_mut() {
-                                formulas.push(cell.and_then(|entry| {
-                                    entry.is_formula().then(|| entry.get_formula().to_string())
-                                }));
-                            }
-                        }
-                        rows.push(row_vals);
-                        if let Some(formulas) = formula_rows.as_mut()
-                            && let Some(row) = row_formulas
-                        {
-                            formulas.push(row);
+                let include_formula_matrix = include_formulas
+                    && matches!(format, TableOutputFormat::Json | TableOutputFormat::Dense);
+                let mut rows = Vec::new();
+                let mut formula_rows = include_formula_matrix.then(Vec::new);
+                for r in start_row..=end_row {
+                    if rows.len() >= row_limit {
+                        break;
+                    }
+                    let mut row_vals = Vec::new();
+                    let mut row_formulas = include_formula_matrix.then(Vec::new);
+                    for c in start_col..=end_col {
+                        let row_index = if include_headers && r == start_row && start_row == 1 {
+                            1u32
+                        } else {
+                            r
+                        };
+                        let cell = sheet.get_cell((c, row_index));
+                        row_vals.push(cell.and_then(cell_to_value));
+                        if let Some(formulas) = row_formulas.as_mut() {
+                            formulas.push(cell.and_then(|entry| {
+                                entry.is_formula().then(|| entry.get_formula().to_string())
+                            }));
                         }
                     }
-
-                    let mut row_limit = cap_rows_by_cells(rows.len(), total_cols, max_cells);
-                    if row_limit > 0 {
-                        row_limit =
-                            cap_rows_by_payload_bytes(row_limit, max_payload_bytes, |count| {
-                                let entry = build_range_values_entry(
-                                    format,
-                                    range,
-                                    &rows[..count],
-                                    formula_rows.as_ref().map(|matrix| &matrix[..count]),
-                                    None,
-                                );
-                                serde_json::to_vec(&entry)
-                                    .map(|payload| payload.len())
-                                    .unwrap_or(usize::MAX)
-                            });
+                    rows.push(row_vals);
+                    if let Some(formulas) = formula_rows.as_mut()
+                        && let Some(row) = row_formulas
+                    {
+                        formulas.push(row);
                     }
+                }
 
-                    if row_limit < rows.len() {
-                        rows.truncate(row_limit);
-                        if let Some(formulas) = formula_rows.as_mut() {
-                            formulas.truncate(row_limit);
-                        }
+                let mut row_limit = cap_rows_by_cells(rows.len(), total_cols, max_cells);
+                if row_limit > 0 {
+                    row_limit = cap_rows_by_payload_bytes(row_limit, max_payload_bytes, |count| {
+                        let entry = build_range_values_entry(
+                            format,
+                            range,
+                            &rows[..count],
+                            formula_rows.as_ref().map(|matrix| &matrix[..count]),
+                            None,
+                        );
+                        serde_json::to_vec(&entry)
+                            .map(|payload| payload.len())
+                            .unwrap_or(usize::MAX)
+                    });
+                }
+
+                if row_limit < rows.len() {
+                    rows.truncate(row_limit);
+                    if let Some(formulas) = formula_rows.as_mut() {
+                        formulas.truncate(row_limit);
                     }
+                }
 
-                    let next_start_row = if rows.len() < total_rows {
-                        Some(start_row + rows.len() as u32)
-                    } else {
-                        None
-                    };
+                let next_start_row = if rows.len() < total_rows {
+                    Some(start_row + rows.len() as u32)
+                } else {
+                    None
+                };
 
-                    build_range_values_entry(
-                        format,
-                        range,
-                        &rows,
-                        formula_rows.as_deref(),
-                        next_start_row,
-                    )
+                build_range_values_entry(
+                    format,
+                    range,
+                    &rows,
+                    formula_rows.as_deref(),
+                    next_start_row,
+                )
             })
             .collect();
 

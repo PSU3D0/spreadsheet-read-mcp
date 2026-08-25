@@ -2,6 +2,7 @@ use crate::core::write::{normalize_object_edit, normalize_shorthand_edit};
 use crate::errors::InvalidParamsError;
 use crate::model::{FormulaParsePolicy, Warning};
 use crate::tools::fork::{CellEdit, EditBatchParams};
+use crate::tools::param_enums::BatchMode;
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -11,6 +12,9 @@ pub struct EditBatchParamsInput {
     pub fork_id: String,
     pub sheet_name: String,
     pub edits: Vec<CellEditInput>,
+    /// preview stages the edits without touching the fork; apply (default) mutates it.
+    #[serde(default)]
+    pub mode: Option<BatchMode>,
     #[serde(default)]
     pub formula_parse_policy: Option<FormulaParsePolicy>,
 }
@@ -87,6 +91,7 @@ pub fn normalize_edit_batch(
             fork_id: params.fork_id,
             sheet_name: params.sheet_name,
             edits,
+            mode: params.mode,
         },
         warnings,
     ))
