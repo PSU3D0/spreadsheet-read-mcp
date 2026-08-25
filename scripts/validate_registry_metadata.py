@@ -17,8 +17,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SERVER_JSON = REPO_ROOT / "server.json"
 DOCKERFILES = [REPO_ROOT / "Dockerfile", REPO_ROOT / "Dockerfile.full"]
-EXPECTED_SERVER_NAME = "io.github.PSU3D0/spreadsheet-mcp"
-EXPECTED_REPO = "https://github.com/PSU3D0/spreadsheet-mcp"
+EXPECTED_SERVER_NAME = "io.github.PSU3D0/agent-spreadsheet"
+EXPECTED_REPO = "https://github.com/PSU3D0/agent-spreadsheet"
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 
 
@@ -53,10 +53,10 @@ def main() -> None:
 
     for package in packages:
         if package.get("registryType") != "oci":
-            fail("spreadsheet-mcp registry package must use registryType=oci")
+            fail("agent-spreadsheet registry package must use registryType=oci")
         identifier = package.get("identifier", "")
-        if not identifier.startswith("ghcr.io/psu3d0/spreadsheet-mcp:"):
-            fail("OCI identifier must point at ghcr.io/psu3d0/spreadsheet-mcp:<tag>")
+        if not identifier.startswith("ghcr.io/psu3d0/agent-spreadsheet:"):
+            fail("OCI identifier must point at ghcr.io/psu3d0/agent-spreadsheet:<tag>")
         if package.get("transport", {}).get("type") != "stdio":
             fail("registry package transport must be stdio")
 

@@ -1,19 +1,19 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.PSU3D0/spreadsheet-mcp",
-  "title": "spreadsheet-kit MCP",
+  "name": "io.github.PSU3D0/agent-spreadsheet",
+  "title": "Agent Spreadsheet MCP",
   "description": "Agent-safe Excel workbook analysis, editing, recalc, and verification tools.",
   "version": "0.11.1",
-  "websiteUrl": "https://github.com/PSU3D0/spreadsheet-mcp",
+  "websiteUrl": "https://github.com/PSU3D0/agent-spreadsheet",
   "repository": {
-    "url": "https://github.com/PSU3D0/spreadsheet-mcp",
+    "url": "https://github.com/PSU3D0/agent-spreadsheet",
     "source": "github",
     "id": "1059818445"
   },
   "packages": [
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/psu3d0/spreadsheet-mcp:0.11.1-full",
+      "identifier": "ghcr.io/psu3d0/agent-spreadsheet:0.11.1-full",
       "runtimeHint": "docker",
       "runtimeArguments": [
         {
@@ -33,7 +33,7 @@
           "value": "{workbook_dir}:/data",
           "variables": {
             "workbook_dir": {
-              "description": "Host directory containing Excel workbooks to expose to spreadsheet-mcp",
+              "description": "Host directory containing Excel workbooks to expose to agent-spreadsheet-mcp",
               "format": "filepath",
               "isRequired": true,
               "placeholder": "/path/to/workbooks"

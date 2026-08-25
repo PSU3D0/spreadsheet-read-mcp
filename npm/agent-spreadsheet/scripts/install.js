@@ -20,7 +20,7 @@ async function main() {
 
   const localBinary = process.env.AGENT_SPREADSHEET_LOCAL_BINARY
   const base = process.env.AGENT_SPREADSHEET_DOWNLOAD_BASE_URL ||
-    "https://github.com/PSU3D0/spreadsheet-mcp/releases/download"
+    "https://github.com/PSU3D0/agent-spreadsheet/releases/download"
 
   const url = `${base}/v${version}/${asset}`
 

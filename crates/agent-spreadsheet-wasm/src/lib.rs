@@ -1,0 +1,811 @@
+use serde::{Deserialize, Serialize};
+use agent_spreadsheet::core::session::{
+    SessionApplySummary, SessionFindValueParams, SessionRangeSelection, SessionReadTableParams,
+    SessionSheetOverviewParams, SessionSheetPageParams, SessionTransformOp, WorkbookSession,
+};
+use agent_spreadsheet::model::{
+    FindValueResponse, GridPayload, NamedRangesResponse, RangeValuesEntry, ReadTableResponse,
+    SheetOverviewResponse, SheetPageFormat, SheetPageResponse, TableOutputFormat,
+    WorkbookDescription,
+};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, MutexGuard};
+
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+pub enum SessionApiError {
+    #[error("session '{session_id}' not found")]
+    SessionNotFound { session_id: String },
+    #[error("invalid argument: {message}")]
+    InvalidArgument { message: String },
+    #[error("unsupported in wasm mvp: {message}")]
+    Unsupported { message: String },
+    #[error("internal error: {message}")]
+    Internal { message: String },
+}
+
+impl SessionApiError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            SessionApiError::SessionNotFound { .. } => "SESSION_NOT_FOUND",
+            SessionApiError::InvalidArgument { .. } => "INVALID_ARGUMENT",
+            SessionApiError::Unsupported { .. } => "UNSUPPORTED",
+            SessionApiError::Internal { .. } => "INTERNAL",
+        }
+    }
+
+    fn internal(message: impl Into<String>) -> Self {
+        Self::Internal {
+            message: message.into(),
+        }
+    }
+}
+
+pub type SessionResult<T> = Result<T, SessionApiError>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionApiErrorPayload {
+    pub code: String,
+    pub message: String,
+}
+
+impl From<SessionApiError> for SessionApiErrorPayload {
+    fn from(value: SessionApiError) -> Self {
+        Self {
+            code: value.code().to_string(),
+            message: value.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RangeSelectionInput {
+    Single(String),
+    Multi(Vec<String>),
+}
+
+impl From<RangeSelectionInput> for SessionRangeSelection {
+    fn from(value: RangeSelectionInput) -> Self {
+        match value {
+            RangeSelectionInput::Single(range) => SessionRangeSelection::Single(range),
+            RangeSelectionInput::Multi(ranges) => SessionRangeSelection::Multi(ranges),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RangeValuesParams {
+    #[serde(alias = "sheet_name")]
+    pub sheet_name: String,
+    pub ranges: RangeSelectionInput,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RangeValuesResult {
+    pub sheet_name: String,
+    pub values: Vec<RangeValuesEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GridExportParams {
+    #[serde(alias = "sheet_name")]
+    pub sheet_name: String,
+    pub range: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TransformBatchOptions {
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SheetOverviewParams {
+    #[serde(alias = "sheet_name")]
+    pub sheet_name: String,
+    #[serde(default)]
+    pub max_regions: Option<u32>,
+    #[serde(default)]
+    pub max_headers: Option<u32>,
+    #[serde(default)]
+    pub include_headers: Option<bool>,
+}
+
+impl From<SheetOverviewParams> for SessionSheetOverviewParams {
+    fn from(value: SheetOverviewParams) -> Self {
+        SessionSheetOverviewParams {
+            sheet_name: value.sheet_name,
+            max_regions: value.max_regions,
+            max_headers: value.max_headers,
+            include_headers: value.include_headers,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FindValueParams {
+    pub query: String,
+    #[serde(default, alias = "sheet_name")]
+    pub sheet_name: Option<String>,
+    #[serde(default)]
+    pub case_sensitive: Option<bool>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub offset: Option<u32>,
+}
+
+impl From<FindValueParams> for SessionFindValueParams {
+    fn from(value: FindValueParams) -> Self {
+        SessionFindValueParams {
+            query: value.query,
+            sheet_name: value.sheet_name,
+            case_sensitive: value.case_sensitive.unwrap_or(false),
+            limit: value.limit.unwrap_or(50),
+            offset: value.offset,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadTableParams {
+    #[serde(default, alias = "sheet_name")]
+    pub sheet_name: Option<String>,
+    #[serde(default)]
+    pub range: Option<String>,
+    #[serde(default)]
+    pub columns: Option<Vec<String>>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub offset: Option<u32>,
+    #[serde(default)]
+    pub format: Option<TableOutputFormat>,
+    #[serde(default)]
+    pub include_headers: Option<bool>,
+    #[serde(default)]
+    pub include_types: Option<bool>,
+}
+
+impl From<ReadTableParams> for SessionReadTableParams {
+    fn from(value: ReadTableParams) -> Self {
+        SessionReadTableParams {
+            sheet_name: value.sheet_name,
+            range: value.range,
+            columns: value.columns,
+            limit: value.limit.unwrap_or(100),
+            offset: value.offset,
+            format: value.format.unwrap_or(TableOutputFormat::Csv),
+            include_headers: value.include_headers.unwrap_or(true),
+            include_types: value.include_types.unwrap_or(false),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SheetPageParams {
+    #[serde(alias = "sheet_name")]
+    pub sheet_name: String,
+    #[serde(default)]
+    pub start_row: Option<u32>,
+    #[serde(default)]
+    pub page_size: Option<u32>,
+    #[serde(default)]
+    pub columns: Option<Vec<String>>,
+    #[serde(default)]
+    pub columns_by_header: Option<Vec<String>>,
+    #[serde(default)]
+    pub include_formulas: Option<bool>,
+    #[serde(default)]
+    pub include_styles: Option<bool>,
+    #[serde(default)]
+    pub include_header: Option<bool>,
+    #[serde(default)]
+    pub format: Option<SheetPageFormat>,
+}
+
+impl From<SheetPageParams> for SessionSheetPageParams {
+    fn from(value: SheetPageParams) -> Self {
+        SessionSheetPageParams {
+            sheet_name: value.sheet_name,
+            start_row: value.start_row.unwrap_or(1),
+            page_size: value.page_size.unwrap_or(50),
+            columns: value.columns,
+            columns_by_header: value.columns_by_header,
+            include_formulas: value.include_formulas.unwrap_or(true),
+            include_styles: value.include_styles.unwrap_or(false),
+            include_header: value.include_header.unwrap_or(true),
+            format: value.format.unwrap_or_default(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct SessionStore {
+    next_id: u64,
+    sessions: HashMap<String, WorkbookSession>,
+}
+
+#[derive(Clone, Default)]
+pub struct SessionApi {
+    store: Arc<Mutex<SessionStore>>,
+}
+
+impl SessionApi {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn create_session(&self, workbook_bytes: &[u8]) -> SessionResult<String> {
+        let session = WorkbookSession::from_bytes(workbook_bytes).map_err(|err| {
+            SessionApiError::InvalidArgument {
+                message: err.to_string(),
+            }
+        })?;
+
+        let mut store = self.lock_store()?;
+        store.next_id += 1;
+        let session_id = format!("session-{:016x}", store.next_id);
+        store.sessions.insert(session_id.clone(), session);
+        Ok(session_id)
+    }
+
+    pub fn list_sheets(&self, session_id: &str) -> SessionResult<Vec<String>> {
+        let store = self.lock_store()?;
+        let session =
+            store
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| SessionApiError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+
+        Ok(session.list_sheets())
+    }
+
+    pub fn describe_workbook(&self, session_id: &str) -> SessionResult<WorkbookDescription> {
+        let store = self.lock_store()?;
+        let session =
+            store
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| SessionApiError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+
+        let mut description =
+            session
+                .describe_workbook()
+                .map_err(|err| SessionApiError::InvalidArgument {
+                    message: err.to_string(),
+                })?;
+        description.workbook_id = agent_spreadsheet::model::WorkbookId(session_id.to_string());
+        Ok(description)
+    }
+
+    pub fn named_ranges(&self, session_id: &str) -> SessionResult<NamedRangesResponse> {
+        let store = self.lock_store()?;
+        let session =
+            store
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| SessionApiError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+
+        let mut response =
+            session
+                .named_ranges()
+                .map_err(|err| SessionApiError::InvalidArgument {
+                    message: err.to_string(),
+                })?;
+        response.workbook_id = agent_spreadsheet::model::WorkbookId(session_id.to_string());
+        Ok(response)
+    }
+
+    pub fn define_name(
+        &self,
+        session_id: &str,
+        name: &str,
+        refers_to: &str,
+        scope: Option<&str>,
+        scope_sheet_name: Option<&str>,
+    ) -> SessionResult<agent_spreadsheet::model::DefineNameResponse> {
+        let mut store = self.lock_store()?;
+        let session =
+            store
+                .sessions
+                .get_mut(session_id)
+                .ok_or_else(|| SessionApiError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+
+        let mut response = session
+            .define_name(name, refers_to, scope, scope_sheet_name)
+            .map_err(|err| SessionApiError::InvalidArgument {
+                message: err.to_string(),
+            })?;
+        response.workbook_id = agent_spreadsheet::model::WorkbookId(session_id.to_string());
+        Ok(response)
+    }
+
+    pub fn update_name(
+        &self,
+        session_id: &str,
+        name: &str,
+        refers_to: Option<&str>,
+        scope: Option<&str>,
+        scope_sheet_name: Option<&str>,
+    ) -> SessionResult<agent_spreadsheet::model::UpdateNameResponse> {
+        let mut store = self.lock_store()?;
+        let session =
+            store
+                .sessions
+                .get_mut(session_id)
+                .ok_or_else(|| SessionApiError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+
+        let mut response = session
+            .update_name(name, refers_to, scope, scope_sheet_name)
+            .map_err(|err| SessionApiError::InvalidArgument {
+                message: err.to_string(),
+            })?;
+        response.workbook_id = agent_spreadsheet::model::WorkbookId(session_id.to_string());
+        Ok(response)
+    }
+
+    pub fn delete_name(
+        &self,
+        session_id: &str,
+        name: &str,
+        scope: Option<&str>,
+        scope_sheet_name: Option<&str>,
+    ) -> SessionResult<agent_spreadsheet::model::DeleteNameResponse> {
+        let mut store = self.lock_store()?;
+        let session =
+            store
+                .sessions
+                .get_mut(session_id)
+                .ok_or_else(|| SessionApiError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+
+        let mut response = session
+            .delete_name(name, scope, scope_sheet_name)
+            .map_err(|err| SessionApiError::InvalidArgument {
+                message: err.to_string(),
+            })?;
+        response.workbook_id = agent_spreadsheet::model::WorkbookId(session_id.to_string());
+        Ok(response)
+    }
+
+    pub fn sheet_overview(
+        &self,
+        session_id: &str,
+        params: SheetOverviewParams,
+    ) -> SessionResult<SheetOverviewResponse> {
+        let store = self.lock_store()?;
+        let session =
+            store
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| SessionApiError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+
+        let mut response = session.sheet_overview(params.into()).map_err(|err| {
+            SessionApiError::InvalidArgument {
+                message: err.to_string(),
+            }
+        })?;
+        response.workbook_id = agent_spreadsheet::model::WorkbookId(session_id.to_string());
+        Ok(response)
+    }
+
+    pub fn find_value(
+        &self,
+        session_id: &str,
+        params: FindValueParams,
+    ) -> SessionResult<FindValueResponse> {
+        let store = self.lock_store()?;
+        let session =
+            store
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| SessionApiError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+
+        let mut response =
+            session
+                .find_value(params.into())
+                .map_err(|err| SessionApiError::InvalidArgument {
+                    message: err.to_string(),
+                })?;
+        response.workbook_id = agent_spreadsheet::model::WorkbookId(session_id.to_string());
+        Ok(response)
+    }
+
+    pub fn read_table(
+        &self,
+        session_id: &str,
+        params: ReadTableParams,
+    ) -> SessionResult<ReadTableResponse> {
+        let store = self.lock_store()?;
+        let session =
+            store
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| SessionApiError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+
+        let mut response =
+            session
+                .read_table(params.into())
+                .map_err(|err| SessionApiError::InvalidArgument {
+                    message: err.to_string(),
+                })?;
+        response.workbook_id = agent_spreadsheet::model::WorkbookId(session_id.to_string());
+        Ok(response)
+    }
+
+    pub fn range_values(
+        &self,
+        session_id: &str,
+        params: RangeValuesParams,
+    ) -> SessionResult<RangeValuesResult> {
+        let store = self.lock_store()?;
+        let session =
+            store
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| SessionApiError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+
+        let values = session
+            .range_values(
+                &params.sheet_name,
+                SessionRangeSelection::from(params.ranges),
+            )
+            .map_err(|err| SessionApiError::InvalidArgument {
+                message: err.to_string(),
+            })?;
+
+        Ok(RangeValuesResult {
+            sheet_name: params.sheet_name,
+            values,
+        })
+    }
+
+    pub fn sheet_page(
+        &self,
+        session_id: &str,
+        params: SheetPageParams,
+    ) -> SessionResult<SheetPageResponse> {
+        let store = self.lock_store()?;
+        let session =
+            store
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| SessionApiError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+
+        let mut response =
+            session
+                .sheet_page(params.into())
+                .map_err(|err| SessionApiError::InvalidArgument {
+                    message: err.to_string(),
+                })?;
+        response.workbook_id = agent_spreadsheet::model::WorkbookId(session_id.to_string());
+        Ok(response)
+    }
+
+    pub fn grid_export(
+        &self,
+        session_id: &str,
+        params: GridExportParams,
+    ) -> SessionResult<GridPayload> {
+        let store = self.lock_store()?;
+        let session =
+            store
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| SessionApiError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+
+        session
+            .grid_export(&params.sheet_name, &params.range)
+            .map_err(|err| SessionApiError::InvalidArgument {
+                message: err.to_string(),
+            })
+    }
+
+    pub fn transform_batch(
+        &self,
+        session_id: &str,
+        ops: Vec<SessionTransformOp>,
+        options: TransformBatchOptions,
+    ) -> SessionResult<SessionApplySummary> {
+        if ops.is_empty() {
+            return Err(SessionApiError::InvalidArgument {
+                message: "at least one transform op is required".to_string(),
+            });
+        }
+
+        let mut store = self.lock_store()?;
+
+        if options.dry_run {
+            let bytes = store
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| SessionApiError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?
+                .to_bytes()
+                .map_err(|err| SessionApiError::Internal {
+                    message: err.to_string(),
+                })?;
+
+            let mut preview =
+                WorkbookSession::from_bytes(bytes).map_err(|err| SessionApiError::Internal {
+                    message: err.to_string(),
+                })?;
+
+            return preview
+                .apply_ops(&ops)
+                .map_err(|err| SessionApiError::InvalidArgument {
+                    message: err.to_string(),
+                });
+        }
+
+        let session =
+            store
+                .sessions
+                .get_mut(session_id)
+                .ok_or_else(|| SessionApiError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+
+        session
+            .apply_ops(&ops)
+            .map_err(|err| SessionApiError::InvalidArgument {
+                message: err.to_string(),
+            })
+    }
+
+    pub fn export_workbook(&self, session_id: &str) -> SessionResult<Vec<u8>> {
+        let store = self.lock_store()?;
+        let session =
+            store
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| SessionApiError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+
+        session.to_bytes().map_err(|err| SessionApiError::Internal {
+            message: err.to_string(),
+        })
+    }
+
+    pub fn dispose_session(&self, session_id: &str) -> SessionResult<bool> {
+        let mut store = self.lock_store()?;
+        Ok(store.sessions.remove(session_id).is_some())
+    }
+
+    fn lock_store(&self) -> SessionResult<MutexGuard<'_, SessionStore>> {
+        self.store
+            .lock()
+            .map_err(|_| SessionApiError::internal("session store lock poisoned"))
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+mod wasm_bindings {
+    use super::*;
+    use wasm_bindgen::prelude::*;
+
+    fn api() -> &'static SessionApi {
+        static API: std::sync::OnceLock<SessionApi> = std::sync::OnceLock::new();
+        API.get_or_init(SessionApi::new)
+    }
+
+    fn to_js_error(err: SessionApiError) -> JsValue {
+        let payload = SessionApiErrorPayload::from(err);
+        serde_wasm_bindgen::to_value(&payload)
+            .unwrap_or_else(|_| JsValue::from_str(&payload.message))
+    }
+
+    fn to_js_value<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
+        serde_wasm_bindgen::to_value(value).map_err(|err| {
+            to_js_error(SessionApiError::Internal {
+                message: format!("failed to serialize response: {err}"),
+            })
+        })
+    }
+
+    fn from_js_value<T: for<'de> Deserialize<'de>>(value: JsValue) -> SessionResult<T> {
+        serde_wasm_bindgen::from_value(value).map_err(|err| SessionApiError::InvalidArgument {
+            message: format!("invalid params: {err}"),
+        })
+    }
+
+    #[wasm_bindgen(js_name = createSession)]
+    pub fn create_session_js(workbook_bytes: Vec<u8>) -> Result<String, JsValue> {
+        api().create_session(&workbook_bytes).map_err(to_js_error)
+    }
+
+    #[wasm_bindgen(js_name = listSheets)]
+    pub fn list_sheets_js(session_id: String) -> Result<JsValue, JsValue> {
+        let sheets = api().list_sheets(&session_id).map_err(to_js_error)?;
+        to_js_value(&sheets)
+    }
+
+    #[wasm_bindgen(js_name = describeWorkbook)]
+    pub fn describe_workbook_js(session_id: String) -> Result<JsValue, JsValue> {
+        let result = api().describe_workbook(&session_id).map_err(to_js_error)?;
+        to_js_value(&result)
+    }
+
+    #[wasm_bindgen(js_name = namedRanges)]
+    pub fn named_ranges_js(session_id: String) -> Result<JsValue, JsValue> {
+        let result = api().named_ranges(&session_id).map_err(to_js_error)?;
+        to_js_value(&result)
+    }
+
+    #[wasm_bindgen(js_name = defineName)]
+    pub fn define_name_js(session_id: String, params: JsValue) -> Result<JsValue, JsValue> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct DefineNameJsParams {
+            name: String,
+            refers_to: String,
+            scope: Option<String>,
+            scope_sheet_name: Option<String>,
+        }
+        let p: DefineNameJsParams = from_js_value(params).map_err(to_js_error)?;
+        let result = api()
+            .define_name(
+                &session_id,
+                &p.name,
+                &p.refers_to,
+                p.scope.as_deref(),
+                p.scope_sheet_name.as_deref(),
+            )
+            .map_err(to_js_error)?;
+        to_js_value(&result)
+    }
+
+    #[wasm_bindgen(js_name = updateName)]
+    pub fn update_name_js(session_id: String, params: JsValue) -> Result<JsValue, JsValue> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct UpdateNameJsParams {
+            name: String,
+            refers_to: Option<String>,
+            scope: Option<String>,
+            scope_sheet_name: Option<String>,
+        }
+        let p: UpdateNameJsParams = from_js_value(params).map_err(to_js_error)?;
+        let result = api()
+            .update_name(
+                &session_id,
+                &p.name,
+                p.refers_to.as_deref(),
+                p.scope.as_deref(),
+                p.scope_sheet_name.as_deref(),
+            )
+            .map_err(to_js_error)?;
+        to_js_value(&result)
+    }
+
+    #[wasm_bindgen(js_name = deleteName)]
+    pub fn delete_name_js(session_id: String, params: JsValue) -> Result<JsValue, JsValue> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct DeleteNameJsParams {
+            name: String,
+            scope: Option<String>,
+            scope_sheet_name: Option<String>,
+        }
+        let p: DeleteNameJsParams = from_js_value(params).map_err(to_js_error)?;
+        let result = api()
+            .delete_name(
+                &session_id,
+                &p.name,
+                p.scope.as_deref(),
+                p.scope_sheet_name.as_deref(),
+            )
+            .map_err(to_js_error)?;
+        to_js_value(&result)
+    }
+
+    #[wasm_bindgen(js_name = sheetOverview)]
+    pub fn sheet_overview_js(session_id: String, params: JsValue) -> Result<JsValue, JsValue> {
+        let params: SheetOverviewParams = from_js_value(params).map_err(to_js_error)?;
+        let result = api()
+            .sheet_overview(&session_id, params)
+            .map_err(to_js_error)?;
+        to_js_value(&result)
+    }
+
+    #[wasm_bindgen(js_name = findValue)]
+    pub fn find_value_js(session_id: String, params: JsValue) -> Result<JsValue, JsValue> {
+        let params: FindValueParams = from_js_value(params).map_err(to_js_error)?;
+        let result = api().find_value(&session_id, params).map_err(to_js_error)?;
+        to_js_value(&result)
+    }
+
+    #[wasm_bindgen(js_name = readTable)]
+    pub fn read_table_js(session_id: String, params: JsValue) -> Result<JsValue, JsValue> {
+        let params: ReadTableParams = from_js_value(params).map_err(to_js_error)?;
+        let result = api().read_table(&session_id, params).map_err(to_js_error)?;
+        to_js_value(&result)
+    }
+
+    #[wasm_bindgen(js_name = rangeValues)]
+    pub fn range_values_js(session_id: String, params: JsValue) -> Result<JsValue, JsValue> {
+        let params: RangeValuesParams = from_js_value(params).map_err(to_js_error)?;
+        let result = api()
+            .range_values(&session_id, params)
+            .map_err(to_js_error)?;
+        to_js_value(&result)
+    }
+
+    #[wasm_bindgen(js_name = sheetPage)]
+    pub fn sheet_page_js(session_id: String, params: JsValue) -> Result<JsValue, JsValue> {
+        let params: SheetPageParams = from_js_value(params).map_err(to_js_error)?;
+        let result = api().sheet_page(&session_id, params).map_err(to_js_error)?;
+        to_js_value(&result)
+    }
+
+    #[wasm_bindgen(js_name = gridExport)]
+    pub fn grid_export_js(session_id: String, params: JsValue) -> Result<JsValue, JsValue> {
+        let params: GridExportParams = from_js_value(params).map_err(to_js_error)?;
+        let payload = api()
+            .grid_export(&session_id, params)
+            .map_err(to_js_error)?;
+        to_js_value(&payload)
+    }
+
+    #[wasm_bindgen(js_name = transformBatch)]
+    pub fn transform_batch_js(
+        session_id: String,
+        ops: JsValue,
+        options: Option<JsValue>,
+    ) -> Result<JsValue, JsValue> {
+        let ops: Vec<SessionTransformOp> = from_js_value(ops).map_err(to_js_error)?;
+        let options = match options {
+            Some(value) => from_js_value(value).map_err(to_js_error)?,
+            None => TransformBatchOptions::default(),
+        };
+
+        let summary = api()
+            .transform_batch(&session_id, ops, options)
+            .map_err(to_js_error)?;
+        to_js_value(&summary)
+    }
+
+    #[wasm_bindgen(js_name = exportWorkbook)]
+    pub fn export_workbook_js(session_id: String) -> Result<Vec<u8>, JsValue> {
+        api().export_workbook(&session_id).map_err(to_js_error)
+    }
+
+    #[wasm_bindgen(js_name = disposeSession)]
+    pub fn dispose_session_js(session_id: String) -> Result<bool, JsValue> {
+        api().dispose_session(&session_id).map_err(to_js_error)
+    }
+}

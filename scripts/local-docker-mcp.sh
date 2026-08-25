@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-IMAGE_NAME="spreadsheet-mcp-full:test"
+IMAGE_NAME="agent-spreadsheet-full:test"
 
 # Local test working directory (ignored by git).
 TEST_WORKDIR="${TEST_WORKDIR:-$PROJECT_ROOT/test_workdir}"

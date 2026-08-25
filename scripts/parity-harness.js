@@ -4,7 +4,7 @@ const { spawnSync } = require("node:child_process")
 const path = require("node:path")
 
 const REPO_ROOT = path.resolve(__dirname, "..")
-const SDK_TEST_PATH = path.join(REPO_ROOT, "npm/spreadsheet-kit-sdk/test/backend.test.js")
+const SDK_TEST_PATH = path.join(REPO_ROOT, "npm/agent-spreadsheet-sdk/test/backend.test.js")
 
 const CHECKS = [
   {

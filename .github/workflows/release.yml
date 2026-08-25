@@ -43,13 +43,13 @@ jobs:
           target: ${{ matrix.target }}
 
       - name: Build release binaries
-        run: cargo build --release --locked --target ${{ matrix.target }} -p spreadsheet-mcp -p spreadsheet-kit
+        run: cargo build --release --locked --target ${{ matrix.target }} -p agent-spreadsheet-mcp -p agent-spreadsheet
 
-      - name: Upload spreadsheet-mcp artifact
+      - name: Upload agent-spreadsheet-mcp artifact
         uses: actions/upload-artifact@v4
         with:
-          name: spreadsheet-mcp-${{ matrix.asset_suffix }}${{ matrix.binary_extension }}
-          path: target/${{ matrix.target }}/release/spreadsheet-mcp${{ matrix.binary_extension }}
+          name: agent-spreadsheet-mcp-${{ matrix.asset_suffix }}${{ matrix.binary_extension }}
+          path: target/${{ matrix.target }}/release/agent-spreadsheet-mcp${{ matrix.binary_extension }}
           if-no-files-found: error
 
       - name: Upload agent-spreadsheet artifact
@@ -123,7 +123,7 @@ jobs:
             local crate="$1"
             local version="$2"
             curl --silent --fail \
-              --user-agent "spreadsheet-mcp-release (github.com/PSU3D0/spreadsheet-mcp)" \
+              --user-agent "agent-spreadsheet-mcp-release (github.com/PSU3D0/agent-spreadsheet)" \
               "https://crates.io/api/v1/crates/${crate}/${version}" >/dev/null
           }
 
@@ -161,8 +161,8 @@ jobs:
             wait_for_crate "$crate" "$version"
           }
 
-          publish_and_wait crates/spreadsheet-kit/Cargo.toml spreadsheet-kit
-          publish_and_wait crates/spreadsheet-mcp/Cargo.toml spreadsheet-mcp
+          publish_and_wait crates/agent-spreadsheet/Cargo.toml agent-spreadsheet
+          publish_and_wait crates/agent-spreadsheet-mcp/Cargo.toml agent-spreadsheet-mcp
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
