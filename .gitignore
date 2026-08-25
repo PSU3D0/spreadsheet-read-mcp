@@ -17,6 +17,8 @@ tickets/**
 !tickets/44-mcp-sdk-ergonomics-next/**
 !tickets/45-headless-proof-strategic/
 !tickets/45-headless-proof-strategic/**
+!tickets/46-docs-site-and-skills-library/
+!tickets/46-docs-site-and-skills-library/**
 .venv/
 .pi
 ref-libs/
