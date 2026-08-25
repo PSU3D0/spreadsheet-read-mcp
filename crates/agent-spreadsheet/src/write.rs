@@ -39,7 +39,7 @@ pub fn normalize_shorthand_edit(entry: &str) -> Result<(CellEdit, Vec<CoreWarnin
     // downstream library panic on out-of-range addresses (e.g. ZZZZ999999).
     validate_cell_address(address)?;
 
-    let mut warnings = Vec::new();
+    let warnings = Vec::new();
 
     let rhs_trimmed = rhs_raw.trim_start();
     if let Some(stripped) = rhs_trimmed.strip_prefix('=') {
@@ -75,7 +75,7 @@ pub fn normalize_object_edit(
     }
     validate_cell_address(address)?;
 
-    let mut warnings = Vec::new();
+    let warnings = Vec::new();
     let (value, is_formula) = if let Some(formula) = formula {
         // A leading '=' on a formula field is documented, expected input —
         // stripping it silently is correct and must not warn.
