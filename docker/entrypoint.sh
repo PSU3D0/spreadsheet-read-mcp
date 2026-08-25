@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-BIN="/usr/local/bin/spreadsheet-mcp"
+BIN="/usr/local/bin/agent-spreadsheet-mcp"
 
 if [ "$(id -u)" -ne 0 ]; then
   exec "$BIN" "$@"
@@ -40,7 +40,7 @@ gid="${gid:-1000}"
 # Create a per-UID LibreOffice user installation.
 # Prefer cloning the pre-initialized template profile (created during image build),
 # which includes the full set of defaults plus our macro security settings.
-lo_profile_root="/tmp/spreadsheet-mcp-lo-profile-${uid}"
+lo_profile_root="/tmp/agent-spreadsheet-mcp-lo-profile-${uid}"
 template_root="/root/.config/libreoffice/4"
 if [ -d "${template_root}/user" ] && [ ! -f "${lo_profile_root}/user/registrymodifications.xcu" ]; then
   rm -rf "${lo_profile_root}" 2>/dev/null || true

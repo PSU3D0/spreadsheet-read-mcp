@@ -10,20 +10,20 @@ WORKDIR /build
 
 # Copy manifests first for dependency caching
 COPY Cargo.toml Cargo.lock ./
-COPY crates/spreadsheet-mcp/Cargo.toml crates/spreadsheet-mcp/Cargo.toml
-COPY crates/spreadsheet-kit/Cargo.toml crates/spreadsheet-kit/Cargo.toml
-COPY crates/spreadsheet-kit-wasm/Cargo.toml crates/spreadsheet-kit-wasm/Cargo.toml
+COPY crates/agent-agent-spreadsheet-mcp/Cargo.toml crates/agent-agent-spreadsheet-mcp/Cargo.toml
+COPY crates/agent-spreadsheet/Cargo.toml crates/agent-spreadsheet/Cargo.toml
+COPY crates/agent-spreadsheet-wasm/Cargo.toml crates/agent-spreadsheet-wasm/Cargo.toml
 
 # Create dummy src to build deps
-RUN mkdir -p crates/spreadsheet-mcp/src crates/spreadsheet-kit/src crates/spreadsheet-kit-wasm/src \
-    && echo "fn main() {}" > crates/spreadsheet-mcp/src/main.rs \
-    && echo "" > crates/spreadsheet-kit/src/lib.rs \
-    && echo "" > crates/spreadsheet-kit-wasm/src/lib.rs
+RUN mkdir -p crates/agent-agent-spreadsheet-mcp/src crates/agent-spreadsheet/src crates/agent-spreadsheet-wasm/src \
+    && echo "fn main() {}" > crates/agent-agent-spreadsheet-mcp/src/main.rs \
+    && echo "" > crates/agent-spreadsheet/src/lib.rs \
+    && echo "" > crates/agent-spreadsheet-wasm/src/lib.rs
 
 # Build dependencies only (cached unless Cargo.toml/lock change)
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
-    cargo build --release --locked --no-default-features --features recalc-libreoffice -p spreadsheet-mcp
+    cargo build --release --locked --no-default-features --features recalc-libreoffice -p agent-spreadsheet-mcp
 
 # Copy actual source
 COPY crates ./crates
@@ -31,9 +31,9 @@ COPY crates ./crates
 # Build the real binary
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
-    touch crates/spreadsheet-mcp/src/main.rs crates/spreadsheet-kit/src/lib.rs && \
-    cargo build --release --locked --no-default-features --features recalc-libreoffice -p spreadsheet-mcp && \
-    cp target/release/spreadsheet-mcp /usr/local/bin/spreadsheet-mcp
+    touch crates/agent-agent-spreadsheet-mcp/src/main.rs crates/agent-spreadsheet/src/lib.rs && \
+    cargo build --release --locked --no-default-features --features recalc-libreoffice -p agent-spreadsheet-mcp && \
+    cp target/release/agent-spreadsheet-mcp /usr/local/bin/agent-spreadsheet-mcp
 
 FROM debian:bookworm-slim
 
@@ -65,7 +65,7 @@ COPY docker/libreoffice/script.xlb /root/.config/libreoffice/4/user/basic/Standa
 COPY docker/libreoffice/registrymodifications.xcu /root/.config/libreoffice/4/user/
 
 # Binary (changes with code)
-COPY --from=builder /usr/local/bin/spreadsheet-mcp /usr/local/bin/spreadsheet-mcp
+COPY --from=builder /usr/local/bin/agent-spreadsheet-mcp /usr/local/bin/agent-spreadsheet-mcp
 
 WORKDIR /data
 
@@ -75,7 +75,7 @@ ENV SPREADSHEET_MCP_AUTO_UID_GID=true
 ENV HOME=/tmp
 ENV SPREADSHEET_MCP_RECALC_ENABLED=true
 
-LABEL org.opencontainers.image.source="https://github.com/PSU3D0/spreadsheet-mcp"
+LABEL org.opencontainers.image.source="https://github.com/PSU3D0/agent-spreadsheet"
 LABEL org.opencontainers.image.description="MCP server for spreadsheet analysis and editing (full image with LibreOffice for write/recalc)"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL io.modelcontextprotocol.server.name="io.github.PSU3D0/agent-spreadsheet"
