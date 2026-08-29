@@ -6,7 +6,6 @@ use agent_spreadsheet::operations::{
 };
 use agent_spreadsheet::runtime::stateless::StatelessRuntime;
 use agent_spreadsheet::tools::{SheetOverviewParams, sheet_overview};
-use assert_cmd::Command;
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -88,8 +87,7 @@ fn golden(name: &str, response: &Value) -> Value {
 }
 
 fn asp_op(operation: &str, payload: Value) -> Result<Value, Value> {
-    let output = Command::cargo_bin("asp")
-        .expect("asp binary")
+    let output = assert_cmd::cargo::cargo_bin_cmd!("asp")
         .args([
             "op",
             operation,
@@ -281,8 +279,7 @@ async fn canonical_semantic_errors_are_conservative_and_legacy_strings_are_uncha
 #[test]
 fn unknown_operation_precedes_json_and_binding_failures() {
     for payload in ["{", "{}"] {
-        let output = Command::cargo_bin("asp")
-            .unwrap()
+        let output = assert_cmd::cargo::cargo_bin_cmd!("asp")
             .args([
                 "op",
                 "not_an_operation",
@@ -301,8 +298,7 @@ fn unknown_operation_precedes_json_and_binding_failures() {
 
 #[test]
 fn malformed_unknown_and_missing_resource_errors_are_canonical() {
-    let malformed = Command::cargo_bin("asp")
-        .unwrap()
+    let malformed = assert_cmd::cargo::cargo_bin_cmd!("asp")
         .args([
             "op",
             "list_sheets",
@@ -316,8 +312,7 @@ fn malformed_unknown_and_missing_resource_errors_are_canonical() {
     let malformed: CanonicalErrorEnvelope = serde_json::from_slice(&malformed.stderr).unwrap();
     assert_eq!(malformed.error.code, CanonicalErrorCode::InvalidRequest);
 
-    let missing = Command::cargo_bin("asp")
-        .unwrap()
+    let missing = assert_cmd::cargo::cargo_bin_cmd!("asp")
         .args([
             "op",
             "list_sheets",
@@ -334,18 +329,15 @@ fn malformed_unknown_and_missing_resource_errors_are_canonical() {
 
 #[test]
 fn machine_mode_accepts_stdin_json_and_discovery_commands_work() {
-    Command::cargo_bin("asp")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("asp")
         .arg("operations")
         .assert()
         .success();
-    Command::cargo_bin("asp")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("asp")
         .args(["schema", "read_table"])
         .assert()
         .success();
-    Command::cargo_bin("asp")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("asp")
         .args(["op", "list_sheets", "--bind", fixture().to_str().unwrap()])
         .write_stdin("{}")
         .assert()
