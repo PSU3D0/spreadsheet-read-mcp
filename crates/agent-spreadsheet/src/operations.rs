@@ -1,4 +1,6 @@
 pub use crate::canonical_reads::*;
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+use crate::canonical_write::{WriteRequest, WriteResponseData};
 use crate::model::{
     FindValueResponse, InspectCellsResponse, NamedRangesResponse, ReadTableResponse,
     SheetListResponse, SheetOverviewResponse, SheetStatisticsResponse, WorkbookId,
@@ -81,7 +83,7 @@ impl<'de> Deserialize<'de> for ResourceId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationRisk {
     Low,
@@ -114,6 +116,7 @@ pub struct CapabilityMetadata {
 pub struct RuntimeCapabilities {
     pub workbook_discovery: bool,
     pub workbook_read: bool,
+    pub workbook_write: bool,
 }
 
 impl RuntimeCapabilities {
@@ -121,6 +124,7 @@ impl RuntimeCapabilities {
         Self {
             workbook_discovery: true,
             workbook_read: true,
+            workbook_write: cfg!(all(not(target_arch = "wasm32"), feature = "recalc")),
         }
     }
 }
@@ -191,6 +195,8 @@ pub enum SpreadsheetOperation {
     FormulaMap(FormulaMapRequest),
     ProfileTable(ProfileTableRequest),
     SheetStatistics(SheetStatisticsRequest),
+    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    Write(WriteRequest),
 }
 
 impl SpreadsheetOperation {
@@ -213,6 +219,8 @@ impl SpreadsheetOperation {
             Self::FormulaMap(_) => "formula_map",
             Self::ProfileTable(_) => "profile_table",
             Self::SheetStatistics(_) => "sheet_statistics",
+            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            Self::Write(_) => "write",
         }
     }
 
@@ -235,6 +243,8 @@ impl SpreadsheetOperation {
             Self::FormulaMap(value) => Some(&value.resource_id),
             Self::ProfileTable(value) => Some(&value.resource_id),
             Self::SheetStatistics(value) => Some(&value.resource_id),
+            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            Self::Write(value) => Some(&value.resource_id),
         }
     }
 }
@@ -262,6 +272,7 @@ pub enum CanonicalErrorCode {
     StaleCursor,
     CursorMismatch,
     RowExceedsBudget,
+    RevisionConflict,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -357,8 +368,28 @@ fn workbook_read(capabilities: &RuntimeCapabilities) -> bool {
 fn workbook_discovery(capabilities: &RuntimeCapabilities) -> bool {
     capabilities.workbook_discovery
 }
+fn workbook_write(capabilities: &RuntimeCapabilities) -> bool {
+    capabilities.workbook_write
+}
 fn read_risk(_: &SpreadsheetOperation) -> OperationRisk {
     OperationRisk::Low
+}
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+fn write_risk(operation: &SpreadsheetOperation) -> OperationRisk {
+    match operation {
+        SpreadsheetOperation::Write(request) => request
+            .ops
+            .iter()
+            .map(crate::canonical_write::WriteOp::risk)
+            .max_by_key(|risk| match risk {
+                OperationRisk::Low => 0,
+                OperationRisk::Moderate => 1,
+                OperationRisk::High => 2,
+                OperationRisk::Destructive => 3,
+            })
+            .unwrap_or(OperationRisk::Moderate),
+        _ => OperationRisk::Low,
+    }
 }
 
 fn closed_schema<T: JsonSchema>() -> Value {
@@ -540,6 +571,14 @@ schemas!(
     SheetStatisticsResponse,
     "sheet_statistics"
 );
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+schemas!(
+    write_input_schema,
+    write_output_schema,
+    WriteRequest,
+    WriteResponseData,
+    "write"
+);
 
 const WORKBOOK_DISCOVERY: CapabilityMetadata = CapabilityMetadata {
     name: "workbook_discovery",
@@ -548,6 +587,10 @@ const WORKBOOK_DISCOVERY: CapabilityMetadata = CapabilityMetadata {
 const WORKBOOK_READ: CapabilityMetadata = CapabilityMetadata {
     name: "workbook_read",
     description: "Read an already-bound workbook resource",
+};
+const WORKBOOK_WRITE: CapabilityMetadata = CapabilityMetadata {
+    name: "workbook_write",
+    description: "Mutate an isolated fork or session resource with revision CAS",
 };
 const CHEAP_READ: OperationCost = OperationCost {
     class: OperationCostClass::Cheap,
@@ -579,7 +622,7 @@ macro_rules! descriptor {
     };
 }
 
-static REGISTRY: [OperationDescriptor; 17] = [
+static REGISTRY: &[OperationDescriptor] = &[
     descriptor!(
         "list_workbooks",
         "Discover workbook resources available to this runtime.",
@@ -733,10 +776,26 @@ static REGISTRY: [OperationDescriptor; 17] = [
         sheet_statistics_input_schema,
         sheet_statistics_output_schema
     ),
+    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    OperationDescriptor {
+        name: "write",
+        schema_version: CANONICAL_SCHEMA_VERSION,
+        description: "Preview, stage, or apply an ordered batch of canonical mutations with revision CAS and atomic rollback by default.",
+        capability: WORKBOOK_WRITE,
+        capability_predicate: workbook_write,
+        cost: OperationCost {
+            class: OperationCostClass::Expensive,
+            bounded_by: &["ops", "cells", "payload_bytes"],
+        },
+        risk_ceiling: OperationRisk::Destructive,
+        risk_for: write_risk,
+        input_schema: write_input_schema,
+        output_schema: write_output_schema,
+    },
 ];
 
 pub fn operation_registry() -> &'static [OperationDescriptor] {
-    &REGISTRY
+    REGISTRY
 }
 pub fn operation_descriptor(name: &str) -> Option<&'static OperationDescriptor> {
     REGISTRY.iter().find(|descriptor| descriptor.name == name)
@@ -882,6 +941,27 @@ pub fn decode_operation(
             SheetStatisticsRequest,
             SpreadsheetOperation::SheetStatistics
         ),
+        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        "write" => {
+            let schema = write_input_schema();
+            let validator = jsonschema::validator_for(&schema).map_err(|error| {
+                CanonicalErrorEnvelope::new(
+                    CanonicalErrorCode::OperationFailed,
+                    format!("invalid generated write schema: {error}"),
+                    Some(name),
+                    None,
+                )
+            })?;
+            if let Err(error) = validator.validate(&payload) {
+                return Err(CanonicalErrorEnvelope::new(
+                    CanonicalErrorCode::InvalidRequest,
+                    error.to_string(),
+                    Some(name),
+                    Some(error.instance_path.to_string()),
+                ));
+            }
+            decode!(payload, name, WriteRequest, SpreadsheetOperation::Write)
+        }
         _ => Err(CanonicalErrorEnvelope::new(
             CanonicalErrorCode::UnknownOperation,
             format!("unknown operation '{name}'"),
@@ -914,7 +994,7 @@ pub async fn execute_operation(
         ));
     }
 
-    let (resource_id, revision_id) = if let Some(requested) = operation.resource_id() {
+    let (resource_id, mut revision_id) = if let Some(requested) = operation.resource_id() {
         let workbook = state
             .open_workbook(&requested.to_workbook_id())
             .await
@@ -1132,6 +1212,22 @@ pub async fn execute_operation(
             .await
             .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?,
         ),
+        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        SpreadsheetOperation::Write(request) => {
+            let result = crate::canonical_write::execute_write(state, request)
+                .await
+                .map_err(|error| {
+                    let message = error.to_string();
+                    let code = if message.starts_with("revision conflict:") {
+                        CanonicalErrorCode::RevisionConflict
+                    } else {
+                        CanonicalErrorCode::OperationFailed
+                    };
+                    CanonicalErrorEnvelope::new(code, message, Some(name), None)
+                })?;
+            revision_id = Some(result.revision_after.clone());
+            serde_json::to_value(result)
+        }
     }
     .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?;
     let _ = workbook_id;

@@ -4141,6 +4141,103 @@ fn apply_clone_row_band_postprocess(path: &Path, plan: &CloneRowBandPlan) -> Res
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_canonical_append_rows_to_file(
+    path: &Path,
+    sheet_name: &str,
+    region_id: Option<u32>,
+    table_name: Option<&str>,
+    footer_policy: AppendRegionFooterPolicyArg,
+    rows: Vec<Vec<Option<MatrixCell>>>,
+) -> Result<Value> {
+    let plan =
+        build_append_region_plan(path, sheet_name, region_id, table_name, footer_policy, rows)?;
+    apply_append_region_plan_to_file(path, &plan)?;
+    Ok(serde_json::json!({
+        "sheet_name": plan.sheet_name,
+        "region_id": plan.region_id,
+        "table_name": plan.table_name,
+        "insert_at_row": plan.insert_at_row,
+        "rows_appended": plan.rows_appended,
+        "columns_written": plan.columns_written,
+        "target_range": plan.target_range,
+        "warnings": plan.warnings,
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_canonical_clone_row_to_file(
+    path: &Path,
+    sheet_name: &str,
+    source_row: u32,
+    insert_at: u32,
+    count: u32,
+    expand_adjacent_sums: bool,
+    patch_targets: ClonePatchTargetsArg,
+    merge_policy: CloneMergePolicyArg,
+) -> Result<Value> {
+    let plan = build_clone_template_row_plan(
+        path,
+        sheet_name,
+        source_row,
+        None,
+        None,
+        Some(insert_at),
+        count,
+        expand_adjacent_sums,
+        patch_targets,
+        merge_policy,
+    )?;
+    apply_clone_template_row_plan_to_file(path, &plan)?;
+    Ok(serde_json::json!({
+        "sheet_name": plan.sheet_name,
+        "source_row": plan.source_row,
+        "insert_at_row": plan.insert_at_row,
+        "rows_inserted": plan.rows_inserted,
+        "inserted_row_range": plan.inserted_row_range,
+        "formula_targets": plan.formula_targets,
+        "likely_patch_targets": plan.likely_patch_targets,
+        "warnings": plan.warnings,
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_canonical_clone_row_band_to_file(
+    path: &Path,
+    sheet_name: &str,
+    source_rows: &str,
+    insert_at: u32,
+    repeat: u32,
+    expand_adjacent_sums: bool,
+    patch_targets: ClonePatchTargetsArg,
+    merge_policy: CloneMergePolicyArg,
+) -> Result<Value> {
+    let plan = build_clone_row_band_plan(
+        path,
+        sheet_name,
+        source_rows,
+        None,
+        None,
+        Some(insert_at),
+        repeat,
+        expand_adjacent_sums,
+        patch_targets,
+        merge_policy,
+    )?;
+    apply_clone_row_band_plan_to_file(path, &plan)?;
+    Ok(serde_json::json!({
+        "sheet_name": plan.sheet_name,
+        "source_row_range": plan.source_row_range,
+        "insert_at_row": plan.insert_at_row,
+        "rows_inserted": plan.rows_inserted,
+        "inserted_row_range": plan.inserted_row_range,
+        "inserted_blocks": plan.inserted_blocks,
+        "formula_targets": plan.formula_targets,
+        "likely_patch_targets": plan.likely_patch_targets,
+        "warnings": plan.warnings,
+    }))
+}
+
 fn parse_append_region_rows_from_csv(
     csv_path: &str,
     skip_header: bool,

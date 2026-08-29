@@ -170,6 +170,7 @@ fn registry_schemas_are_closed_typed_and_discriminated() {
             "formula_map",
             "profile_table",
             "sheet_statistics",
+            "write",
         ])
     );
 
@@ -177,7 +178,14 @@ fn registry_schemas_are_closed_typed_and_discriminated() {
     for descriptor in registry {
         assert_eq!(descriptor.schema_version, "1");
         assert!(descriptor.is_available(&capabilities));
-        assert_eq!(descriptor.risk_ceiling, OperationRisk::Low);
+        assert_eq!(
+            descriptor.risk_ceiling,
+            if descriptor.name == "write" {
+                OperationRisk::Destructive
+            } else {
+                OperationRisk::Low
+            }
+        );
         let input = (descriptor.input_schema)();
         let output = (descriptor.output_schema)();
         assert_object_schemas_closed(&input);

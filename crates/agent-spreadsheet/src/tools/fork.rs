@@ -5925,6 +5925,20 @@ pub async fn apply_staged_change(
 
     for op in &staged.ops {
         match op.kind.as_str() {
+            "canonical_write_bundle" => {
+                let bundle: crate::canonical_write::CanonicalStagedBundle =
+                    serde_json::from_value(op.payload.clone())
+                        .map_err(|error| anyhow!("invalid canonical write bundle: {error}"))?;
+                let applied = tokio::task::spawn_blocking({
+                    let work_path = work_path.clone();
+                    move || {
+                        crate::canonical_write::apply_bundle_atomically_to_path(&work_path, &bundle)
+                    }
+                })
+                .await??;
+                recalc_triggered = applied > 0;
+                ops_applied += applied;
+            }
             "edit_batch" => {
                 recalc_triggered = true;
                 let payload: EditBatchStagedPayload = serde_json::from_value(op.payload.clone())

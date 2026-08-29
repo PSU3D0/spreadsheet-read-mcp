@@ -1,0 +1,390 @@
+use agent_spreadsheet::canonical_write::{WriteOpStatus, WriteRequest};
+use agent_spreadsheet::operations::{CanonicalErrorCode, ResourceId, execute_operation_json};
+use agent_spreadsheet::runtime::stateless::StatelessRuntime;
+use agent_spreadsheet::utils::hash_file_sha256_hex;
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+fn fixture() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/f1/baseline.xlsx")
+}
+
+async fn forked() -> (
+    tempfile::TempDir,
+    Arc<agent_spreadsheet::state::AppState>,
+    ResourceId,
+    PathBuf,
+    String,
+) {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input.xlsx");
+    std::fs::copy(fixture(), &input).unwrap();
+    let (state, fork_id, fork_path) = StatelessRuntime
+        .open_fork_state_for_file(&input)
+        .await
+        .unwrap();
+    let resource = ResourceId::bind_workbook(&fork_id).unwrap();
+    let revision = hash_file_sha256_hex(&fork_path).unwrap();
+    (temp, state, resource, fork_path, revision)
+}
+
+fn request(
+    resource: &ResourceId,
+    revision: &str,
+    mode: &str,
+    atomic: bool,
+    ops: Vec<Value>,
+) -> Value {
+    json!({
+        "resource_id": resource.as_str(),
+        "expected_revision": revision,
+        "mode": mode,
+        "atomic": atomic,
+        "ops": ops,
+    })
+}
+
+fn set_cell(value: Value) -> Value {
+    json!({
+        "kind":"set_cells",
+        "sheet_name":"Sheet1",
+        "cells":{"A1":{"kind":"value","value":value}}
+    })
+}
+
+#[test]
+fn write_risk_is_request_aware_with_a_destructive_ceiling() {
+    let descriptor = agent_spreadsheet::operations::operation_descriptor("write").unwrap();
+    assert_eq!(
+        descriptor.risk_ceiling,
+        agent_spreadsheet::operations::OperationRisk::Destructive
+    );
+    let moderate = agent_spreadsheet::operations::decode_operation("write", json!({
+        "resource_id":"fork:fork-test","expected_revision":"r","mode":"preview","ops":[set_cell(json!(1))]
+    })).unwrap();
+    assert_eq!(
+        (descriptor.risk_for)(&moderate),
+        agent_spreadsheet::operations::OperationRisk::Moderate
+    );
+    let destructive = agent_spreadsheet::operations::decode_operation(
+        "write",
+        json!({
+            "resource_id":"fork:fork-test","expected_revision":"r","mode":"preview","ops":[
+                {"kind":"delete_rows","sheet_name":"Sheet1","start_row":1,"count":1}
+            ]
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        (descriptor.risk_for)(&destructive),
+        agent_spreadsheet::operations::OperationRisk::Destructive
+    );
+}
+
+#[tokio::test]
+async fn preview_is_pure_and_creates_no_stage() {
+    let (_temp, state, resource, fork_path, revision) = forked().await;
+    let response = execute_operation_json(
+        state.clone(),
+        "write",
+        request(
+            &resource,
+            &revision,
+            "preview",
+            true,
+            vec![set_cell(json!(42))],
+        ),
+    )
+    .await
+    .unwrap();
+
+    let output_schema = (agent_spreadsheet::operations::operation_descriptor("write")
+        .unwrap()
+        .output_schema)();
+    jsonschema::validator_for(&output_schema)
+        .unwrap()
+        .validate(&serde_json::to_value(&response).unwrap())
+        .unwrap();
+    assert_eq!(response.data["ops_previewed"], 1);
+    assert_eq!(
+        response.data["revision_before"],
+        response.data["revision_after"]
+    );
+    assert_eq!(response.data["diff"]["change_count"], 1);
+    assert_eq!(hash_file_sha256_hex(&fork_path).unwrap(), revision);
+    let fork_id = resource.as_str().strip_prefix("fork:").unwrap();
+    assert!(
+        state
+            .fork_registry()
+            .unwrap()
+            .list_staged_changes(fork_id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn atomic_failure_rolls_back_and_non_atomic_failure_is_structured() {
+    let (_temp, state, resource, fork_path, revision) = forked().await;
+    let ops = vec![
+        set_cell(json!(10)),
+        json!({"kind":"set_cells","sheet_name":"Missing","cells":{"A1":{"kind":"value","value":20}}}),
+        set_cell(json!(30)),
+    ];
+    let atomic = execute_operation_json(
+        state.clone(),
+        "write",
+        request(&resource, &revision, "apply", true, ops.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(atomic.data["rolled_back"], true);
+    assert_eq!(atomic.data["ops_applied"], 0);
+    assert_eq!(atomic.data["results"][0]["status"], "rolled_back");
+    assert_eq!(atomic.data["results"][1]["status"], "failed");
+    assert_eq!(atomic.data["results"][2]["status"], "skipped");
+    assert_eq!(hash_file_sha256_hex(&fork_path).unwrap(), revision);
+
+    let partial = execute_operation_json(
+        state,
+        "write",
+        request(&resource, &revision, "apply", false, ops),
+    )
+    .await
+    .unwrap();
+    assert_eq!(partial.data["ops_applied"], 1);
+    assert_eq!(partial.data["results"][0]["status"], "applied");
+    assert_eq!(partial.data["results"][1]["status"], "failed");
+    assert_eq!(partial.data["results"][2]["status"], "skipped");
+    assert_ne!(hash_file_sha256_hex(&fork_path).unwrap(), revision);
+}
+
+#[tokio::test]
+async fn cas_conflict_has_zero_effects() {
+    let (_temp, state, resource, fork_path, revision) = forked().await;
+    let error = execute_operation_json(
+        state,
+        "write",
+        request(&resource, "stale", "apply", true, vec![set_cell(json!(2))]),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.error.code, CanonicalErrorCode::RevisionConflict);
+    assert_eq!(hash_file_sha256_hex(&fork_path).unwrap(), revision);
+}
+
+#[tokio::test]
+async fn stage_creates_one_ordered_bundle_with_base_revision() {
+    let (_temp, state, resource, _fork_path, revision) = forked().await;
+    let response = execute_operation_json(
+        state.clone(),
+        "write",
+        request(
+            &resource,
+            &revision,
+            "stage",
+            true,
+            vec![set_cell(json!(2)), set_cell(json!(3))],
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.data["ops_staged"], 2);
+    let fork_id = resource.as_str().strip_prefix("fork:").unwrap();
+    let staged = state
+        .fork_registry()
+        .unwrap()
+        .list_staged_changes(fork_id)
+        .unwrap();
+    assert_eq!(staged.len(), 1);
+    assert_eq!(staged[0].ops.len(), 1);
+    assert_eq!(staged[0].ops[0].kind, "canonical_write_bundle");
+    assert_eq!(staged[0].ops[0].payload["base_revision"], revision);
+    assert_eq!(staged[0].ops[0].payload["ops"][0]["kind"], "set_cells");
+    assert_eq!(staged[0].ops[0].payload["ops"][1]["kind"], "set_cells");
+}
+
+#[tokio::test]
+async fn staged_bundle_applies_through_the_canonical_dispatcher_in_order() {
+    let (_temp, state, resource, fork_path, revision) = forked().await;
+    let staged = execute_operation_json(
+        state.clone(),
+        "write",
+        request(
+            &resource,
+            &revision,
+            "stage",
+            true,
+            vec![
+                set_cell(json!(2)),
+                json!({
+                    "kind":"set_cells",
+                    "sheet_name":"Sheet1",
+                    "cells":{"B1":{"kind":"formula","formula":"=A1*3"}}
+                }),
+            ],
+        ),
+    )
+    .await
+    .unwrap();
+    let change_id = staged.data["change_id"].as_str().unwrap().to_string();
+    let fork_id = resource.as_str().strip_prefix("fork:").unwrap().to_string();
+    let applied = agent_spreadsheet::tools::fork::apply_staged_change(
+        state.clone(),
+        agent_spreadsheet::tools::fork::ApplyStagedChangeParams {
+            fork_id: fork_id.clone(),
+            change_id,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(applied.ops_applied, 2);
+    assert!(
+        state
+            .fork_registry()
+            .unwrap()
+            .list_staged_changes(&fork_id)
+            .unwrap()
+            .is_empty()
+    );
+    assert_ne!(hash_file_sha256_hex(&fork_path).unwrap(), revision);
+    let book = umya_spreadsheet::reader::xlsx::read(&fork_path).unwrap();
+    let sheet = book.get_sheet_by_name("Sheet1").unwrap();
+    assert_eq!(sheet.get_value("A1"), "2");
+    assert_eq!(sheet.get_cell("B1").unwrap().get_formula(), "A1*3");
+}
+
+#[test]
+fn asp_op_write_requires_explicit_atomic_export_and_never_mutates_bind_silently() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input.xlsx");
+    let output = temp.path().join("output.xlsx");
+    std::fs::copy(fixture(), &input).unwrap();
+    let revision = hash_file_sha256_hex(&input).unwrap();
+    let payload = json!({
+        "expected_revision":revision,
+        "mode":"apply",
+        "ops":[set_cell(json!(77))]
+    });
+    let original = hash_file_sha256_hex(&input).unwrap();
+    let missing_export = assert_cmd::cargo::cargo_bin_cmd!("asp")
+        .args([
+            "op",
+            "write",
+            "--bind",
+            input.to_str().unwrap(),
+            "--json",
+            &payload.to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!missing_export.status.success());
+    assert_eq!(hash_file_sha256_hex(&input).unwrap(), original);
+
+    let applied = assert_cmd::cargo::cargo_bin_cmd!("asp")
+        .args([
+            "op",
+            "write",
+            "--bind",
+            input.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--json",
+            &payload.to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        applied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    assert_eq!(hash_file_sha256_hex(&input).unwrap(), original);
+    assert_ne!(hash_file_sha256_hex(&output).unwrap(), original);
+}
+
+#[test]
+fn every_canonical_write_kind_has_a_closed_union_fixture() {
+    let ops = vec![
+        set_cell(json!(1)),
+        json!({"kind":"clear_range","sheet_name":"Sheet1","target":{"kind":"range","range":"A1:A1"}}),
+        json!({"kind":"fill_range","sheet_name":"Sheet1","target":{"kind":"range","range":"A1:A1"},"value":"1"}),
+        json!({"kind":"replace_in_range","sheet_name":"Sheet1","target":{"kind":"range","range":"A1:A1"},"find":"a","replace":"b"}),
+        json!({"kind":"write_matrix","sheet_name":"Sheet1","anchor":"A1","rows":[[{"v":1}]]}),
+        json!({"kind":"merge_cells","sheet_name":"Sheet1","target_range":"A1:B1"}),
+        json!({"kind":"unmerge_cells","sheet_name":"Sheet1","target_range":"A1:B1"}),
+        json!({"kind":"insert_rows","sheet_name":"Sheet1","at_row":2,"count":1}),
+        json!({"kind":"delete_rows","sheet_name":"Sheet1","start_row":2,"count":1}),
+        json!({"kind":"insert_cols","sheet_name":"Sheet1","at_col":"B","count":1}),
+        json!({"kind":"delete_cols","sheet_name":"Sheet1","start_col":"B","count":1}),
+        json!({"kind":"rename_sheet","old_name":"Sheet1","new_name":"Data"}),
+        json!({"kind":"create_sheet","name":"Data"}),
+        json!({"kind":"delete_sheet","name":"Data"}),
+        json!({"kind":"copy_range","sheet_name":"Sheet1","src_range":"A1:A1","dest_anchor":"B1"}),
+        json!({"kind":"move_range","sheet_name":"Sheet1","src_range":"A1:A1","dest_anchor":"B1"}),
+        json!({"kind":"style","sheet_name":"Sheet1","target":{"kind":"range","range":"A1:A1"},"patch":{"font":{"bold":true}}}),
+        json!({"kind":"column_size","sheet_name":"Sheet1","target":{"kind":"columns","range":"A:A"},"size":{"kind":"width","width_chars":12.0}}),
+        json!({"kind":"freeze_panes","sheet_name":"Sheet1","freeze_rows":1}),
+        json!({"kind":"set_zoom","sheet_name":"Sheet1","zoom_percent":100}),
+        json!({"kind":"set_gridlines","sheet_name":"Sheet1","show":true}),
+        json!({"kind":"set_page_margins","sheet_name":"Sheet1","left":1.0,"right":1.0,"top":1.0,"bottom":1.0}),
+        json!({"kind":"set_page_setup","sheet_name":"Sheet1","orientation":"portrait"}),
+        json!({"kind":"set_print_area","sheet_name":"Sheet1","range":"A1:B2"}),
+        json!({"kind":"set_page_breaks","sheet_name":"Sheet1"}),
+        json!({"kind":"set_data_validation","sheet_name":"Sheet1","target_range":"A1:A1","validation":{"kind":"list","formula1":"\"a,b\""}}),
+        json!({"kind":"add_conditional_format","sheet_name":"Sheet1","target_range":"A1:A1","rule":{"kind":"expression","formula":"A1>0"}}),
+        json!({"kind":"set_conditional_format","sheet_name":"Sheet1","target_range":"A1:A1","rule":{"kind":"expression","formula":"A1>0"}}),
+        json!({"kind":"clear_conditional_formats","sheet_name":"Sheet1","target_range":"A1:A1"}),
+        json!({"kind":"formula_pattern","sheet_name":"Sheet1","target_range":"A1:A2","anchor_cell":"A1","base_formula":"=B1"}),
+        json!({"kind":"replace_in_formulas","sheet_name":"Sheet1","find":"SUM","replace":"AVERAGE"}),
+        json!({"kind":"define_name","name":"Rate","refers_to":"Sheet1!$A$1","scope":"workbook"}),
+        json!({"kind":"update_name","name":"Rate","refers_to":"Sheet1!$A$2"}),
+        json!({"kind":"delete_name","name":"Rate"}),
+        json!({"kind":"import_grid","sheet_name":"Sheet1","anchor":"A1","grid":{"sheet":"Sheet1","anchor":"A1","rows":[]}}),
+        json!({"kind":"import_csv","sheet_name":"Sheet1","anchor":"A1","csv":"a,b\n1,2\n"}),
+        json!({"kind":"append_rows","sheet_name":"Sheet1","region_id":0,"rows":[[{"v":"x"}]]}),
+        json!({"kind":"clone_row","sheet_name":"Sheet1","source_row":1,"insert_at":2}),
+        json!({"kind":"clone_row_band","sheet_name":"Sheet1","source_rows":"1:2","insert_at":3}),
+    ];
+    let expected = ops
+        .iter()
+        .map(|op| op["kind"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    let instance = json!({
+        "resource_id":"fork:fork-test",
+        "expected_revision":"revision",
+        "mode":"preview",
+        "ops":ops,
+    });
+    let parsed: WriteRequest = serde_json::from_value(instance.clone()).unwrap();
+    let input_schema = (agent_spreadsheet::operations::operation_descriptor("write")
+        .unwrap()
+        .input_schema)();
+    jsonschema::validator_for(&input_schema)
+        .unwrap()
+        .validate(&instance)
+        .unwrap();
+    assert_eq!(
+        parsed.ops.iter().map(|op| op.kind()).collect::<Vec<_>>(),
+        expected
+    );
+    assert!(
+        serde_json::from_value::<WriteRequest>(json!({
+            "resource_id":"fork:fork-test",
+            "expected_revision":"revision",
+            "mode":"preview",
+            "ops":[{"kind":"not_a_write"}]
+        }))
+        .is_err()
+    );
+    let exact_error = agent_spreadsheet::operations::decode_operation("write", json!({
+        "resource_id":"fork:fork-test",
+        "expected_revision":"revision",
+        "mode":"preview",
+        "ops":[{"kind":"fill_range","sheet_name":"Sheet1","target":{"kind":"range","range":"A1"},"value":"1","unexpected":true}]
+    }))
+    .unwrap_err();
+    assert_eq!(exact_error.error.code, CanonicalErrorCode::InvalidRequest);
+    let _ = WriteOpStatus::Previewed;
+}

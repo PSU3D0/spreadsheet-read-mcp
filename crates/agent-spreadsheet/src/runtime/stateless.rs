@@ -63,6 +63,36 @@ impl StatelessRuntime {
         Ok((state, workbook_id))
     }
 
+    #[cfg(feature = "recalc")]
+    pub async fn open_fork_state_for_file(
+        &self,
+        path: &Path,
+    ) -> Result<(Arc<AppState>, WorkbookId, PathBuf)> {
+        let absolute = self.normalize_existing_file(path)?;
+        let mut config = self.build_cli_config(&absolute);
+        config.recalc_enabled = true;
+        let state = Arc::new(AppState::new(Arc::new(config)));
+        let workbook_id = state
+            .list_workbooks(WorkbookFilter::default())?
+            .workbooks
+            .first()
+            .map(|entry| entry.workbook_id.clone())
+            .ok_or_else(|| anyhow!("no workbook found at '{}'", absolute.display()))?;
+        let fork = crate::tools::fork::create_fork(
+            state.clone(),
+            crate::tools::fork::CreateForkParams {
+                workbook_or_fork_id: workbook_id,
+            },
+        )
+        .await?;
+        let fork_id = WorkbookId(fork.fork_id);
+        let work_path = state
+            .fork_registry()
+            .and_then(|registry| registry.get_fork_path(fork_id.as_str()))
+            .ok_or_else(|| anyhow!("ephemeral fork path was not created"))?;
+        Ok((state, fork_id, work_path))
+    }
+
     fn build_cli_config(&self, file: &Path) -> ServerConfig {
         let workspace_root = file
             .parent()
