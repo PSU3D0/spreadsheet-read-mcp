@@ -75,11 +75,17 @@ Primary adapter boundary:
 - Every mutation uses revision CAS.
 - Every write op kind passes through one dispatcher for preview/apply/stage.
 
+## Additive registry status
+
+The first dispatcher slice registers `list_sheets`, `sheet_overview`, and `read_table` in `crates/agent-spreadsheet/src/operations.rs`. Existing CLI/MCP names remain registered unchanged and project the dispatcher data payload to their legacy response types. `asp op` owns path binding and never forwards `--bind` into a canonical request.
+
+No default MCP router change is authorized by this foundation. Later operations must add descriptor, schema, policy, decode/error, and cross-surface parity coverage before a compatibility wrapper is rerouted.
+
 ## Enforcement hooks
 
 - Canonical design: `docs/architecture/canonical-operation-surface.md`
-- Capability inventory: `docs/architecture/surface-capability-matrix.md`
-- Drift check: `scripts/check_surface_matrix_drift.py`
+- Capability inventory and migration status: `docs/architecture/surface-capability-matrix.md`
+- CLI/MCP catalog drift check (including `asp operations` and `asp op`): `scripts/check_surface_matrix_drift.py`
 - Local enforcement:
   - `python3 scripts/check_surface_matrix_drift.py`
   - `cargo test -p agent-spreadsheet surface_matrix_drift_check`

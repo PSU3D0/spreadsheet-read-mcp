@@ -1,6 +1,6 @@
 # Surface Capability Matrix (CLI / MCP / WASM / SDK)
 
-Status: draft (Tranche 35 foundation with drift checks)
+Status: active migration baseline (canonical registry Wave 2 additive foundation)
 Owner: Tranche 35 (tickets/35-js-surface-migration)
 
 This matrix is the planning baseline for cross-surface migration.
@@ -72,7 +72,9 @@ Boundary contract: `docs/architecture/surface-boundary-rules.md`
 | `write clone-row-band` | _(none today)_ | CLI_ONLY | `adapter-cli.clone_row_band` | n/a | Preview-first contiguous row-band clone helper that inserts repeated blocks, reports formula/patch targets, and warns on merge-boundary conflicts | `crates/agent-spreadsheet/src/cli/commands/write.rs::clone_row_band` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
 | `verify diff` | `get_changeset` (partial overlap) | SHARED_PARTIAL | `core.diff.diff_workbooks` | later | CLI is file-vs-file; MCP is fork-oriented; CLI now projects grouped summary buckets and can suppress `recalc_result` noise | `crates/agent-spreadsheet/src/cli/commands/diff.rs::diff` | `crates/agent-spreadsheet/tests/diff_engine.rs` |
 | `analyze ref-impact` | _(none today)_ | CLI_ONLY | `core.analysis.structure_impact` | n/a | Read-only structural impact preflight; uses same engine as `structure-batch --dry-run --impact-report` | `crates/agent-spreadsheet/src/cli/commands/write.rs::check_ref_impact` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
-| `schema` | _(none today)_ | CLI_ONLY | `adapter-cli.discoverability.schema` | n/a | Global schema discovery for batch write payloads and session op payloads | `crates/agent-spreadsheet/src/cli/mod.rs::run_schema_command` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
+| `operations` | _(registry discovery)_ | ALL | `operations.operation_registry` | mvp | Lists canonical operation policy/capability metadata; initial additive set is list_sheets, sheet_overview, read_table | `crates/agent-spreadsheet/src/operations.rs::operation_registry` | `crates/agent-spreadsheet/tests/canonical_operations.rs` |
+| `op` | _(canonical dispatcher)_ | ALL | `operations.execute_operation` | mvp | Machine JSON mode; CLI binds --bind path to an ephemeral resource and injects resource_id | `crates/agent-spreadsheet/src/cli/mod.rs::run_machine_operation` | `crates/agent-spreadsheet/tests/canonical_operations.rs` |
+| `schema` | _(none today)_ | CLI_ONLY | `adapter-cli.discoverability.schema` | n/a | Global schema discovery for canonical operations, batch write payloads, and session op payloads | `crates/agent-spreadsheet/src/cli/mod.rs::run_schema_command` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
 | `example` | _(none today)_ | CLI_ONLY | `adapter-cli.discoverability.example` | n/a | Global example discovery for batch write payloads and session op payloads | `crates/agent-spreadsheet/src/cli/mod.rs::run_example_command` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
 | `session` | _(none today)_ | CLI_ONLY | `core.session.*` | n/a | Event-sourced session management (start, log, branches, switch, checkout, undo, redo, fork, op, apply, materialize) | `crates/agent-spreadsheet/src/cli/commands/session.rs` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
 
@@ -141,7 +143,21 @@ Boundary contract: `docs/architecture/surface-boundary-rules.md`
 
 ---
 
-## C) Enforcement hooks
+## C) Canonical registry migration status
+
+Wave 2 adds the registry and dispatcher without changing the default MCP tool list. The initial registered operations are `list_sheets`, `sheet_overview`, and `read_table`.
+
+| Canonical operation | Existing CLI projection | Existing MCP projection | Dispatcher implementation | Capability | Risk ceiling | Parity owner |
+|---|---|---|---|---|---|---|
+| `list_sheets` | `read sheets` | `list_sheets` | `crates/agent-spreadsheet/src/operations.rs::execute_operation` -> `tools::list_sheets_semantic` | `workbook_read` | low | `crates/agent-spreadsheet/tests/canonical_operations.rs` |
+| `sheet_overview` | `read overview` | `sheet_overview` | `crates/agent-spreadsheet/src/operations.rs::execute_operation` -> `tools::sheet_overview_semantic` | `workbook_read` | low | `crates/agent-spreadsheet/tests/canonical_operations.rs` |
+| `read_table` | `read table` | `read_table` | `crates/agent-spreadsheet/src/operations.rs::execute_operation` -> `tools::read_table_semantic` | `workbook_read` | low | `crates/agent-spreadsheet/tests/canonical_operations.rs` |
+
+Compatibility wrappers project `CanonicalResponse.data` back to their pre-existing response types. Canonical machine mode emits the stable versioned envelope unchanged. Registry schemas and structured errors are closed; resource paths remain confined to the CLI binding adapter.
+
+---
+
+## D) Enforcement hooks
 
 - Boundary contract (non-negotiable): `docs/architecture/surface-boundary-rules.md`
 - Matrix drift checker: `scripts/check_surface_matrix_drift.py`
