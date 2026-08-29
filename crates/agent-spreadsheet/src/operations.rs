@@ -395,8 +395,97 @@ fn write_risk(operation: &SpreadsheetOperation) -> OperationRisk {
 
 fn closed_schema<T: JsonSchema>() -> Value {
     let mut schema = serde_json::to_value(schema_for!(T)).expect("schema serializes");
+    let definitions = schema
+        .get("$defs")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    inline_composed_object_refs(&mut schema, &definitions);
     close_object_schemas(&mut schema);
     schema
+}
+// Inline compatible local object refs so closing the branch sees both the tagged
+// sibling fields and the referenced fields as one evaluated property set.
+fn inline_composed_object_refs(value: &mut Value, definitions: &serde_json::Map<String, Value>) {
+    match value {
+        Value::Object(object) => {
+            let referenced = object
+                .get("$ref")
+                .and_then(Value::as_str)
+                .and_then(|reference| reference.strip_prefix("#/$defs/"))
+                .and_then(|name| definitions.get(name))
+                .and_then(Value::as_object)
+                .filter(|_| object.contains_key("properties"))
+                .cloned();
+            if let Some(mut referenced) = referenced {
+                let compatible_properties = referenced
+                    .get("properties")
+                    .and_then(Value::as_object)
+                    .is_none_or(|referenced_properties| {
+                        object
+                            .get("properties")
+                            .and_then(Value::as_object)
+                            .is_none_or(|local_properties| {
+                                referenced_properties.iter().all(|(name, schema)| {
+                                    local_properties
+                                        .get(name)
+                                        .is_none_or(|local_schema| local_schema == schema)
+                                })
+                            })
+                    });
+                let compatible = compatible_properties
+                    && referenced.iter().all(|(key, referenced_value)| {
+                        matches!(key.as_str(), "properties" | "required")
+                            || object
+                                .get(key)
+                                .is_none_or(|local_value| local_value == referenced_value)
+                    });
+                if compatible {
+                    object.remove("$ref");
+                    if let Some(referenced_properties) = referenced
+                        .remove("properties")
+                        .and_then(|properties| properties.as_object().cloned())
+                    {
+                        let local_properties = object
+                            .entry("properties")
+                            .or_insert_with(|| Value::Object(serde_json::Map::new()))
+                            .as_object_mut()
+                            .expect("composed object properties");
+                        for (name, schema) in referenced_properties {
+                            local_properties.entry(name).or_insert(schema);
+                        }
+                    }
+                    if let Some(referenced_required) = referenced
+                        .remove("required")
+                        .and_then(|required| required.as_array().cloned())
+                    {
+                        let local_required = object
+                            .entry("required")
+                            .or_insert_with(|| Value::Array(Vec::new()))
+                            .as_array_mut()
+                            .expect("composed object required properties");
+                        for required in referenced_required {
+                            if !local_required.contains(&required) {
+                                local_required.push(required);
+                            }
+                        }
+                    }
+                    for (key, referenced_value) in referenced {
+                        object.entry(key).or_insert(referenced_value);
+                    }
+                }
+            }
+            for child in object.values_mut() {
+                inline_composed_object_refs(child, definitions);
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                inline_composed_object_refs(child, definitions);
+            }
+        }
+        _ => {}
+    }
 }
 fn close_object_schemas(value: &mut Value) {
     match value {
@@ -404,9 +493,13 @@ fn close_object_schemas(value: &mut Value) {
             if object.get("type").and_then(Value::as_str) == Some("object")
                 || object.contains_key("properties")
             {
-                object
-                    .entry("additionalProperties")
-                    .or_insert(Value::Bool(false));
+                let closure_keyword = if object.contains_key("$ref") || object.contains_key("allOf")
+                {
+                    "unevaluatedProperties"
+                } else {
+                    "additionalProperties"
+                };
+                object.entry(closure_keyword).or_insert(Value::Bool(false));
             }
             for child in object.values_mut() {
                 close_object_schemas(child);

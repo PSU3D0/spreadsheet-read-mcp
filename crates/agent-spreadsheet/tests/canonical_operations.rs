@@ -39,9 +39,9 @@ fn assert_object_schemas_closed(schema: &Value) {
     match schema {
         Value::Object(object) => {
             if object.contains_key("properties") {
-                assert_eq!(
-                    object.get("additionalProperties"),
-                    Some(&Value::Bool(false)),
+                assert!(
+                    object.get("additionalProperties") == Some(&Value::Bool(false))
+                        || object.get("unevaluatedProperties") == Some(&Value::Bool(false)),
                     "open structured object schema: {object:?}"
                 );
             }
@@ -188,6 +188,8 @@ fn registry_schemas_are_closed_typed_and_discriminated() {
         );
         let input = (descriptor.input_schema)();
         let output = (descriptor.output_schema)();
+        jsonschema::validator_for(&input).expect("valid generated input JSON Schema");
+        jsonschema::validator_for(&output).expect("valid generated output JSON Schema");
         assert_object_schemas_closed(&input);
         assert_object_schemas_closed(&output);
         if descriptor.name == "list_workbooks" {
@@ -206,6 +208,7 @@ fn registry_schemas_are_closed_typed_and_discriminated() {
         assert_eq!(output["properties"]["operation"]["const"], descriptor.name);
     }
     let error = canonical_error_schema();
+    jsonschema::validator_for(&error).expect("valid generated error JSON Schema");
     assert_object_schemas_closed(&error);
     assert_eq!(error["properties"]["schema_version"]["const"], "1");
 }

@@ -5,6 +5,7 @@ use agent_spreadsheet::utils::hash_file_sha256_hex;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use umya_spreadsheet::EnumTrait;
 
 fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/f1/baseline.xlsx")
@@ -53,6 +54,46 @@ fn set_cell(value: Value) -> Value {
     })
 }
 
+fn run_asp_write(bind: &Path, payload: &Value, output: Option<&Path>) -> std::process::Output {
+    let mut command = assert_cmd::cargo::cargo_bin_cmd!("asp");
+    command
+        .args(["op", "write", "--bind"])
+        .arg(bind)
+        .args(["--json", &payload.to_string()]);
+    if let Some(output) = output {
+        command.arg("--output").arg(output);
+    }
+    command.output().expect("run asp op write")
+}
+
+fn fill_ops() -> Vec<Value> {
+    vec![
+        json!({
+            "kind":"style",
+            "sheet_name":"Sheet1",
+            "target":{"kind":"range","range":"A10"},
+            "patch":{"fill":{
+                "kind":"pattern",
+                "pattern_type":"solid",
+                "foreground_color":"FFFF0000"
+            }}
+        }),
+        json!({
+            "kind":"style",
+            "sheet_name":"Sheet1",
+            "target":{"kind":"range","range":"B10"},
+            "patch":{"fill":{
+                "kind":"gradient",
+                "degree":45.0,
+                "stops":[
+                    {"position":0.0,"color":"FFFF0000"},
+                    {"position":1.0,"color":"FF00FF00"}
+                ]
+            }}
+        }),
+    ]
+}
+
 #[test]
 fn write_risk_is_request_aware_with_a_destructive_ceiling() {
     let descriptor = agent_spreadsheet::operations::operation_descriptor("write").unwrap();
@@ -79,6 +120,128 @@ fn write_risk_is_request_aware_with_a_destructive_ceiling() {
     assert_eq!(
         (descriptor.risk_for)(&destructive),
         agent_spreadsheet::operations::OperationRisk::Destructive
+    );
+}
+
+#[test]
+fn write_schema_composes_tagged_fill_refs_without_reopening_them() {
+    let schema = (agent_spreadsheet::operations::operation_descriptor("write")
+        .unwrap()
+        .input_schema)();
+    let validator = jsonschema::validator_for(&schema).expect("valid write schema");
+    let valid = json!({
+        "resource_id":"fork:fork-test",
+        "expected_revision":"revision",
+        "mode":"preview",
+        "ops":fill_ops(),
+    });
+    validator.validate(&valid).unwrap();
+
+    let fill_variants = schema["$defs"]["FillPatch"]["oneOf"]
+        .as_array()
+        .expect("fill variants");
+    assert!(fill_variants.iter().all(|variant| {
+        variant["additionalProperties"] == Value::Bool(false)
+            && variant.get("$ref").is_none()
+            && variant["properties"].as_object().unwrap().len() > 1
+    }));
+
+    let mut unknown = valid;
+    unknown["ops"][0]["patch"]["fill"]["unexpected"] = Value::Bool(true);
+    assert!(validator.validate(&unknown).is_err());
+}
+
+#[test]
+fn asp_op_write_previews_and_applies_non_empty_pattern_and_gradient_fills() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input.xlsx");
+    let applied_path = temp.path().join("applied.xlsx");
+    std::fs::copy(fixture(), &input).unwrap();
+    let revision = hash_file_sha256_hex(&input).unwrap();
+
+    let preview_payload = json!({
+        "expected_revision":revision,
+        "mode":"preview",
+        "ops":fill_ops(),
+    });
+    let preview = run_asp_write(&input, &preview_payload, None);
+    assert!(
+        preview.status.success(),
+        "{}",
+        String::from_utf8_lossy(&preview.stderr)
+    );
+    let preview_json: Value = serde_json::from_slice(&preview.stdout).unwrap();
+    assert_eq!(preview_json["data"]["status"], "previewed");
+    assert_eq!(preview_json["data"]["ops_previewed"], 2);
+    assert_eq!(hash_file_sha256_hex(&input).unwrap(), revision);
+
+    let apply_payload = json!({
+        "expected_revision":revision,
+        "mode":"apply",
+        "ops":fill_ops(),
+    });
+    let apply = run_asp_write(&input, &apply_payload, Some(&applied_path));
+    assert!(
+        apply.status.success(),
+        "{}",
+        String::from_utf8_lossy(&apply.stderr)
+    );
+    let apply_json: Value = serde_json::from_slice(&apply.stdout).unwrap();
+    assert_eq!(apply_json["data"]["status"], "applied");
+    assert_eq!(apply_json["data"]["ops_applied"], 2);
+
+    let book = umya_spreadsheet::reader::xlsx::read(&applied_path).unwrap();
+    let sheet = book.get_sheet_by_name("Sheet1").unwrap();
+    let pattern = sheet
+        .get_style("A10")
+        .get_fill()
+        .expect("fill")
+        .get_pattern_fill()
+        .expect("pattern fill");
+    assert_eq!(pattern.get_pattern_type().get_value_string(), "solid");
+    assert_eq!(
+        pattern.get_foreground_color().unwrap().get_argb(),
+        "FFFF0000"
+    );
+    let gradient = sheet
+        .get_style("B10")
+        .get_fill()
+        .expect("fill")
+        .get_gradient_fill()
+        .expect("gradient fill");
+    assert_eq!(*gradient.get_degree(), 45.0);
+    assert_eq!(gradient.get_gradient_stop().len(), 2);
+}
+
+#[test]
+fn asp_op_write_rejects_unknown_pattern_fill_fields() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input.xlsx");
+    std::fs::copy(fixture(), &input).unwrap();
+    let payload = json!({
+        "expected_revision":hash_file_sha256_hex(&input).unwrap(),
+        "mode":"preview",
+        "ops":[{
+            "kind":"style",
+            "sheet_name":"Sheet1",
+            "target":{"kind":"range","range":"A10"},
+            "patch":{"fill":{
+                "kind":"pattern",
+                "pattern_type":"solid",
+                "foreground_color":"FFFF0000",
+                "unexpected":true
+            }}
+        }],
+    });
+    let output = run_asp_write(&input, &payload, None);
+    assert!(!output.status.success());
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "INVALID_REQUEST");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unexpected")
     );
 }
 
