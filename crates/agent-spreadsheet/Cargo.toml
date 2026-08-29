@@ -11,6 +11,28 @@ readme = "README.md"
 keywords = ["spreadsheet", "xlsx", "automation", "agent", "mcp"]
 categories = ["data-structures", "parser-implementations"]
 
+[package.metadata.binstall]
+# Archives (>= v0.13) contain both declared bins: agent-spreadsheet and asp.
+pkg-fmt = "tgz"
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/agent-spreadsheet-linux-x86_64.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/agent-spreadsheet-linux-aarch64.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/agent-spreadsheet-macos-x86_64.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/agent-spreadsheet-macos-aarch64.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+pkg-url = "{ repo }/releases/download/v{ version }/agent-spreadsheet-windows-x86_64.zip"
+
+
 [[bin]]
 name = "agent-spreadsheet"
 path = "src/bin/agent-spreadsheet.rs"

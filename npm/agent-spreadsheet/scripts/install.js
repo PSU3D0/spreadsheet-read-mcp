@@ -48,6 +48,9 @@ function supportedTriple(platform, arch) {
   if (platform === "linux" && arch === "x64") {
     return { asset: "linux-x86_64", dest: "agent-spreadsheet" }
   }
+  if (platform === "linux" && arch === "arm64") {
+    return { asset: "linux-aarch64", dest: "agent-spreadsheet" }
+  }
   if (platform === "darwin" && arch === "x64") {
     return { asset: "macos-x86_64", dest: "agent-spreadsheet" }
   }
