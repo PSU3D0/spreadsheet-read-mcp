@@ -1210,12 +1210,12 @@ pub async fn execute_read_cells(
             let response = tools::sheet_page_with_header_row(
                 state.clone(),
                 tools::SheetPageParams {
-                    workbook_or_fork_id: workbook_id,
+                    workbook_or_fork_id: workbook_id.clone(),
                     sheet_name: request.sheet_name.clone(),
                     start_row: current_row,
                     page_size: remaining,
-                    columns: letters,
-                    columns_by_header: headers,
+                    columns: letters.clone(),
+                    columns_by_header: headers.clone(),
                     include_formulas,
                     include_styles,
                     include_header: include_header.unwrap_or(true),
@@ -1233,7 +1233,36 @@ pub async fn execute_read_cells(
                 )
             })?;
             header = response.header_row.clone();
-            let snapshots = response.rows.clone();
+            let mut snapshots = response.rows.clone();
+            if snapshots.is_empty() && (include_formulas || include_styles) {
+                let details = tools::sheet_page_with_header_row(
+                    state.clone(),
+                    tools::SheetPageParams {
+                        workbook_or_fork_id: workbook_id,
+                        sheet_name: request.sheet_name.clone(),
+                        start_row: current_row,
+                        page_size: remaining,
+                        columns: letters,
+                        columns_by_header: headers,
+                        include_formulas,
+                        include_styles,
+                        include_header: include_header.unwrap_or(true),
+                        format: Some(SheetPageFormat::Full),
+                    },
+                    header_row,
+                )
+                .await
+                .map_err(|error| {
+                    canonical_error(
+                        CanonicalErrorCode::OperationFailed,
+                        operation,
+                        error.to_string(),
+                        None,
+                    )
+                })?;
+                header = details.header_row;
+                snapshots = details.rows;
+            }
             let encoded_row_count = response
                 .compact
                 .as_ref()

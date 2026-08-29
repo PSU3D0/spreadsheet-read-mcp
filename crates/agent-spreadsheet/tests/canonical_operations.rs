@@ -604,6 +604,23 @@ async fn row_header_projection_and_volatile_groups_preserve_canonical_capabiliti
         "B3"
     );
 
+    let compact_details = execute_operation_json(
+        state.clone(),
+        "read_cells",
+        json!({
+            "resource_id":resource_id.as_str(), "sheet_name":"Sheet1",
+            "selection":{"kind":"rows","start_row":3,"row_count":1,"columns":{"kind":"letters","values":["C"]}},
+            "format":"compact", "include_formulas":true, "include_styles":true
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        compact_details.data["blocks"][0]["payload"]["snapshots"][0]["cells"][0]["formula"],
+        "OFFSET(A3,0,0)"
+    );
+    assert!(compact_details.data["blocks"][0]["payload"]["compact"].is_object());
+
     let grid = execute_operation_json(
         state.clone(),
         "export_grid",
