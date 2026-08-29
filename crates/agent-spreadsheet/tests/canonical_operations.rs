@@ -107,12 +107,16 @@ fn golden(name: &str, response: &Value) -> Value {
 }
 
 fn asp_op(operation: &str, payload: Value) -> Result<Value, Value> {
+    asp_op_bound(operation, payload, &fixture())
+}
+
+fn asp_op_bound(operation: &str, payload: Value, path: &Path) -> Result<Value, Value> {
     let output = assert_cmd::cargo::cargo_bin_cmd!("asp")
         .args([
             "op",
             operation,
             "--bind",
-            fixture().to_str().expect("utf8 fixture"),
+            path.to_str().expect("utf8 fixture"),
             "--json",
             &payload.to_string(),
         ])
@@ -1008,6 +1012,58 @@ async fn profile_table_reports_resolved_region_bounds_and_header() {
         table_profile.data["source"]["header_provenance"],
         "table_definition"
     );
+}
+
+#[tokio::test]
+async fn profile_table_normalizes_explicit_a1_and_rejects_malformed_across_surfaces() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("profile-explicit-range.xlsx");
+    let mut book = umya_spreadsheet::new_file();
+    let sheet = book.get_sheet_by_name_mut("Sheet1").unwrap();
+    sheet.get_cell_mut("A5").set_value("Name");
+    sheet.get_cell_mut("B5").set_value("Amount");
+    sheet.get_cell_mut("A15").set_value("last");
+    sheet.get_cell_mut("B15").set_value_number(15_f64);
+    umya_spreadsheet::writer::xlsx::write(&book, &path).unwrap();
+    let (state, resource_id) = bound_path(&path).await;
+
+    for requested_range in ["a5:b15", "$A$5:$B$15"] {
+        let payload = json!({"sheet_name":"Sheet1","range":requested_range});
+        let dispatcher = execute_operation_json(
+            state.clone(),
+            "profile_table",
+            with_resource(&resource_id, payload.clone()),
+        )
+        .await
+        .expect("normalized dispatcher range");
+        let dispatcher = serde_json::to_value(dispatcher).unwrap();
+        let cli = asp_op_bound("profile_table", payload, &path).expect("normalized asp op range");
+        assert_eq!(cli, dispatcher);
+        assert_eq!(dispatcher["data"]["source"]["selector_kind"], "range");
+        assert_eq!(dispatcher["data"]["source"]["selector_value"], "A5:B15");
+        assert_eq!(dispatcher["data"]["source"]["bounds"], "A5:B15");
+        assert_eq!(dispatcher["data"]["source"]["header_row"], 5);
+        assert_eq!(
+            dispatcher["data"]["source"]["header_provenance"],
+            "range_first_row"
+        );
+    }
+
+    let payload = json!({"sheet_name":"Sheet1","range":"not-a-range"});
+    let dispatcher = execute_operation_json(
+        state,
+        "profile_table",
+        with_resource(&resource_id, payload.clone()),
+    )
+    .await
+    .expect_err("malformed dispatcher range");
+    let dispatcher = serde_json::to_value(dispatcher).unwrap();
+    let cli = asp_op_bound("profile_table", payload, &path).expect_err("malformed asp op range");
+    assert_eq!(cli, dispatcher);
+    assert_eq!(dispatcher["error"]["code"], "INVALID_REQUEST");
+    assert_eq!(dispatcher["error"]["operation"], "profile_table");
+    assert_eq!(dispatcher["error"]["path"], "$.range");
+    assert_eq!(dispatcher["error"]["message"], "invalid range: not-a-range");
 }
 
 #[tokio::test]

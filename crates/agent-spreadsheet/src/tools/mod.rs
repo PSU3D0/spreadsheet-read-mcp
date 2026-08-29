@@ -2825,6 +2825,9 @@ fn parse_range(range: &str) -> Option<((u32, u32), (u32, u32))> {
     let mut parts = range.split(':');
     let start = parts.next()?;
     let end = parts.next().unwrap_or(start);
+    if parts.next().is_some() {
+        return None;
+    }
     let start_idx = parse_address(start)?;
     let end_idx = parse_address(end)?;
     Some((
@@ -2834,12 +2837,32 @@ fn parse_range(range: &str) -> Option<((u32, u32), (u32, u32))> {
 }
 
 fn parse_address(address: &str) -> Option<(u32, u32)> {
-    use umya_spreadsheet::helper::coordinate::index_from_coordinate;
-    let (col, row, _, _) = index_from_coordinate(address);
-    match (col, row) {
-        (Some(c), Some(r)) => Some((c, r)),
-        _ => None,
+    let address = address.trim();
+    let bytes = address.as_bytes();
+    let mut index = usize::from(bytes.first() == Some(&b'$'));
+    let letters_start = index;
+    let mut col = 0_u32;
+    while let Some(byte) = bytes.get(index).filter(|byte| byte.is_ascii_alphabetic()) {
+        col = col
+            .checked_mul(26)?
+            .checked_add(u32::from(byte.to_ascii_uppercase() - b'A' + 1))?;
+        index += 1;
     }
+    if index == letters_start {
+        return None;
+    }
+    if bytes.get(index) == Some(&b'$') {
+        index += 1;
+    }
+    let digits_start = index;
+    while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+        index += 1;
+    }
+    if index == digits_start || index != bytes.len() {
+        return None;
+    }
+    let row = address[digits_start..].parse::<u32>().ok()?;
+    (row > 0).then_some((col, row))
 }
 
 #[derive(Clone)]
@@ -2854,6 +2877,12 @@ fn resolve_table_target(
     workbook: &WorkbookContext,
     params: &ReadTableParams,
 ) -> Result<TableTarget> {
+    let explicit_range = params
+        .range
+        .as_deref()
+        .map(|range| parse_range(range).ok_or_else(|| anyhow!("invalid range: {range}")))
+        .transpose()?;
+
     if let Some(region_id) = params.region_id
         && let Some(sheet) = &params.sheet_name
         && let Ok(region) = workbook.detected_region(sheet, region_id)
@@ -2907,9 +2936,7 @@ fn resolve_table_target(
         .clone()
         .unwrap_or_else(|| workbook.sheet_names().first().cloned().unwrap_or_default());
 
-    if let Some(rng) = &params.range
-        && let Some(range) = parse_range(rng)
-    {
+    if let Some(range) = explicit_range {
         return Ok(TableTarget {
             sheet_name,
             table_name: None,

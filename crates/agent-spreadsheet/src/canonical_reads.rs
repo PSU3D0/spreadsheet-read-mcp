@@ -1047,21 +1047,34 @@ fn parse_range(range: &str) -> Result<(u32, u32, u32, u32), String> {
         return Err(format!("invalid range: {range}"));
     }
     let parse = |cell: &str| -> Result<(u32, u32), String> {
-        let cell = cell.replace('$', "");
-        let split = cell
-            .find(|ch: char| ch.is_ascii_digit())
-            .ok_or_else(|| format!("invalid range: {range}"))?;
-        let (letters, digits) = cell.split_at(split);
-        if letters.is_empty()
-            || digits.is_empty()
-            || !letters.chars().all(|c| c.is_ascii_alphabetic())
-        {
+        let cell = cell.trim();
+        let bytes = cell.as_bytes();
+        let mut index = usize::from(bytes.first() == Some(&b'$'));
+        let letters_start = index;
+        let mut col = 0_u32;
+        while let Some(byte) = bytes.get(index).filter(|byte| byte.is_ascii_alphabetic()) {
+            col = col
+                .checked_mul(26)
+                .and_then(|value| {
+                    value.checked_add(u32::from(byte.to_ascii_uppercase() - b'A' + 1))
+                })
+                .ok_or_else(|| format!("invalid range: {range}"))?;
+            index += 1;
+        }
+        if index == letters_start {
             return Err(format!("invalid range: {range}"));
         }
-        let col = letters.bytes().fold(0_u32, |acc, byte| {
-            acc * 26 + u32::from(byte.to_ascii_uppercase() - b'A' + 1)
-        });
-        let row = digits
+        if bytes.get(index) == Some(&b'$') {
+            index += 1;
+        }
+        let digits_start = index;
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            index += 1;
+        }
+        if index == digits_start || index != bytes.len() {
+            return Err(format!("invalid range: {range}"));
+        }
+        let row = cell[digits_start..]
             .parse::<u32>()
             .map_err(|_| format!("invalid range: {range}"))?;
         if row == 0 {
@@ -2583,9 +2596,20 @@ pub async fn execute_analyze_styles(
 
 pub async fn execute_profile_table(
     state: Arc<AppState>,
-    request: ProfileTableRequest,
+    mut request: ProfileTableRequest,
 ) -> Result<ProfileTableData, CanonicalErrorEnvelope> {
     let operation = "profile_table";
+    if let Some(range) = request.range.as_deref() {
+        let (c1, r1, c2, r2) = parse_range(range).map_err(|message| {
+            canonical_error(
+                CanonicalErrorCode::InvalidRequest,
+                operation,
+                message,
+                Some("$.range"),
+            )
+        })?;
+        request.range = Some(range_string(c1, r1, c2, r2));
+    }
     let sample_mode = request.sample_mode.unwrap_or(SampleMode::Distributed);
     let sample_size = request.sample_size.unwrap_or(10);
     let selector_kind = if request.table_name.is_some() {
