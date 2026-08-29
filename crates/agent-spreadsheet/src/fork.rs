@@ -69,7 +69,7 @@ pub struct Checkpoint {
     pub label: Option<String>,
     pub snapshot_path: PathBuf,
     pub recalc_needed: bool,
-    pub(crate) canonical_revision: String,
+    pub(crate) snapshot_state_revision: String,
     pub(crate) canonical_operation_len: usize,
 }
 
@@ -95,8 +95,9 @@ pub struct ForkContext {
     pub checkpoints: Vec<Checkpoint>,
     pub(crate) canonical_operations: Vec<CanonicalOperationRecord>,
     pub recalc_needed: bool,
-    pub(crate) canonical_revision: String,
-    pub(crate) canonical_file_revision: String,
+    pub(crate) state_revision: String,
+    pub(crate) content_revision: String,
+    discarded: bool,
     base_hash: String,
     base_modified: std::time::SystemTime,
 }
@@ -106,7 +107,7 @@ impl ForkContext {
         let metadata = fs::metadata(&base_path)?;
         let base_modified = metadata.modified()?;
         let base_hash = hash_file(&base_path)?;
-        let canonical_revision = hash_file(&work_path)?;
+        let content_revision = hash_file(&work_path)?;
 
         Ok(Self {
             fork_id,
@@ -119,8 +120,9 @@ impl ForkContext {
             checkpoints: Vec::new(),
             canonical_operations: Vec::new(),
             recalc_needed: false,
-            canonical_file_revision: canonical_revision.clone(),
-            canonical_revision,
+            state_revision: content_revision.clone(),
+            content_revision,
+            discarded: false,
             base_hash,
             base_modified,
         })
@@ -135,6 +137,21 @@ impl ForkContext {
 
     pub fn touch(&mut self) {
         self.last_accessed = Instant::now();
+    }
+
+    pub(crate) fn sync_revisions(&mut self) -> Result<String> {
+        let content_revision = hash_file(&self.work_path)?;
+        if content_revision != self.content_revision {
+            self.content_revision = content_revision.clone();
+            self.state_revision = content_revision;
+        }
+        Ok(self.state_revision.clone())
+    }
+
+    pub(crate) fn advance_state_revision(&mut self) -> String {
+        let revision = format!("state:{}", make_short_random_id("rev", 20));
+        self.state_revision = revision.clone();
+        revision
     }
 
     pub(crate) fn push_staged_change(&mut self, staged: StagedChange) {
@@ -218,8 +235,23 @@ impl Default for ForkConfig {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ForkSnapshot {
+    pub work_path: PathBuf,
+    pub base_path: PathBuf,
+    pub state_revision: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ArtifactRecord {
+    pub path: PathBuf,
+    pub bytes: u64,
+    pub sha256: String,
+}
+
 pub struct ForkRegistry {
-    forks: Mutex<HashMap<String, ForkContext>>,
+    forks: Mutex<HashMap<String, Arc<Mutex<ForkContext>>>>,
+    artifacts: Mutex<HashMap<String, ArtifactRecord>>,
     config: ForkConfig,
 }
 
@@ -228,6 +260,7 @@ impl ForkRegistry {
         fs::create_dir_all(&config.fork_dir)?;
         Ok(Self {
             forks: Mutex::new(HashMap::new()),
+            artifacts: Mutex::new(HashMap::new()),
             config,
         })
     }
@@ -310,50 +343,78 @@ impl ForkRegistry {
 
         fs::copy(&base_path_canon, &work_path)?;
 
-        let context = ForkContext::new(fork_id.clone(), base_path_canon, work_path)?;
+        let context = ForkContext::new(fork_id.clone(), base_path_canon, work_path.clone())?;
 
-        self.forks.lock().insert(fork_id.clone(), context);
-
+        let inserted = {
+            let mut forks = self.forks.lock();
+            if forks.len() >= self.config.max_forks {
+                false
+            } else {
+                forks.insert(fork_id.clone(), Arc::new(Mutex::new(context)));
+                true
+            }
+        };
+        if !inserted {
+            let _ = fs::remove_file(&work_path);
+            return Err(anyhow!(
+                "max forks ({}) reached, discard existing forks first",
+                self.config.max_forks
+            ));
+        }
         Ok(fork_id)
+    }
+
+    fn fork_handle(&self, fork_id: &str) -> Result<Arc<Mutex<ForkContext>>> {
+        self.forks
+            .lock()
+            .get(fork_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("fork not found: {}", fork_id))
     }
 
     pub fn get_fork(&self, fork_id: &str) -> Result<Arc<ForkContext>> {
         self.evict_expired();
-
-        let mut forks = self.forks.lock();
-        let ctx = forks
-            .get_mut(fork_id)
-            .ok_or_else(|| anyhow!("fork not found: {}", fork_id))?;
+        let handle = self.fork_handle(fork_id)?;
+        let mut ctx = handle.lock();
+        if ctx.discarded {
+            return Err(anyhow!("fork not found: {}", fork_id));
+        }
         ctx.touch();
         Ok(Arc::new(ctx.clone()))
     }
 
     pub fn get_fork_path(&self, fork_id: &str) -> Option<PathBuf> {
-        let mut forks = self.forks.lock();
-        if let Some(ctx) = forks.get_mut(fork_id) {
-            ctx.touch();
-            return Some(ctx.work_path.clone());
+        let handle = self.fork_handle(fork_id).ok()?;
+        let mut ctx = handle.lock();
+        if ctx.discarded {
+            return None;
         }
-        None
+        ctx.touch();
+        Some(ctx.work_path.clone())
     }
 
     pub fn with_fork_mut<F, R>(&self, fork_id: &str, f: F) -> Result<R>
     where
         F: FnOnce(&mut ForkContext) -> Result<R>,
     {
-        let mut forks = self.forks.lock();
-        let ctx = forks
-            .get_mut(fork_id)
-            .ok_or_else(|| anyhow!("fork not found: {}", fork_id))?;
+        let handle = self.fork_handle(fork_id)?;
+        let mut ctx = handle.lock();
+        if ctx.discarded {
+            return Err(anyhow!("fork not found: {}", fork_id));
+        }
         ctx.touch();
-        f(ctx)
+        f(&mut ctx)
     }
 
     pub fn discard_fork(&self, fork_id: &str) -> Result<()> {
-        let mut forks = self.forks.lock();
-        if let Some(ctx) = forks.remove(fork_id) {
-            ctx.cleanup_files();
-        }
+        let handle = match self.fork_handle(fork_id) {
+            Ok(handle) => handle,
+            Err(_) => return Ok(()),
+        };
+        let mut ctx = handle.lock();
+        ctx.discarded = true;
+        self.forks.lock().remove(fork_id);
+        ctx.cleanup_files();
         Ok(())
     }
 
@@ -361,22 +422,26 @@ impl ForkRegistry {
         &self,
         fork_id: &str,
         expected_revision: &str,
-    ) -> Result<String> {
-        let mut forks = self.forks.lock();
-        let ctx = forks
-            .get(fork_id)
-            .ok_or_else(|| anyhow!("fork not found: {}", fork_id))?;
-        if ctx.canonical_revision != expected_revision {
+    ) -> Result<(String, PathBuf)> {
+        let handle = self.fork_handle(fork_id)?;
+        let mut ctx = handle.lock();
+        if ctx.discarded {
+            return Err(anyhow!("fork not found: {}", fork_id));
+        }
+        let current = ctx.sync_revisions()?;
+        if current != expected_revision {
             return Err(anyhow!(
                 "revision conflict: expected {}, current {}",
                 expected_revision,
-                ctx.canonical_revision
+                current
             ));
         }
-        let revision_before = ctx.canonical_revision.clone();
-        let ctx = forks.remove(fork_id).expect("checked fork exists");
+        let revision_before = ctx.state_revision.clone();
+        let work_path = ctx.work_path.clone();
+        ctx.discarded = true;
+        self.forks.lock().remove(fork_id);
         ctx.cleanup_files();
-        Ok(revision_before)
+        Ok((revision_before, work_path))
     }
 
     pub fn save_fork(
@@ -403,19 +468,14 @@ impl ForkRegistry {
             return Err(anyhow!("target must be .xlsx"));
         }
 
-        let mut forks = self.forks.lock();
-        let ctx = forks
-            .get(fork_id)
-            .ok_or_else(|| anyhow!("fork not found: {}", fork_id))?;
-
-        ctx.validate_base_unchanged()?;
-
-        fs::copy(&ctx.work_path, target_path)?;
-
-        if drop_fork && let Some(ctx) = forks.remove(fork_id) {
-            let _ = fs::remove_file(&ctx.work_path);
+        self.with_fork_mut(fork_id, |ctx| {
+            ctx.validate_base_unchanged()?;
+            fs::copy(&ctx.work_path, target_path)?;
+            Ok(())
+        })?;
+        if drop_fork {
+            self.discard_fork(fork_id)?;
         }
-
         Ok(())
     }
 
@@ -426,15 +486,18 @@ impl ForkRegistry {
     pub fn list_forks(&self) -> Vec<ForkInfo> {
         self.evict_expired();
 
-        let forks = self.forks.lock();
-        forks
-            .values()
-            .map(|ctx| ForkInfo {
-                fork_id: ctx.fork_id.clone(),
-                base_path: ctx.base_path.display().to_string(),
-                created_at: ctx.created_at,
-                edit_count: ctx.edits.len(),
-                recalc_needed: ctx.recalc_needed,
+        let handles = self.forks.lock().values().cloned().collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .filter_map(|handle| {
+                let ctx = handle.lock();
+                (!ctx.discarded).then(|| ForkInfo {
+                    fork_id: ctx.fork_id.clone(),
+                    base_path: ctx.base_path.display().to_string(),
+                    created_at: ctx.created_at,
+                    edit_count: ctx.edits.len(),
+                    recalc_needed: ctx.recalc_needed,
+                })
             })
             .collect()
     }
@@ -442,40 +505,27 @@ impl ForkRegistry {
     pub fn create_checkpoint(&self, fork_id: &str, label: Option<String>) -> Result<Checkpoint> {
         self.evict_expired();
 
-        let work_path = {
-            let forks = self.forks.lock();
-            let ctx = forks
-                .get(fork_id)
-                .ok_or_else(|| anyhow!("fork not found: {}", fork_id))?;
-            ctx.work_path.clone()
-        };
-
-        let checkpoint_id = make_short_random_id("cp", 12);
-        let dir = PathBuf::from(CHECKPOINT_DIR).join(fork_id);
-        fs::create_dir_all(&dir)?;
-        let snapshot_path = dir.join(format!("{}.xlsx", checkpoint_id));
-        fs::copy(&work_path, &snapshot_path)?;
-
-        let fork = self.get_fork(fork_id)?;
-        let recalc_needed = fork.recalc_needed;
-
-        let checkpoint = Checkpoint {
-            checkpoint_id: checkpoint_id.clone(),
-            created_at: Utc::now(),
-            label,
-            snapshot_path,
-            recalc_needed,
-            canonical_revision: fork.canonical_revision.clone(),
-            canonical_operation_len: fork.canonical_operations.len(),
-        };
-
         self.with_fork_mut(fork_id, |ctx| {
+            ctx.sync_revisions()?;
+            let checkpoint_id = make_short_random_id("cp", 12);
+            let dir = PathBuf::from(CHECKPOINT_DIR).join(fork_id);
+            fs::create_dir_all(&dir)?;
+            let snapshot_path = dir.join(format!("{}.xlsx", checkpoint_id));
+            fs::copy(&ctx.work_path, &snapshot_path)?;
+            let checkpoint = Checkpoint {
+                checkpoint_id,
+                created_at: Utc::now(),
+                label,
+                snapshot_path,
+                recalc_needed: ctx.recalc_needed,
+                snapshot_state_revision: ctx.state_revision.clone(),
+                canonical_operation_len: ctx.canonical_operations.len(),
+            };
             ctx.checkpoints.push(checkpoint.clone());
             enforce_checkpoint_limits(ctx)?;
-            Ok(())
-        })?;
-
-        Ok(checkpoint)
+            ctx.advance_state_revision();
+            Ok(checkpoint)
+        })
     }
 
     pub fn list_checkpoints(&self, fork_id: &str) -> Result<Vec<Checkpoint>> {
@@ -492,6 +542,7 @@ impl ForkRegistry {
                 .ok_or_else(|| anyhow!("checkpoint not found: {}", checkpoint_id))?;
             let removed = ctx.checkpoints.remove(index);
             let _ = fs::remove_file(&removed.snapshot_path);
+            ctx.advance_state_revision();
             Ok(())
         })
     }
@@ -499,23 +550,14 @@ impl ForkRegistry {
     pub fn restore_checkpoint(&self, fork_id: &str, checkpoint_id: &str) -> Result<Checkpoint> {
         self.evict_expired();
 
-        let (work_path, checkpoint) = {
-            let forks = self.forks.lock();
-            let ctx = forks
-                .get(fork_id)
-                .ok_or_else(|| anyhow!("fork not found: {}", fork_id))?;
+        let checkpoint = self.with_fork_mut(fork_id, |ctx| {
             let checkpoint = ctx
                 .checkpoints
                 .iter()
                 .find(|c| c.checkpoint_id == checkpoint_id)
                 .cloned()
                 .ok_or_else(|| anyhow!("checkpoint not found: {}", checkpoint_id))?;
-            (ctx.work_path.clone(), checkpoint)
-        };
-
-        fs::copy(&checkpoint.snapshot_path, &work_path)?;
-
-        self.with_fork_mut(fork_id, |ctx| {
+            fs::copy(&checkpoint.snapshot_path, &ctx.work_path)?;
             let cutoff = checkpoint.created_at;
             ctx.edits.retain(|e| e.timestamp <= cutoff);
             let mut i = 0;
@@ -528,7 +570,9 @@ impl ForkRegistry {
                 }
             }
             ctx.recalc_needed = checkpoint.recalc_needed;
-            Ok(())
+            ctx.content_revision = hash_file(&ctx.work_path)?;
+            ctx.advance_state_revision();
+            Ok(checkpoint)
         })?;
 
         Ok(checkpoint)
@@ -537,6 +581,7 @@ impl ForkRegistry {
     pub fn add_staged_change(&self, fork_id: &str, staged: StagedChange) -> Result<()> {
         self.with_fork_mut(fork_id, |ctx| {
             ctx.push_staged_change(staged);
+            ctx.advance_state_revision();
             Ok(())
         })
     }
@@ -553,7 +598,9 @@ impl ForkRegistry {
                 .iter()
                 .position(|c| c.change_id == change_id)
                 .ok_or_else(|| anyhow!("staged change not found: {}", change_id))?;
-            Ok(ctx.staged_changes.remove(index))
+            let staged = ctx.staged_changes.remove(index);
+            ctx.advance_state_revision();
+            Ok(staged)
         })
     }
 
@@ -563,22 +610,94 @@ impl ForkRegistry {
         Ok(())
     }
 
+    pub(crate) fn sync_fork_revisions(&self, fork_id: &str) -> Result<(String, String)> {
+        self.with_fork_mut(fork_id, |fork| {
+            let state_revision = fork.sync_revisions()?;
+            Ok((state_revision, fork.content_revision.clone()))
+        })
+    }
+
+    pub(crate) fn snapshot_forks(
+        &self,
+        fork_ids: &[String],
+        destination_dir: &Path,
+    ) -> Result<Vec<ForkSnapshot>> {
+        let mut unique_ids = fork_ids.to_vec();
+        unique_ids.sort();
+        unique_ids.dedup();
+        let handles = {
+            let forks = self.forks.lock();
+            unique_ids
+                .iter()
+                .map(|id| {
+                    forks
+                        .get(id)
+                        .cloned()
+                        .map(|handle| (id.clone(), handle))
+                        .ok_or_else(|| anyhow!("fork not found: {}", id))
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
+        let mut guards = handles
+            .iter()
+            .map(|(_, handle)| handle.lock())
+            .collect::<Vec<_>>();
+        for (index, guard) in guards.iter_mut().enumerate() {
+            if guard.discarded {
+                return Err(anyhow!("fork not found: {}", unique_ids[index]));
+            }
+            guard.touch();
+            guard.sync_revisions()?;
+        }
+
+        fork_ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| {
+                let position = unique_ids
+                    .binary_search(id)
+                    .expect("requested fork id was locked");
+                let guard = &guards[position];
+                let work_path = destination_dir.join(format!("fork-{index}-work.xlsx"));
+                let base_path = destination_dir.join(format!("fork-{index}-base.xlsx"));
+                fs::copy(&guard.work_path, &work_path)?;
+                fs::copy(&guard.base_path, &base_path)?;
+                Ok(ForkSnapshot {
+                    work_path,
+                    base_path,
+                    state_revision: guard.state_revision.clone(),
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn register_artifact(&self, artifact_id: String, record: ArtifactRecord) {
+        self.artifacts.lock().insert(artifact_id, record);
+    }
+
+    pub fn resolve_artifact(&self, artifact_id: &str) -> Option<ArtifactRecord> {
+        self.artifacts.lock().get(artifact_id).cloned()
+    }
+
     fn evict_expired(&self) {
         if self.config.ttl.is_zero() {
             return;
         }
-        let mut forks = self.forks.lock();
-        let expired: Vec<String> = forks
+        let handles = self
+            .forks
+            .lock()
             .iter()
-            .filter(|(_, ctx)| ctx.is_expired(self.config.ttl))
-            .map(|(id, _)| id.clone())
-            .collect();
-
-        for id in expired {
-            if let Some(ctx) = forks.remove(&id) {
-                ctx.cleanup_files();
-                tracing::debug!(fork_id = %id, "evicted expired fork");
+            .map(|(id, handle)| (id.clone(), handle.clone()))
+            .collect::<Vec<_>>();
+        for (id, handle) in handles {
+            let mut ctx = handle.lock();
+            if ctx.discarded || !ctx.is_expired(self.config.ttl) {
+                continue;
             }
+            ctx.discarded = true;
+            self.forks.lock().remove(&id);
+            ctx.cleanup_files();
+            tracing::debug!(fork_id = %id, "evicted expired fork");
         }
     }
 }
@@ -632,8 +751,9 @@ impl Clone for ForkContext {
             checkpoints: self.checkpoints.clone(),
             canonical_operations: self.canonical_operations.clone(),
             recalc_needed: self.recalc_needed,
-            canonical_revision: self.canonical_revision.clone(),
-            canonical_file_revision: self.canonical_file_revision.clone(),
+            state_revision: self.state_revision.clone(),
+            content_revision: self.content_revision.clone(),
+            discarded: self.discarded,
             base_hash: self.base_hash.clone(),
             base_modified: self.base_modified,
         }

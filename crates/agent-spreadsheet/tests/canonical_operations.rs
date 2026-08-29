@@ -190,8 +190,10 @@ fn registry_schemas_are_closed_typed_and_discriminated() {
         assert_eq!(
             descriptor.risk_ceiling,
             match descriptor.name {
-                "write" | "discard_fork" | "checkpoint" => OperationRisk::Destructive,
-                "recalculate" | "export_fork" | "staged_change" => OperationRisk::High,
+                "write" | "discard_fork" | "checkpoint" | "staged_change" => {
+                    OperationRisk::Destructive
+                }
+                "recalculate" | "export_fork" => OperationRisk::High,
                 "create_fork" => OperationRisk::Moderate,
                 _ => OperationRisk::Low,
             }

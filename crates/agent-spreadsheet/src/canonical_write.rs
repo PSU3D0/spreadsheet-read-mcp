@@ -645,7 +645,7 @@ impl WriteResponseData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CanonicalStagedBundle {
     pub base_revision: String,
-    pub expected_revision: String,
+    pub max_risk: OperationRisk,
     pub atomic: bool,
     pub ops: Vec<WriteOp>,
     pub formula_parse_policy: Option<FormulaParsePolicy>,
@@ -1880,12 +1880,8 @@ pub async fn execute_write(
         .ok_or_else(|| anyhow!("fork registry not available"))?;
     let response = registry.with_fork_mut(&fork_id, |fork| {
         let path = fork.work_path.clone();
-        let file_revision_before = hash_file_sha256_hex(&path)?;
-        if file_revision_before != fork.canonical_file_revision {
-            fork.canonical_file_revision = file_revision_before.clone();
-            fork.canonical_revision = file_revision_before.clone();
-        }
-        let revision_before = fork.canonical_revision.clone();
+        let revision_before = fork.sync_revisions()?;
+        let file_revision_before = fork.content_revision.clone();
         if revision_before != request.expected_revision {
             bail!(
                 "revision conflict: expected {}, current {}",
@@ -1940,10 +1936,9 @@ pub async fn execute_write(
                 result.status = WriteOpStatus::Staged;
             }
             let change_id = make_short_random_id("chg", 12);
-            let stage_revision = format!("stage:{change_id}");
             let bundle = CanonicalStagedBundle {
                 base_revision: file_revision_before.clone(),
-                expected_revision: stage_revision.clone(),
+                max_risk: impact.risk,
                 atomic: true,
                 ops: request.ops.clone(),
                 formula_parse_policy: request.formula_parse_policy,
@@ -1969,7 +1964,7 @@ pub async fn execute_write(
                 summary,
                 fork_path_snapshot: None,
             });
-            fork.canonical_revision = stage_revision.clone();
+            let stage_revision = fork.advance_state_revision();
             return Ok(WriteResponseData::Staged {
                 mode: request.mode,
                 atomic: true,
@@ -2009,9 +2004,8 @@ pub async fn execute_write(
             add_effect_manifest(&mut diff, &results);
             swap_temp(temp, &path)?;
             fork.recalc_needed = true;
-            let revision_after = hash_file_sha256_hex(&path)?;
-            fork.canonical_file_revision = revision_after.clone();
-            fork.canonical_revision = revision_after.clone();
+            fork.content_revision = hash_file_sha256_hex(&path)?;
+            let revision_after = fork.advance_state_revision();
             fork.push_canonical_operation(
                 "write",
                 request.ops.iter().map(|op| op.kind().to_string()).collect(),
@@ -2086,11 +2080,10 @@ pub async fn execute_write(
         add_effect_manifest(&mut diff, &results);
         let file_revision_after = hash_file_sha256_hex(&path)?;
         let revision_after = if applied > 0 {
-            fork.canonical_file_revision = file_revision_after.clone();
-            fork.canonical_revision = file_revision_after.clone();
-            file_revision_after
+            fork.content_revision = file_revision_after;
+            fork.advance_state_revision()
         } else {
-            fork.canonical_revision.clone()
+            fork.state_revision.clone()
         };
         if applied > 0 {
             fork.push_canonical_operation(

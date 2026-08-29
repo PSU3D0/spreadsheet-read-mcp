@@ -1235,7 +1235,7 @@ static REGISTRY: &[OperationDescriptor] = &[
             class: OperationCostClass::Expensive,
             bounded_by: &["ops", "cells", "payload_bytes"],
         },
-        risk_ceiling: OperationRisk::High,
+        risk_ceiling: OperationRisk::Destructive,
         risk_for: write_risk,
         input_schema: staged_change_input_schema,
         output_schema: staged_change_output_schema,
@@ -1522,8 +1522,9 @@ pub async fn execute_operation(
 
     #[allow(unused_mut)]
     let (mut resource_id, mut revision_id) = if let Some(requested) = operation.resource_id() {
-        let workbook = state
-            .open_workbook(&requested.to_workbook_id())
+        let requested_workbook_id = requested.to_workbook_id();
+        let mut workbook = state
+            .open_workbook(&requested_workbook_id)
             .await
             .map_err(|error| {
                 CanonicalErrorEnvelope::new(
@@ -1533,6 +1534,27 @@ pub async fn execute_operation(
                     Some("$.resource_id".to_string()),
                 )
             })?;
+        let mut advertised_revision = workbook.revision_id.clone();
+        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        if requested.as_str().starts_with("fork:") {
+            let registry = state.fork_registry().ok_or_else(|| {
+                CanonicalErrorEnvelope::operation_failed(
+                    name,
+                    "fork registry not available".to_string(),
+                )
+            })?;
+            let (state_revision, content_revision) = registry
+                .sync_fork_revisions(requested_workbook_id.as_str())
+                .map_err(|error| lifecycle_error(name, error))?;
+            if workbook.revision_id != content_revision {
+                state.evict_by_path(&workbook.path);
+                workbook = state
+                    .open_workbook(&requested_workbook_id)
+                    .await
+                    .map_err(|error| lifecycle_error(name, error))?;
+            }
+            advertised_revision = state_revision;
+        }
         (
             Some(ResourceId::bind_workbook(&workbook.id).map_err(|message| {
                 CanonicalErrorEnvelope::new(
@@ -1542,7 +1564,7 @@ pub async fn execute_operation(
                     Some("$.resource_id".to_string()),
                 )
             })?),
-            Some(workbook.revision_id.clone()),
+            Some(advertised_revision),
         )
     } else {
         (None, None)

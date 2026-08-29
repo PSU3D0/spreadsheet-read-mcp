@@ -2,7 +2,7 @@ use crate::canonical_write::CanonicalStagedBundle;
 use crate::config::RecalcBackendKind;
 use crate::diff::Change;
 use crate::fork::{
-    CanonicalOperationRecord, ChangeSummary, Checkpoint, enforce_checkpoint_limits,
+    ArtifactRecord, CanonicalOperationRecord, ChangeSummary, Checkpoint, enforce_checkpoint_limits,
     remove_staged_snapshot,
 };
 use crate::model::{EvaluationCoverage, EvaluationState, Warning, WorkbookId};
@@ -14,8 +14,10 @@ use anyhow::{Result, anyhow, bail};
 use chrono::Utc;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 fn default_timeout() -> u64 {
@@ -34,12 +36,7 @@ fn conflict(expected: &str, current: &str) -> anyhow::Error {
 }
 
 fn sync_revision(fork: &mut crate::fork::ForkContext) -> Result<String> {
-    let file_revision = hash_file_sha256_hex(&fork.work_path)?;
-    if file_revision != fork.canonical_file_revision {
-        fork.canonical_file_revision = file_revision.clone();
-        fork.canonical_revision = file_revision;
-    }
-    Ok(fork.canonical_revision.clone())
+    fork.sync_revisions()
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -233,9 +230,8 @@ pub async fn recalculate(
             return Err(conflict(&request.expected_revision, &current));
         }
         atomic_replace(&evaluated_path, &fork.work_path)?;
-        let after = hash_file_sha256_hex(&fork.work_path)?;
-        fork.canonical_file_revision = after.clone();
-        fork.canonical_revision = after.clone();
+        fork.content_revision = hash_file_sha256_hex(&fork.work_path)?;
+        let after = fork.advance_state_revision();
         fork.recalc_needed = !result.evaluation_coverage.is_complete_and_fresh();
         fork.push_canonical_operation(
             "recalculate",
@@ -297,33 +293,64 @@ pub struct VerifyWorkbookData {
     pub warnings: Vec<Warning>,
 }
 
-async fn resource_revision(state: &Arc<AppState>, resource: &ResourceId) -> Result<String> {
-    if resource.as_str().starts_with("fork:") {
-        let registry = state
-            .fork_registry()
-            .ok_or_else(|| anyhow!("fork registry not available"))?;
-        let fork_id = require_fork(resource)?;
-        registry.with_fork_mut(&fork_id, sync_revision)
-    } else {
-        Ok(state
-            .open_workbook(&resource.to_workbook_id())
-            .await?
-            .revision_id
-            .clone())
-    }
-}
-
 pub async fn verify_workbook(
     state: Arc<AppState>,
     request: VerifyWorkbookRequest,
 ) -> Result<VerifyWorkbookData> {
-    let baseline_revision_id = resource_revision(&state, &request.baseline_resource_id).await?;
-    let current_revision_id = resource_revision(&state, &request.resource_id).await?;
-    let proof = Box::pin(crate::tools::verify_workbook(
-        state,
+    let snapshot_dir = tempfile::tempdir()?;
+    let resources = [&request.baseline_resource_id, &request.resource_id];
+    let fork_ids = resources
+        .iter()
+        .filter(|resource| resource.as_str().starts_with("fork:"))
+        .map(|resource| require_fork(resource))
+        .collect::<Result<Vec<_>>>()?;
+    let registry = state
+        .fork_registry()
+        .ok_or_else(|| anyhow!("fork registry not available"))?;
+    let mut fork_snapshots = registry
+        .snapshot_forks(&fork_ids, snapshot_dir.path())?
+        .into_iter();
+    let mut revisions = Vec::with_capacity(2);
+    for (index, resource) in resources.iter().enumerate() {
+        let target = snapshot_dir.path().join(if index == 0 {
+            "baseline.xlsx"
+        } else {
+            "current.xlsx"
+        });
+        if resource.as_str().starts_with("fork:") {
+            let snapshot = fork_snapshots.next().expect("fork snapshot count");
+            fs::copy(snapshot.work_path, &target)?;
+            revisions.push(snapshot.state_revision);
+        } else {
+            let workbook = state.open_workbook(&resource.to_workbook_id()).await?;
+            fs::copy(&workbook.path, &target)?;
+            revisions.push(hash_file_sha256_hex(&target)?);
+        }
+    }
+
+    let mut config = (*state.config()).clone();
+    config.workspace_root = snapshot_dir.path().to_path_buf();
+    config.single_workbook = None;
+    config.path_mappings.clear();
+    let snapshot_state = Arc::new(AppState::new(Arc::new(config)));
+    let listed = snapshot_state
+        .list_workbooks(crate::tools::filters::WorkbookFilter::default())?
+        .workbooks;
+    let baseline_id = listed
+        .iter()
+        .find(|item| item.slug == "baseline")
+        .map(|item| item.workbook_id.clone())
+        .ok_or_else(|| anyhow!("verification baseline snapshot not found"))?;
+    let current_id = listed
+        .iter()
+        .find(|item| item.slug == "current")
+        .map(|item| item.workbook_id.clone())
+        .ok_or_else(|| anyhow!("verification current snapshot not found"))?;
+    let mut proof = Box::pin(crate::tools::verify_workbook(
+        snapshot_state,
         crate::tools::VerifyWorkbookParams {
-            baseline_workbook_or_fork_id: request.baseline_resource_id.to_workbook_id(),
-            current_workbook_or_fork_id: request.resource_id.to_workbook_id(),
+            baseline_workbook_or_fork_id: baseline_id,
+            current_workbook_or_fork_id: current_id,
             targets: request.targets,
             sheet_name: request.sheet_name,
             include_named_range_deltas: request.include_named_range_deltas,
@@ -332,6 +359,12 @@ pub async fn verify_workbook(
         },
     ))
     .await?;
+    let baseline_revision_id = revisions.remove(0);
+    let current_revision_id = revisions.remove(0);
+    proof.baseline = request.baseline_resource_id.as_str().to_string();
+    proof.current = request.resource_id.as_str().to_string();
+    proof.baseline_evaluation_coverage.revision_id = baseline_revision_id.clone();
+    proof.current_evaluation_coverage.revision_id = current_revision_id.clone();
     Ok(VerifyWorkbookData {
         baseline_resource_id: request.baseline_resource_id,
         current_resource_id: request.resource_id,
@@ -381,46 +414,117 @@ pub struct ExportForkData {
     pub warnings: Vec<Warning>,
 }
 
+fn artifact_root(workspace_root: &Path) -> Result<PathBuf> {
+    let workspace_root = workspace_root.canonicalize()?;
+    let root = workspace_root.join("artifacts");
+    match fs::symlink_metadata(&root) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                bail!("invalid request: artifact root must be a real directory");
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Err(create_error) = fs::create_dir(&root)
+                && create_error.kind() != std::io::ErrorKind::AlreadyExists
+            {
+                return Err(create_error.into());
+            }
+        }
+        Err(error) => return Err(error.into()),
+    }
+    let canonical = root.canonicalize()?;
+    if !canonical.starts_with(&workspace_root) {
+        bail!("invalid request: artifact root escapes workspace");
+    }
+    Ok(canonical)
+}
+
+fn persist_content_artifact(root: &Path, sha256: &str, contents: &[u8]) -> Result<PathBuf> {
+    let target = root.join(format!("{sha256}.xlsx"));
+    match fs::symlink_metadata(&target) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                bail!("invalid request: artifact object is not a regular file");
+            }
+            if metadata.len() != contents.len() as u64 || hash_file_sha256_hex(&target)? != sha256 {
+                bail!("artifact object collision for sha256 {sha256}");
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut temporary = tempfile::NamedTempFile::new_in(root)?;
+            temporary.write_all(contents)?;
+            temporary.as_file().sync_all()?;
+            if let Err(error) = temporary.persist_noclobber(&target) {
+                if error.error.kind() == std::io::ErrorKind::AlreadyExists {
+                    return persist_content_artifact(root, sha256, contents);
+                }
+                return Err(error.error.into());
+            }
+        }
+        Err(error) => return Err(error.into()),
+    }
+    Ok(target)
+}
+
 pub fn export_fork(state: Arc<AppState>, request: ExportForkRequest) -> Result<ExportForkData> {
     let fork_id = require_fork(&request.resource_id)?;
     let registry = state
         .fork_registry()
         .ok_or_else(|| anyhow!("fork registry not available"))?;
-    let (name, target) = match request.destination {
+    let name = match request.destination {
         ExportDestination::Workspace { name } => {
             let safe = crate::security::sanitize_filename_component(&name);
             if safe != name || !name.to_ascii_lowercase().ends_with(".xlsx") {
                 bail!("invalid request: destination name must be a safe .xlsx filename");
             }
-            let directory = state.config().workspace_root.join("artifacts");
-            fs::create_dir_all(&directory)?;
-            (name, directory.join(safe))
+            name
         }
     };
-    let (revision_before, bytes, sha256) = registry.with_fork_mut(&fork_id, |fork| {
+    let workspace_root = state.config().workspace_root.clone();
+    let (revision_before, revision_after, artifact) = registry.with_fork_mut(&fork_id, |fork| {
         let current = sync_revision(fork)?;
         if current != request.expected_revision {
             return Err(conflict(&request.expected_revision, &current));
         }
         fork.validate_base_unchanged()?;
-        atomic_replace(&fork.work_path, &target)?;
+
+        let contents = fs::read(&fork.work_path)?;
+        let sha256 = format!("{:x}", Sha256::digest(&contents));
+        if sha256 != fork.content_revision {
+            fork.content_revision = sha256.clone();
+            fork.state_revision = sha256.clone();
+            return Err(conflict(&request.expected_revision, &fork.state_revision));
+        }
+        let bytes = contents.len() as u64;
+        let artifact_id = format!("artifact-{sha256}");
+        let root = artifact_root(&workspace_root)?;
+        let path = persist_content_artifact(&root, &sha256, &contents)?;
+        registry.register_artifact(
+            artifact_id.clone(),
+            ArtifactRecord {
+                path,
+                bytes,
+                sha256: sha256.clone(),
+            },
+        );
+        let after = fork.advance_state_revision();
         Ok((
             current,
-            fs::metadata(&target)?.len(),
-            hash_file_sha256_hex(&target)?,
+            after,
+            ArtifactMetadata {
+                artifact_id,
+                media_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    .to_string(),
+                bytes,
+                sha256,
+            },
         ))
     })?;
     Ok(ExportForkData {
-        revision_before: revision_before.clone(),
-        revision_after: revision_before,
+        revision_before,
+        revision_after,
         destination: ExportedDestination::Workspace { name },
-        artifact: ArtifactMetadata {
-            artifact_id: make_short_random_id("artifact", 16),
-            media_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                .to_string(),
-            bytes,
-            sha256,
-        },
+        artifact,
         warnings: Vec::new(),
     })
 }
@@ -446,7 +550,9 @@ pub fn discard_fork(state: Arc<AppState>, request: DiscardForkRequest) -> Result
     let registry = state
         .fork_registry()
         .ok_or_else(|| anyhow!("fork registry not available"))?;
-    let revision_before = registry.discard_fork_cas(&fork_id, &request.expected_revision)?;
+    let (revision_before, work_path) =
+        registry.discard_fork_cas(&fork_id, &request.expected_revision)?;
+    state.evict_by_path(&work_path);
     Ok(DiscardForkData {
         revision_before,
         revision_after: format!("discarded:{}", make_short_random_id("rev", 12)),
@@ -541,16 +647,19 @@ pub async fn get_changes(
             offset,
             limit,
         } => {
-            let (base, current, revision_id) = registry.with_fork_mut(&fork_id, |fork| {
-                Ok((
-                    fork.base_path.clone(),
-                    fork.work_path.clone(),
-                    sync_revision(fork)?,
-                ))
-            })?;
-            let baseline_revision_id = hash_file_sha256_hex(&base)?;
+            let snapshot_dir = tempfile::tempdir()?;
+            let snapshot = registry
+                .snapshot_forks(std::slice::from_ref(&fork_id), snapshot_dir.path())?
+                .pop()
+                .expect("one fork snapshot");
+            let revision_id = snapshot.state_revision;
+            let baseline_revision_id = hash_file_sha256_hex(&snapshot.base_path)?;
             let changes = tokio::task::spawn_blocking(move || {
-                crate::core::diff::calculate_changeset(&base, &current, sheet_name.as_deref())
+                crate::core::diff::calculate_changeset(
+                    &snapshot.base_path,
+                    &snapshot.work_path,
+                    sheet_name.as_deref(),
+                )
             })
             .await??;
             let total = changes.len();
@@ -625,7 +734,7 @@ fn checkpoint_descriptor(checkpoint: &Checkpoint) -> CheckpointDescriptor {
         checkpoint_id: checkpoint.checkpoint_id.clone(),
         created_at: checkpoint.created_at.to_rfc3339(),
         label: checkpoint.label.clone(),
-        snapshot_revision: checkpoint.canonical_revision.clone(),
+        snapshot_revision: checkpoint.snapshot_state_revision.clone(),
         recalc_needed: checkpoint.recalc_needed,
     }
 }
@@ -698,13 +807,12 @@ pub fn checkpoint(state: Arc<AppState>, request: CheckpointRequest) -> Result<Ch
                 label,
                 snapshot_path,
                 recalc_needed: fork.recalc_needed,
-                canonical_revision: before.clone(),
+                snapshot_state_revision: before.clone(),
                 canonical_operation_len: fork.canonical_operations.len(),
             };
             fork.checkpoints.push(checkpoint.clone());
             enforce_checkpoint_limits(fork)?;
-            let after = format!("state:{}", make_short_random_id("rev", 12));
-            fork.canonical_revision = after.clone();
+            let after = fork.advance_state_revision();
             Ok(CheckpointData::Create {
                 revision_before: before,
                 revision_after: after,
@@ -729,8 +837,7 @@ pub fn checkpoint(state: Arc<AppState>, request: CheckpointRequest) -> Result<Ch
                 .ok_or_else(|| anyhow!("checkpoint not found: {checkpoint_id}"))?;
             fs::remove_file(&fork.checkpoints[index].snapshot_path)?;
             fork.checkpoints.remove(index);
-            let after = format!("state:{}", make_short_random_id("rev", 12));
-            fork.canonical_revision = after.clone();
+            let after = fork.advance_state_revision();
             Ok(CheckpointData::Delete {
                 revision_before: before,
                 revision_after: after,
@@ -774,6 +881,7 @@ pub fn checkpoint(state: Arc<AppState>, request: CheckpointRequest) -> Result<Ch
             // Replace the workbook first. All following state changes are in-memory or
             // best-effort cleanup, so a failed copy leaves the fork fully unchanged.
             atomic_replace(&restore_source, &fork.work_path)?;
+            state.evict_by_path(&fork.work_path);
             let restored_file_revision = hash_file_sha256_hex(&fork.work_path)?;
             let staged = std::mem::take(&mut fork.staged_changes);
             fork.staged_changes = staged
@@ -802,9 +910,8 @@ pub fn checkpoint(state: Arc<AppState>, request: CheckpointRequest) -> Result<Ch
             fork.canonical_operations
                 .truncate(target.canonical_operation_len);
             fork.recalc_needed = target.recalc_needed;
-            fork.canonical_file_revision = restored_file_revision;
-            let after = format!("state:{}", make_short_random_id("rev", 12));
-            fork.canonical_revision = after.clone();
+            fork.content_revision = restored_file_revision;
+            let after = fork.advance_state_revision();
             let retained_checkpoint_ids = fork
                 .checkpoints
                 .iter()
@@ -945,14 +1052,8 @@ pub fn staged_change(
                 .ok_or_else(|| anyhow!("staged change not found: {change_id}"))?;
             let staged = fork.staged_changes[index].clone();
             let bundle = canonical_bundle(&staged)?;
-            if bundle.expected_revision != before {
-                return Err(conflict(&bundle.expected_revision, &before));
-            }
-            if bundle.base_revision != fork.canonical_file_revision {
-                return Err(conflict(
-                    &bundle.base_revision,
-                    &fork.canonical_file_revision,
-                ));
+            if bundle.base_revision != fork.content_revision {
+                return Err(conflict(&bundle.base_revision, &fork.content_revision));
             }
             let op_kinds = bundle
                 .ops
@@ -961,9 +1062,9 @@ pub fn staged_change(
                 .collect::<Vec<_>>();
             let ops_applied =
                 crate::canonical_write::apply_bundle_atomically_to_path(&fork.work_path, &bundle)?;
-            let after = hash_file_sha256_hex(&fork.work_path)?;
-            fork.canonical_file_revision = after.clone();
-            fork.canonical_revision = after.clone();
+            state.evict_by_path(&fork.work_path);
+            fork.content_revision = hash_file_sha256_hex(&fork.work_path)?;
+            let after = fork.advance_state_revision();
             fork.recalc_needed = ops_applied > 0 || fork.recalc_needed;
             fork.push_canonical_operation("write", op_kinds.clone(), before.clone(), after.clone());
             let consumed = fork.staged_changes.remove(index);
@@ -994,8 +1095,7 @@ pub fn staged_change(
                 .ok_or_else(|| anyhow!("staged change not found: {change_id}"))?;
             let removed = fork.staged_changes.remove(index);
             remove_staged_snapshot(&removed);
-            let after = format!("state:{}", make_short_random_id("rev", 12));
-            fork.canonical_revision = after.clone();
+            let after = fork.advance_state_revision();
             Ok(StagedChangeData::Discard {
                 revision_before: before,
                 revision_after: after,
@@ -1019,7 +1119,7 @@ pub fn checkpoint_risk(request: &CheckpointRequest) -> OperationRisk {
 pub fn staged_change_risk(request: &StagedChangeRequest) -> OperationRisk {
     match request {
         StagedChangeRequest::List { .. } => OperationRisk::Low,
-        StagedChangeRequest::Apply { .. } => OperationRisk::High,
+        StagedChangeRequest::Apply { .. } => OperationRisk::Destructive,
         StagedChangeRequest::Discard { .. } => OperationRisk::Moderate,
     }
 }
