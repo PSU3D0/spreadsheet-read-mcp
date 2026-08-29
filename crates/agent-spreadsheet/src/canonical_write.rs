@@ -546,10 +546,12 @@ impl WriteOp {
 #[serde(deny_unknown_fields)]
 pub struct WriteRequest {
     pub resource_id: ResourceId,
+    #[schemars(length(min = 1))]
     pub expected_revision: String,
     pub mode: WriteMode,
     #[serde(default = "default_true")]
     pub atomic: bool,
+    #[schemars(length(min = 1))]
     pub ops: Vec<WriteOp>,
     #[serde(default)]
     pub label: Option<String>,
