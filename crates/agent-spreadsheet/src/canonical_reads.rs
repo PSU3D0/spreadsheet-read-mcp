@@ -1200,12 +1200,14 @@ pub async fn execute_read_cells(
                 .saturating_sub(current_row)
                 .saturating_add(1)
                 .min(requested_rows);
-            let (letters, headers) = match columns {
-                Some(RowColumnSelection::Letters { values }) => (Some(values.clone()), None),
-                Some(RowColumnSelection::Headers { values, .. }) => (None, Some(values.clone())),
-                _ => (None, None),
+            let (letters, headers, header_row) = match columns {
+                Some(RowColumnSelection::Letters { values }) => (Some(values.clone()), None, 1),
+                Some(RowColumnSelection::Headers { values, header_row }) => {
+                    (None, Some(values.clone()), header_row.unwrap_or(1).max(1))
+                }
+                _ => (None, None, 1),
             };
-            let response = tools::sheet_page(
+            let response = tools::sheet_page_with_header_row(
                 state.clone(),
                 tools::SheetPageParams {
                     workbook_or_fork_id: workbook_id,
@@ -1219,6 +1221,7 @@ pub async fn execute_read_cells(
                     include_header: include_header.unwrap_or(true),
                     format: Some(encoding.row_format()),
                 },
+                header_row,
             )
             .await
             .map_err(|error| {

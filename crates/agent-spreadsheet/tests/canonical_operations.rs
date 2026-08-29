@@ -562,3 +562,66 @@ fn machine_mode_accepts_stdin_json_and_discovery_commands_work() {
 
 #[allow(dead_code)]
 fn _response_types_are_public(_: CanonicalResponse) {}
+
+#[tokio::test]
+async fn row_header_projection_and_volatile_groups_preserve_canonical_capabilities() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("canonical-rich.xlsx");
+    let mut book = umya_spreadsheet::new_file();
+    let sheet = book.get_sheet_by_name_mut("Sheet1").unwrap();
+    sheet.get_cell_mut("A2").set_value("Name");
+    sheet.get_cell_mut("B2").set_value("Amount");
+    sheet.get_cell_mut("A3").set_value("Alpha");
+    sheet.get_cell_mut("B3").set_value_number(42_f64);
+    sheet.get_cell_mut("C3").set_formula("OFFSET(A3,0,0)");
+    sheet.get_cell_mut("D3").set_formula("NOW()");
+    umya_spreadsheet::writer::xlsx::write(&book, &path).unwrap();
+
+    let (state, workbook_id) = StatelessRuntime
+        .open_state_for_file(&path)
+        .await
+        .expect("bind rich fixture");
+    let resource_id = ResourceId::bind_workbook(&workbook_id).unwrap();
+    let rows = execute_operation_json(
+        state.clone(),
+        "read_cells",
+        json!({
+            "resource_id":resource_id.as_str(),
+            "sheet_name":"Sheet1",
+            "selection":{
+                "kind":"rows", "start_row":3, "row_count":1,
+                "columns":{"kind":"headers","values":["Amount"],"header_row":2},
+                "include_header":true
+            },
+            "format":"full"
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(rows.data["header"]["row_index"], 2);
+    assert_eq!(
+        rows.data["blocks"][0]["payload"]["snapshots"][0]["cells"][0]["address"],
+        "B3"
+    );
+
+    let formulas = execute_operation_json(
+        state,
+        "search_formulas",
+        json!({
+            "resource_id":resource_id.as_str(),
+            "filter":{"volatile":true},
+            "result_mode":"groups",
+            "group_by":"function"
+        }),
+    )
+    .await
+    .unwrap();
+    let keys = formulas.data["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|group| group["group_key"].as_str())
+        .collect::<HashSet<_>>();
+    assert_eq!(keys, HashSet::from(["NOW", "OFFSET"]));
+    assert!(!keys.contains("volatile"));
+}

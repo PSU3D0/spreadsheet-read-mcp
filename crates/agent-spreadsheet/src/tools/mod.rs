@@ -807,6 +807,14 @@ pub async fn sheet_page(
     state: Arc<AppState>,
     params: SheetPageParams,
 ) -> Result<SheetPageResponse> {
+    sheet_page_with_header_row(state, params, 1).await
+}
+
+pub(crate) async fn sheet_page_with_header_row(
+    state: Arc<AppState>,
+    params: SheetPageParams,
+    header_row: u32,
+) -> Result<SheetPageResponse> {
     if params.page_size == 0 {
         return Err(anyhow!("page_size must be greater than zero"));
     }
@@ -848,6 +856,7 @@ pub async fn sheet_page(
             include_formulas,
             include_styles,
             include_header,
+            header_row.max(1),
         )
     })?;
 
@@ -1880,16 +1889,23 @@ fn build_page(
     include_formulas: bool,
     include_styles: bool,
     include_header: bool,
+    header_row: u32,
 ) -> PageBuildResult {
     let max_col = sheet.get_highest_column();
     let end_row = (start_row + page_size - 1).min(sheet.get_highest_row().max(start_row));
     let column_indices =
-        resolve_columns_with_headers(sheet, columns.as_ref(), columns_by_header.as_ref(), max_col);
+        resolve_columns_with_headers(
+            sheet,
+            columns.as_ref(),
+            columns_by_header.as_ref(),
+            max_col,
+            header_row,
+        );
 
     let header = if include_header {
         Some(build_row_snapshot(
             sheet,
-            1,
+            header_row,
             &column_indices,
             include_formulas,
             include_styles,
@@ -2019,6 +2035,7 @@ fn resolve_columns_with_headers(
     columns: Option<&Vec<String>>,
     columns_by_header: Option<&Vec<String>>,
     max_column: u32,
+    header_row: u32,
 ) -> Vec<u32> {
     use std::collections::BTreeSet;
 
@@ -2039,7 +2056,7 @@ fn resolve_columns_with_headers(
         .collect();
 
     for col_idx in 1..=max_column.max(1) {
-        let header_cell = sheet.get_cell((col_idx, 1u32));
+        let header_cell = sheet.get_cell((col_idx, header_row));
         let header_value = header_cell
             .and_then(cell_to_value)
             .map(cell_value_to_string_lower);
