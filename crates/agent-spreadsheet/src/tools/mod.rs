@@ -1066,6 +1066,24 @@ pub async fn sheet_formula_map(
     state: Arc<AppState>,
     params: SheetFormulaMapParams,
 ) -> Result<SheetFormulaMapResponse> {
+    let request = crate::operations::FormulaMapRequest {
+        resource_id: crate::operations::ResourceId::bind_workbook(&params.workbook_or_fork_id)
+            .map_err(anyhow::Error::msg)?,
+        sheet_name: params.sheet_name, range: params.range, expand: params.expand, limit: params.limit,
+        sort_by: params.sort_by, summary_only: params.summary_only, include_addresses: params.include_addresses,
+        addresses_limit: params.addresses_limit, formula_parse_policy: params.formula_parse_policy,
+    };
+    crate::operations::project_legacy(
+        state,
+        crate::operations::SpreadsheetOperation::FormulaMap(request),
+    )
+    .await
+}
+
+pub(crate) async fn sheet_formula_map_semantic(
+    state: Arc<AppState>,
+    params: SheetFormulaMapParams,
+) -> Result<SheetFormulaMapResponse> {
     let workbook = state.open_workbook(&params.workbook_or_fork_id).await?;
     let config = state.config();
     let output_profile = config.output_profile();
@@ -1197,6 +1215,29 @@ pub async fn formula_trace(
     state: Arc<AppState>,
     params: FormulaTraceParams,
 ) -> Result<FormulaTraceResponse> {
+    let request = crate::operations::FormulaTraceRequest {
+        resource_id: crate::operations::ResourceId::bind_workbook(&params.workbook_or_fork_id)
+            .map_err(anyhow::Error::msg)?,
+        sheet_name: params.sheet_name,
+        cell_address: params.cell_address,
+        direction: params.direction,
+        depth: params.depth,
+        limit: params.limit,
+        page_size: params.page_size,
+        cursor: params.cursor,
+        formula_parse_policy: params.formula_parse_policy,
+    };
+    crate::operations::project_legacy(
+        state,
+        crate::operations::SpreadsheetOperation::FormulaTrace(request),
+    )
+    .await
+}
+
+pub(crate) async fn formula_trace_semantic(
+    state: Arc<AppState>,
+    params: FormulaTraceParams,
+) -> Result<FormulaTraceResponse> {
     let workbook = state.open_workbook(&params.workbook_or_fork_id).await?;
     let policy = params
         .formula_parse_policy
@@ -1254,6 +1295,23 @@ pub struct NamedRangesParams {
 }
 
 pub async fn named_ranges(
+    state: Arc<AppState>,
+    params: NamedRangesParams,
+) -> Result<NamedRangesResponse> {
+    let request = crate::operations::NamedRangesRequest {
+        resource_id: crate::operations::ResourceId::bind_workbook(&params.workbook_or_fork_id)
+            .map_err(anyhow::Error::msg)?,
+        sheet_name: params.sheet_name,
+        name_prefix: params.name_prefix,
+    };
+    crate::operations::project_legacy(
+        state,
+        crate::operations::SpreadsheetOperation::NamedRanges(request),
+    )
+    .await
+}
+
+pub(crate) async fn named_ranges_semantic(
     state: Arc<AppState>,
     params: NamedRangesParams,
 ) -> Result<NamedRangesResponse> {
@@ -2574,6 +2632,22 @@ pub struct SheetStatisticsParams {
 }
 
 pub async fn sheet_statistics(
+    state: Arc<AppState>,
+    params: SheetStatisticsParams,
+) -> Result<SheetStatisticsResponse> {
+    let request = crate::operations::SheetStatisticsRequest {
+        resource_id: crate::operations::ResourceId::bind_workbook(&params.workbook_or_fork_id)
+            .map_err(anyhow::Error::msg)?,
+        sheet_name: params.sheet_name, sample_rows: params.sample_rows, summary_only: params.summary_only,
+    };
+    crate::operations::project_legacy(
+        state,
+        crate::operations::SpreadsheetOperation::SheetStatistics(request),
+    )
+    .await
+}
+
+pub(crate) async fn sheet_statistics_semantic(
     state: Arc<AppState>,
     params: SheetStatisticsParams,
 ) -> Result<SheetStatisticsResponse> {
@@ -4521,6 +4595,25 @@ pub async fn inspect_cells(
     state: Arc<AppState>,
     params: InspectCellsParams,
 ) -> Result<InspectCellsResponse> {
+    let request = crate::operations::InspectCellsRequest {
+        resource_id: crate::operations::ResourceId::bind_workbook(&params.workbook_or_fork_id)
+            .map_err(anyhow::Error::msg)?,
+        sheet_name: params.sheet_name,
+        targets: params.targets,
+        include_empty: params.include_empty,
+        budget: params.budget,
+    };
+    crate::operations::project_legacy(
+        state,
+        crate::operations::SpreadsheetOperation::InspectCells(request),
+    )
+    .await
+}
+
+pub(crate) async fn inspect_cells_semantic(
+    state: Arc<AppState>,
+    params: InspectCellsParams,
+) -> Result<InspectCellsResponse> {
     const DETAIL_LIMIT: usize = 25;
     const DETAIL_LIMIT_MAX: usize = 200;
 
@@ -4674,6 +4767,25 @@ pub async fn inspect_cells(
 }
 
 pub async fn find_value(
+    state: Arc<AppState>,
+    params: FindValueParams,
+) -> Result<FindValueResponse> {
+    let request = crate::operations::SearchValuesRequest {
+        resource_id: crate::operations::ResourceId::bind_workbook(&params.workbook_or_fork_id)
+            .map_err(anyhow::Error::msg)?,
+        query: params.query, label: params.label, mode: params.mode, match_mode: params.match_mode,
+        case_sensitive: params.case_sensitive, sheet_name: params.sheet_name, region_id: params.region_id,
+        table_name: params.table_name, value_types: params.value_types, search_headers_only: params.search_headers_only,
+        direction: params.direction, limit: params.limit, offset: params.offset, context: params.context, context_width: params.context_width,
+    };
+    crate::operations::project_legacy(
+        state,
+        crate::operations::SpreadsheetOperation::SearchValues(request),
+    )
+    .await
+}
+
+pub(crate) async fn find_value_semantic(
     state: Arc<AppState>,
     params: FindValueParams,
 ) -> Result<FindValueResponse> {
@@ -4888,6 +5000,23 @@ pub(crate) async fn read_table_semantic(
 }
 
 pub async fn table_profile(
+    state: Arc<AppState>,
+    params: TableProfileParams,
+) -> Result<TableProfileResponse> {
+    let request = crate::operations::ProfileTableRequest {
+        resource_id: crate::operations::ResourceId::bind_workbook(&params.workbook_or_fork_id)
+            .map_err(anyhow::Error::msg)?,
+        sheet_name: params.sheet_name, region_id: params.region_id, table_name: params.table_name,
+        sample_mode: params.sample_mode, sample_size: params.sample_size, summary_only: params.summary_only,
+    };
+    crate::operations::project_legacy(
+        state,
+        crate::operations::SpreadsheetOperation::ProfileTable(request),
+    )
+    .await
+}
+
+pub(crate) async fn table_profile_semantic(
     state: Arc<AppState>,
     params: TableProfileParams,
 ) -> Result<TableProfileResponse> {

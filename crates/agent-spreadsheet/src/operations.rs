@@ -1,8 +1,11 @@
+pub use crate::canonical_reads::*;
 use crate::model::{
-    ReadTableResponse, SheetListResponse, SheetOverviewResponse, TableOutputFormat, WorkbookId,
+    FindValueResponse, FormulaTraceResponse, InspectCellsResponse, NamedRangesResponse,
+    ReadTableResponse, SheetFormulaMapResponse, SheetListResponse, SheetOverviewResponse,
+    SheetStatisticsResponse, TableProfileResponse, WorkbookId,
 };
 use crate::state::AppState;
-use crate::tools::{self, FilterOp, SampleMode};
+use crate::tools;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
@@ -54,20 +57,19 @@ impl ResourceId {
                 _ => false,
             });
         if !valid_opaque {
-            return Err(
-                "resource_id must be an opaque typed identifier, not a path, drive, dot, or file form"
-                    .to_string(),
-            );
+            return Err("resource_id must be an opaque typed identifier, not a path, drive, dot, or file form".to_string());
         }
         Ok(Self(value))
     }
 
-    fn to_workbook_id(&self) -> WorkbookId {
-        let (_, opaque) = self
-            .0
-            .split_once(':')
-            .expect("validated resource ids always have a typed prefix");
-        WorkbookId(opaque.to_string())
+    pub(crate) fn to_workbook_id(&self) -> WorkbookId {
+        WorkbookId(
+            self.0
+                .split_once(':')
+                .expect("validated typed resource")
+                .1
+                .to_string(),
+        )
     }
 }
 
@@ -76,8 +78,7 @@ impl<'de> Deserialize<'de> for ResourceId {
     where
         D: Deserializer<'de>,
     {
-        let value = String::deserialize(deserializer)?;
-        Self::validate(value).map_err(serde::de::Error::custom)
+        Self::validate(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
     }
 }
 
@@ -112,12 +113,14 @@ pub struct CapabilityMetadata {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RuntimeCapabilities {
+    pub workbook_discovery: bool,
     pub workbook_read: bool,
 }
 
 impl RuntimeCapabilities {
     pub fn native() -> Self {
         Self {
+            workbook_discovery: true,
             workbook_read: true,
         }
     }
@@ -140,17 +143,8 @@ impl OperationDescriptor {
     pub fn is_available(&self, capabilities: &RuntimeCapabilities) -> bool {
         (self.capability_predicate)(capabilities)
     }
-
     pub fn discovery_json(&self, capabilities: &RuntimeCapabilities) -> Value {
-        json!({
-            "name": self.name,
-            "schema_version": self.schema_version,
-            "description": self.description,
-            "capability": self.capability,
-            "available": self.is_available(capabilities),
-            "cost": self.cost,
-            "risk_ceiling": self.risk_ceiling,
-        })
+        json!({"name":self.name,"schema_version":self.schema_version,"description":self.description,"capability":self.capability,"available":self.is_available(capabilities),"cost":self.cost,"risk_ceiling":self.risk_ceiling})
     }
 }
 
@@ -179,89 +173,69 @@ pub struct SheetOverviewRequest {
     pub include_headers: Option<bool>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CanonicalTableFilter {
-    pub column: String,
-    pub op: FilterOp,
-    pub value: Value,
-}
-
-impl From<CanonicalTableFilter> for tools::TableFilter {
-    fn from(filter: CanonicalTableFilter) -> Self {
-        Self {
-            column: filter.column,
-            op: filter.op,
-            value: filter.value,
-        }
-    }
-}
-
-impl From<tools::TableFilter> for CanonicalTableFilter {
-    fn from(filter: tools::TableFilter) -> Self {
-        Self {
-            column: filter.column,
-            op: filter.op,
-            value: filter.value,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ReadTableRequest {
-    pub resource_id: ResourceId,
-    #[serde(default)]
-    pub sheet_name: Option<String>,
-    #[serde(default)]
-    pub table_name: Option<String>,
-    #[serde(default)]
-    pub region_id: Option<u32>,
-    #[serde(default)]
-    pub range: Option<String>,
-    #[serde(default)]
-    pub header_row: Option<u32>,
-    #[serde(default)]
-    pub header_rows: Option<u32>,
-    #[serde(default)]
-    pub columns: Option<Vec<String>>,
-    #[serde(default)]
-    pub filters: Option<Vec<CanonicalTableFilter>>,
-    #[serde(default)]
-    pub sample_mode: Option<SampleMode>,
-    #[serde(default)]
-    pub limit: Option<u32>,
-    #[serde(default)]
-    pub offset: Option<u32>,
-    #[serde(default)]
-    pub format: Option<TableOutputFormat>,
-    #[serde(default)]
-    pub include_headers: Option<bool>,
-    #[serde(default)]
-    pub include_types: Option<bool>,
-}
-
 #[derive(Debug)]
 pub enum SpreadsheetOperation {
+    ListWorkbooks(ListWorkbooksRequest),
+    DescribeWorkbook(DescribeWorkbookRequest),
     ListSheets(ListSheetsRequest),
     SheetOverview(SheetOverviewRequest),
+    ReadCells(ReadCellsRequest),
+    InspectCells(InspectCellsRequest),
     ReadTable(ReadTableRequest),
+    ReadLayout(ReadLayoutRequest),
+    ExportGrid(ExportGridRequest),
+    NamedRanges(NamedRangesRequest),
+    AnalyzeStyles(AnalyzeStylesRequest),
+    SearchValues(SearchValuesRequest),
+    SearchFormulas(SearchFormulasRequest),
+    FormulaTrace(FormulaTraceRequest),
+    FormulaMap(FormulaMapRequest),
+    ProfileTable(ProfileTableRequest),
+    SheetStatistics(SheetStatisticsRequest),
 }
 
 impl SpreadsheetOperation {
     pub fn name(&self) -> &'static str {
         match self {
+            Self::ListWorkbooks(_) => "list_workbooks",
+            Self::DescribeWorkbook(_) => "describe_workbook",
             Self::ListSheets(_) => "list_sheets",
             Self::SheetOverview(_) => "sheet_overview",
+            Self::ReadCells(_) => "read_cells",
+            Self::InspectCells(_) => "inspect_cells",
             Self::ReadTable(_) => "read_table",
+            Self::ReadLayout(_) => "read_layout",
+            Self::ExportGrid(_) => "export_grid",
+            Self::NamedRanges(_) => "named_ranges",
+            Self::AnalyzeStyles(_) => "analyze_styles",
+            Self::SearchValues(_) => "search_values",
+            Self::SearchFormulas(_) => "search_formulas",
+            Self::FormulaTrace(_) => "formula_trace",
+            Self::FormulaMap(_) => "formula_map",
+            Self::ProfileTable(_) => "profile_table",
+            Self::SheetStatistics(_) => "sheet_statistics",
         }
     }
 
-    pub fn resource_id(&self) -> &ResourceId {
+    pub fn resource_id(&self) -> Option<&ResourceId> {
         match self {
-            Self::ListSheets(request) => &request.resource_id,
-            Self::SheetOverview(request) => &request.resource_id,
-            Self::ReadTable(request) => &request.resource_id,
+            Self::ListWorkbooks(_) => None,
+            Self::DescribeWorkbook(value) => Some(&value.resource_id),
+            Self::ListSheets(value) => Some(&value.resource_id),
+            Self::SheetOverview(value) => Some(&value.resource_id),
+            Self::ReadCells(value) => Some(&value.resource_id),
+            Self::InspectCells(value) => Some(&value.resource_id),
+            Self::ReadTable(value) => Some(&value.resource_id),
+            Self::ReadLayout(value) => Some(&value.resource_id),
+            Self::ExportGrid(value) => Some(&value.resource_id),
+            Self::NamedRanges(value) => Some(&value.resource_id),
+            Self::AnalyzeStyles(value) => Some(&value.resource_id),
+            Self::SearchValues(value) => Some(&value.resource_id),
+            Self::SearchFormulas(value) => Some(&value.resource_id),
+            Self::FormulaTrace(value) => Some(&value.resource_id),
+            Self::FormulaMap(value) => Some(&value.resource_id),
+            Self::ProfileTable(value) => Some(&value.resource_id),
+            Self::SheetStatistics(value) => Some(&value.resource_id),
         }
     }
 }
@@ -271,8 +245,10 @@ impl SpreadsheetOperation {
 pub struct CanonicalResponse {
     pub schema_version: String,
     pub operation: String,
-    pub resource_id: ResourceId,
-    pub revision_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_id: Option<ResourceId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision_id: Option<String>,
     pub data: Value,
 }
 
@@ -284,6 +260,8 @@ pub enum CanonicalErrorCode {
     CapabilityUnavailable,
     ResourceNotFound,
     OperationFailed,
+    StaleCursor,
+    CursorMismatch,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -321,7 +299,6 @@ impl CanonicalErrorEnvelope {
             },
         }
     }
-
     fn invalid_request(operation: &str, error: serde_json::Error) -> Self {
         Self::new(
             CanonicalErrorCode::InvalidRequest,
@@ -334,7 +311,6 @@ impl CanonicalErrorEnvelope {
             )),
         )
     }
-
     fn operation_failed(operation: &str, message: String) -> Self {
         Self::new(
             CanonicalErrorCode::OperationFailed,
@@ -353,13 +329,12 @@ impl std::fmt::Display for CanonicalErrorEnvelope {
         }
     }
 }
-
 impl std::error::Error for CanonicalErrorEnvelope {}
 
 #[allow(dead_code)]
 #[derive(JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct CanonicalResponseSchema<T: JsonSchema> {
+struct ResourceResponseSchema<T: JsonSchema> {
     schema_version: String,
     operation: String,
     resource_id: ResourceId,
@@ -367,26 +342,36 @@ struct CanonicalResponseSchema<T: JsonSchema> {
     data: T,
 }
 
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct DiscoveryResponseSchema<T: JsonSchema> {
+    schema_version: String,
+    operation: String,
+    data: T,
+}
+
 fn workbook_read(capabilities: &RuntimeCapabilities) -> bool {
     capabilities.workbook_read
 }
-
+fn workbook_discovery(capabilities: &RuntimeCapabilities) -> bool {
+    capabilities.workbook_discovery
+}
 fn read_risk(_: &SpreadsheetOperation) -> OperationRisk {
     OperationRisk::Low
 }
 
 fn closed_schema<T: JsonSchema>() -> Value {
-    let mut schema = serde_json::to_value(schema_for!(T)).expect("schema is serializable");
+    let mut schema = serde_json::to_value(schema_for!(T)).expect("schema serializes");
     close_object_schemas(&mut schema);
     schema
 }
-
 fn close_object_schemas(value: &mut Value) {
     match value {
         Value::Object(object) => {
-            let object_schema = object.get("type").and_then(Value::as_str) == Some("object")
-                || object.contains_key("properties");
-            if object_schema {
+            if object.get("type").and_then(Value::as_str) == Some("object")
+                || object.contains_key("properties")
+            {
                 object
                     .entry("additionalProperties")
                     .or_insert(Value::Bool(false));
@@ -403,45 +388,163 @@ fn close_object_schemas(value: &mut Value) {
         _ => {}
     }
 }
-
-fn list_sheets_input_schema() -> Value {
-    closed_schema::<ListSheetsRequest>()
-}
-fn list_sheets_output_schema() -> Value {
-    operation_output_schema::<SheetListResponse>("list_sheets")
-}
-fn sheet_overview_input_schema() -> Value {
-    closed_schema::<SheetOverviewRequest>()
-}
-fn sheet_overview_output_schema() -> Value {
-    operation_output_schema::<SheetOverviewResponse>("sheet_overview")
-}
-fn read_table_input_schema() -> Value {
-    closed_schema::<ReadTableRequest>()
-}
-fn read_table_output_schema() -> Value {
-    operation_output_schema::<ReadTableResponse>("read_table")
-}
-
 fn set_property_const(schema: &mut Value, property: &str, value: &str) {
-    let property_schema = schema
+    let object = schema
         .get_mut("properties")
         .and_then(Value::as_object_mut)
         .and_then(|properties| properties.get_mut(property))
         .and_then(Value::as_object_mut)
-        .expect("canonical envelope property exists");
-    property_schema.clear();
-    property_schema.insert("type".to_string(), Value::String("string".to_string()));
-    property_schema.insert("const".to_string(), Value::String(value.to_string()));
+        .expect("envelope property");
+    object.clear();
+    object.insert("type".to_string(), Value::String("string".to_string()));
+    object.insert("const".to_string(), Value::String(value.to_string()));
 }
-
-fn operation_output_schema<T: JsonSchema>(operation: &str) -> Value {
-    let mut schema = closed_schema::<CanonicalResponseSchema<T>>();
+fn resource_output_schema<T: JsonSchema>(operation: &str) -> Value {
+    let mut schema = closed_schema::<ResourceResponseSchema<T>>();
+    set_property_const(&mut schema, "schema_version", CANONICAL_SCHEMA_VERSION);
+    set_property_const(&mut schema, "operation", operation);
+    schema
+}
+fn discovery_output_schema<T: JsonSchema>(operation: &str) -> Value {
+    let mut schema = closed_schema::<DiscoveryResponseSchema<T>>();
     set_property_const(&mut schema, "schema_version", CANONICAL_SCHEMA_VERSION);
     set_property_const(&mut schema, "operation", operation);
     schema
 }
 
+macro_rules! schemas {
+    ($input_fn:ident, $output_fn:ident, $request:ty, $response:ty, $name:literal) => {
+        fn $input_fn() -> Value {
+            closed_schema::<$request>()
+        }
+        fn $output_fn() -> Value {
+            resource_output_schema::<$response>($name)
+        }
+    };
+}
+fn list_workbooks_input_schema() -> Value {
+    closed_schema::<ListWorkbooksRequest>()
+}
+fn list_workbooks_output_schema() -> Value {
+    discovery_output_schema::<ListWorkbooksData>("list_workbooks")
+}
+schemas!(
+    describe_workbook_input_schema,
+    describe_workbook_output_schema,
+    DescribeWorkbookRequest,
+    DescribeWorkbookData,
+    "describe_workbook"
+);
+schemas!(
+    list_sheets_input_schema,
+    list_sheets_output_schema,
+    ListSheetsRequest,
+    SheetListResponse,
+    "list_sheets"
+);
+schemas!(
+    sheet_overview_input_schema,
+    sheet_overview_output_schema,
+    SheetOverviewRequest,
+    SheetOverviewResponse,
+    "sheet_overview"
+);
+schemas!(
+    read_cells_input_schema,
+    read_cells_output_schema,
+    ReadCellsRequest,
+    ReadCellsData,
+    "read_cells"
+);
+schemas!(
+    inspect_cells_input_schema,
+    inspect_cells_output_schema,
+    InspectCellsRequest,
+    InspectCellsResponse,
+    "inspect_cells"
+);
+schemas!(
+    read_table_input_schema,
+    read_table_output_schema,
+    ReadTableRequest,
+    ReadTableResponse,
+    "read_table"
+);
+schemas!(
+    read_layout_input_schema,
+    read_layout_output_schema,
+    ReadLayoutRequest,
+    ReadLayoutData,
+    "read_layout"
+);
+schemas!(
+    export_grid_input_schema,
+    export_grid_output_schema,
+    ExportGridRequest,
+    ExportGridData,
+    "export_grid"
+);
+schemas!(
+    named_ranges_input_schema,
+    named_ranges_output_schema,
+    NamedRangesRequest,
+    NamedRangesResponse,
+    "named_ranges"
+);
+schemas!(
+    analyze_styles_input_schema,
+    analyze_styles_output_schema,
+    AnalyzeStylesRequest,
+    AnalyzeStylesData,
+    "analyze_styles"
+);
+schemas!(
+    search_values_input_schema,
+    search_values_output_schema,
+    SearchValuesRequest,
+    FindValueResponse,
+    "search_values"
+);
+schemas!(
+    search_formulas_input_schema,
+    search_formulas_output_schema,
+    SearchFormulasRequest,
+    SearchFormulasData,
+    "search_formulas"
+);
+schemas!(
+    formula_trace_input_schema,
+    formula_trace_output_schema,
+    FormulaTraceRequest,
+    FormulaTraceResponse,
+    "formula_trace"
+);
+schemas!(
+    formula_map_input_schema,
+    formula_map_output_schema,
+    FormulaMapRequest,
+    SheetFormulaMapResponse,
+    "formula_map"
+);
+schemas!(
+    profile_table_input_schema,
+    profile_table_output_schema,
+    ProfileTableRequest,
+    TableProfileResponse,
+    "profile_table"
+);
+schemas!(
+    sheet_statistics_input_schema,
+    sheet_statistics_output_schema,
+    SheetStatisticsRequest,
+    SheetStatisticsResponse,
+    "sheet_statistics"
+);
+
+const WORKBOOK_DISCOVERY: CapabilityMetadata = CapabilityMetadata {
+    name: "workbook_discovery",
+    description: "Discover workbook resources available to this runtime",
+};
 const WORKBOOK_READ: CapabilityMetadata = CapabilityMetadata {
     name: "workbook_read",
     description: "Read an already-bound workbook resource",
@@ -450,64 +553,199 @@ const CHEAP_READ: OperationCost = OperationCost {
     class: OperationCostClass::Cheap,
     bounded_by: &["items"],
 };
-const BOUNDED_ANALYSIS: OperationCost = OperationCost {
+const BOUNDED_READ: OperationCost = OperationCost {
     class: OperationCostClass::Bounded,
     bounded_by: &["items", "cells", "payload_bytes"],
 };
+const EXPENSIVE_READ: OperationCost = OperationCost {
+    class: OperationCostClass::Expensive,
+    bounded_by: &["sheets", "cells", "items", "payload_bytes"],
+};
 
-static REGISTRY: [OperationDescriptor; 3] = [
-    OperationDescriptor {
-        name: "list_sheets",
-        schema_version: CANONICAL_SCHEMA_VERSION,
-        description: "List sheets in a bound workbook resource with optional bounds.",
-        capability: WORKBOOK_READ,
-        capability_predicate: workbook_read,
-        cost: CHEAP_READ,
-        risk_ceiling: OperationRisk::Low,
-        risk_for: read_risk,
-        input_schema: list_sheets_input_schema,
-        output_schema: list_sheets_output_schema,
-    },
-    OperationDescriptor {
-        name: "sheet_overview",
-        schema_version: CANONICAL_SCHEMA_VERSION,
-        description: "Detect regions, headers, bounds, and notable structure for one sheet.",
-        capability: WORKBOOK_READ,
-        capability_predicate: workbook_read,
-        cost: BOUNDED_ANALYSIS,
-        risk_ceiling: OperationRisk::Low,
-        risk_for: read_risk,
-        input_schema: sheet_overview_input_schema,
-        output_schema: sheet_overview_output_schema,
-    },
-    OperationDescriptor {
-        name: "read_table",
-        schema_version: CANONICAL_SCHEMA_VERSION,
-        description: "Read a header-aware table or detected region with filtering and paging.",
-        capability: WORKBOOK_READ,
-        capability_predicate: workbook_read,
-        cost: BOUNDED_ANALYSIS,
-        risk_ceiling: OperationRisk::Low,
-        risk_for: read_risk,
-        input_schema: read_table_input_schema,
-        output_schema: read_table_output_schema,
-    },
+macro_rules! descriptor {
+    ($name:literal, $description:literal, $capability:expr, $predicate:expr, $cost:expr, $input:ident, $output:ident) => {
+        OperationDescriptor {
+            name: $name,
+            schema_version: CANONICAL_SCHEMA_VERSION,
+            description: $description,
+            capability: $capability,
+            capability_predicate: $predicate,
+            cost: $cost,
+            risk_ceiling: OperationRisk::Low,
+            risk_for: read_risk,
+            input_schema: $input,
+            output_schema: $output,
+        }
+    };
+}
+
+static REGISTRY: [OperationDescriptor; 17] = [
+    descriptor!(
+        "list_workbooks",
+        "Discover workbook resources available to this runtime.",
+        WORKBOOK_DISCOVERY,
+        workbook_discovery,
+        CHEAP_READ,
+        list_workbooks_input_schema,
+        list_workbooks_output_schema
+    ),
+    descriptor!(
+        "describe_workbook",
+        "Return cheap exact workbook metadata, with an opt-in derived summary.",
+        WORKBOOK_READ,
+        workbook_read,
+        BOUNDED_READ,
+        describe_workbook_input_schema,
+        describe_workbook_output_schema
+    ),
+    descriptor!(
+        "list_sheets",
+        "List sheets in a bound workbook resource with optional bounds.",
+        WORKBOOK_READ,
+        workbook_read,
+        CHEAP_READ,
+        list_sheets_input_schema,
+        list_sheets_output_schema
+    ),
+    descriptor!(
+        "sheet_overview",
+        "Detect regions, headers, bounds, and notable structure for one sheet.",
+        WORKBOOK_READ,
+        workbook_read,
+        BOUNDED_READ,
+        sheet_overview_input_schema,
+        sheet_overview_output_schema
+    ),
+    descriptor!(
+        "read_cells",
+        "Read correlated exact ranges or projected row windows with revision-bound continuation.",
+        WORKBOOK_READ,
+        workbook_read,
+        BOUNDED_READ,
+        read_cells_input_schema,
+        read_cells_output_schema
+    ),
+    descriptor!(
+        "inspect_cells",
+        "Inspect bounded sparse cells with values, formulas, formats, styles, and calculation state.",
+        WORKBOOK_READ,
+        workbook_read,
+        BOUNDED_READ,
+        inspect_cells_input_schema,
+        inspect_cells_output_schema
+    ),
+    descriptor!(
+        "read_table",
+        "Read a header-aware table or detected region with filtering and paging.",
+        WORKBOOK_READ,
+        workbook_read,
+        BOUNDED_READ,
+        read_table_input_schema,
+        read_table_output_schema
+    ),
+    descriptor!(
+        "read_layout",
+        "Read a deliberately lossy bounded display/layout projection.",
+        WORKBOOK_READ,
+        workbook_read,
+        BOUNDED_READ,
+        read_layout_input_schema,
+        read_layout_output_schema
+    ),
+    descriptor!(
+        "export_grid",
+        "Export a lossless rich grid that preserves coordinates, merges, formats, and styles.",
+        WORKBOOK_READ,
+        workbook_read,
+        BOUNDED_READ,
+        export_grid_input_schema,
+        export_grid_output_schema
+    ),
+    descriptor!(
+        "named_ranges",
+        "List workbook- and sheet-scoped named items.",
+        WORKBOOK_READ,
+        workbook_read,
+        CHEAP_READ,
+        named_ranges_input_schema,
+        named_ranges_output_schema
+    ),
+    descriptor!(
+        "analyze_styles",
+        "Analyze style patterns at explicit workbook or sheet scope.",
+        WORKBOOK_READ,
+        workbook_read,
+        EXPENSIVE_READ,
+        analyze_styles_input_schema,
+        analyze_styles_output_schema
+    ),
+    descriptor!(
+        "search_values",
+        "Search values while preserving label, direction, region, table, type, header, and context modes.",
+        WORKBOOK_READ,
+        workbook_read,
+        EXPENSIVE_READ,
+        search_values_input_schema,
+        search_values_output_schema
+    ),
+    descriptor!(
+        "search_formulas",
+        "Search formula cells or grouped classifications, including actual volatile function names.",
+        WORKBOOK_READ,
+        workbook_read,
+        EXPENSIVE_READ,
+        search_formulas_input_schema,
+        search_formulas_output_schema
+    ),
+    descriptor!(
+        "formula_trace",
+        "Trace bounded precedents or dependents from one formula target.",
+        WORKBOOK_READ,
+        workbook_read,
+        EXPENSIVE_READ,
+        formula_trace_input_schema,
+        formula_trace_output_schema
+    ),
+    descriptor!(
+        "formula_map",
+        "Map sheet formula topology and repeated formula groups.",
+        WORKBOOK_READ,
+        workbook_read,
+        EXPENSIVE_READ,
+        formula_map_input_schema,
+        formula_map_output_schema
+    ),
+    descriptor!(
+        "profile_table",
+        "Profile tabular columns, types, distributions, samples, and data quality.",
+        WORKBOOK_READ,
+        workbook_read,
+        EXPENSIVE_READ,
+        profile_table_input_schema,
+        profile_table_output_schema
+    ),
+    descriptor!(
+        "sheet_statistics",
+        "Compute bounded sheet-level statistics.",
+        WORKBOOK_READ,
+        workbook_read,
+        EXPENSIVE_READ,
+        sheet_statistics_input_schema,
+        sheet_statistics_output_schema
+    ),
 ];
 
 pub fn operation_registry() -> &'static [OperationDescriptor] {
     &REGISTRY
 }
-
 pub fn operation_descriptor(name: &str) -> Option<&'static OperationDescriptor> {
     REGISTRY.iter().find(|descriptor| descriptor.name == name)
 }
-
 pub fn canonical_error_schema() -> Value {
     let mut schema = closed_schema::<CanonicalErrorEnvelope>();
     set_property_const(&mut schema, "schema_version", CANONICAL_SCHEMA_VERSION);
     schema
 }
-
 pub fn operation_schema(name: &str) -> Result<Value, CanonicalErrorEnvelope> {
     let descriptor = operation_descriptor(name).ok_or_else(|| {
         CanonicalErrorEnvelope::new(
@@ -517,15 +755,10 @@ pub fn operation_schema(name: &str) -> Result<Value, CanonicalErrorEnvelope> {
             Some("$.operation".to_string()),
         )
     })?;
-    Ok(json!({
-        "schema_version": descriptor.schema_version,
-        "operation": descriptor.name,
-        "input_schema": (descriptor.input_schema)(),
-        "output_schema": (descriptor.output_schema)(),
-        "error_schema": canonical_error_schema(),
-    }))
+    Ok(
+        json!({"schema_version":descriptor.schema_version,"operation":descriptor.name,"input_schema":(descriptor.input_schema)(),"output_schema":(descriptor.output_schema)(),"error_schema":canonical_error_schema()}),
+    )
 }
-
 pub fn operations_discovery(capabilities: &RuntimeCapabilities) -> Value {
     Value::Array(
         REGISTRY
@@ -535,20 +768,120 @@ pub fn operations_discovery(capabilities: &RuntimeCapabilities) -> Value {
     )
 }
 
+macro_rules! decode {
+    ($payload:expr, $name:expr, $request:ty, $variant:path) => {
+        serde_json::from_value::<$request>($payload)
+            .map($variant)
+            .map_err(|error| CanonicalErrorEnvelope::invalid_request($name, error))
+    };
+}
 pub fn decode_operation(
     name: &str,
     payload: Value,
 ) -> Result<SpreadsheetOperation, CanonicalErrorEnvelope> {
     match name {
-        "list_sheets" => serde_json::from_value(payload)
-            .map(SpreadsheetOperation::ListSheets)
-            .map_err(|error| CanonicalErrorEnvelope::invalid_request(name, error)),
-        "sheet_overview" => serde_json::from_value(payload)
-            .map(SpreadsheetOperation::SheetOverview)
-            .map_err(|error| CanonicalErrorEnvelope::invalid_request(name, error)),
-        "read_table" => serde_json::from_value(payload)
-            .map(SpreadsheetOperation::ReadTable)
-            .map_err(|error| CanonicalErrorEnvelope::invalid_request(name, error)),
+        "list_workbooks" => decode!(
+            payload,
+            name,
+            ListWorkbooksRequest,
+            SpreadsheetOperation::ListWorkbooks
+        ),
+        "describe_workbook" => decode!(
+            payload,
+            name,
+            DescribeWorkbookRequest,
+            SpreadsheetOperation::DescribeWorkbook
+        ),
+        "list_sheets" => decode!(
+            payload,
+            name,
+            ListSheetsRequest,
+            SpreadsheetOperation::ListSheets
+        ),
+        "sheet_overview" => decode!(
+            payload,
+            name,
+            SheetOverviewRequest,
+            SpreadsheetOperation::SheetOverview
+        ),
+        "read_cells" => decode!(
+            payload,
+            name,
+            ReadCellsRequest,
+            SpreadsheetOperation::ReadCells
+        ),
+        "inspect_cells" => decode!(
+            payload,
+            name,
+            InspectCellsRequest,
+            SpreadsheetOperation::InspectCells
+        ),
+        "read_table" => decode!(
+            payload,
+            name,
+            ReadTableRequest,
+            SpreadsheetOperation::ReadTable
+        ),
+        "read_layout" => decode!(
+            payload,
+            name,
+            ReadLayoutRequest,
+            SpreadsheetOperation::ReadLayout
+        ),
+        "export_grid" => decode!(
+            payload,
+            name,
+            ExportGridRequest,
+            SpreadsheetOperation::ExportGrid
+        ),
+        "named_ranges" => decode!(
+            payload,
+            name,
+            NamedRangesRequest,
+            SpreadsheetOperation::NamedRanges
+        ),
+        "analyze_styles" => decode!(
+            payload,
+            name,
+            AnalyzeStylesRequest,
+            SpreadsheetOperation::AnalyzeStyles
+        ),
+        "search_values" => decode!(
+            payload,
+            name,
+            SearchValuesRequest,
+            SpreadsheetOperation::SearchValues
+        ),
+        "search_formulas" => decode!(
+            payload,
+            name,
+            SearchFormulasRequest,
+            SpreadsheetOperation::SearchFormulas
+        ),
+        "formula_trace" => decode!(
+            payload,
+            name,
+            FormulaTraceRequest,
+            SpreadsheetOperation::FormulaTrace
+        ),
+        "formula_map" => decode!(
+            payload,
+            name,
+            FormulaMapRequest,
+            SpreadsheetOperation::FormulaMap
+        ),
+        "profile_table" => decode!(
+            payload,
+            name,
+            ProfileTableRequest,
+            SpreadsheetOperation::ProfileTable
+        ),
+        "sheet_statistics" => decode!(
+            payload,
+            name,
+            SheetStatisticsRequest,
+            SpreadsheetOperation::SheetStatistics
+        ),
         _ => Err(CanonicalErrorEnvelope::new(
             CanonicalErrorCode::UnknownOperation,
             format!("unknown operation '{name}'"),
@@ -563,8 +896,7 @@ pub async fn execute_operation_json(
     name: &str,
     payload: Value,
 ) -> Result<CanonicalResponse, CanonicalErrorEnvelope> {
-    let operation = decode_operation(name, payload)?;
-    execute_operation(state, operation).await
+    execute_operation(state, decode_operation(name, payload)?).await
 }
 
 pub async fn execute_operation(
@@ -573,8 +905,7 @@ pub async fn execute_operation(
 ) -> Result<CanonicalResponse, CanonicalErrorEnvelope> {
     let name = operation.name();
     let descriptor = operation_descriptor(name).expect("decoded operations are registered");
-    let capabilities = RuntimeCapabilities::native();
-    if !descriptor.is_available(&capabilities) {
+    if !descriptor.is_available(&RuntimeCapabilities::native()) {
         return Err(CanonicalErrorEnvelope::new(
             CanonicalErrorCode::CapabilityUnavailable,
             format!("operation '{name}' is unavailable in this runtime"),
@@ -583,32 +914,49 @@ pub async fn execute_operation(
         ));
     }
 
-    let requested_resource = operation.resource_id().clone();
-    let requested_workbook = requested_resource.to_workbook_id();
-    let workbook = state
-        .open_workbook(&requested_workbook)
-        .await
-        .map_err(|error| {
-            CanonicalErrorEnvelope::new(
-                CanonicalErrorCode::ResourceNotFound,
-                error.to_string(),
-                Some(name),
-                Some("$.resource_id".to_string()),
-            )
-        })?;
-    let resource_id = ResourceId::bind_workbook(&workbook.id).map_err(|message| {
-        CanonicalErrorEnvelope::new(
-            CanonicalErrorCode::OperationFailed,
-            message,
-            Some(name),
-            Some("$.resource_id".to_string()),
+    let (resource_id, revision_id) = if let Some(requested) = operation.resource_id() {
+        let workbook = state
+            .open_workbook(&requested.to_workbook_id())
+            .await
+            .map_err(|error| {
+                CanonicalErrorEnvelope::new(
+                    CanonicalErrorCode::ResourceNotFound,
+                    error.to_string(),
+                    Some(name),
+                    Some("$.resource_id".to_string()),
+                )
+            })?;
+        (
+            Some(ResourceId::bind_workbook(&workbook.id).map_err(|message| {
+                CanonicalErrorEnvelope::new(
+                    CanonicalErrorCode::OperationFailed,
+                    message,
+                    Some(name),
+                    Some("$.resource_id".to_string()),
+                )
+            })?),
+            Some(workbook.revision_id.clone()),
         )
-    })?;
-    let revision_id = workbook.revision_id.clone();
+    } else {
+        (None, None)
+    };
 
+    let workbook_id = resource_id.as_ref().map(ResourceId::to_workbook_id);
     let data = match operation {
-        SpreadsheetOperation::ListSheets(request) => {
-            let response = tools::list_sheets_semantic(
+        SpreadsheetOperation::ListWorkbooks(request) => serde_json::to_value(
+            execute_list_workbooks(state, request)
+                .await
+                .map_err(|error| {
+                    CanonicalErrorEnvelope::operation_failed(name, error.to_string())
+                })?,
+        ),
+        SpreadsheetOperation::DescribeWorkbook(request) => {
+            serde_json::to_value(execute_describe(state, request).await.map_err(|error| {
+                CanonicalErrorEnvelope::operation_failed(name, error.to_string())
+            })?)
+        }
+        SpreadsheetOperation::ListSheets(request) => serde_json::to_value(
+            tools::list_sheets_semantic(
                 state,
                 tools::ListSheetsParams {
                     workbook_or_fork_id: request.resource_id.to_workbook_id(),
@@ -618,11 +966,10 @@ pub async fn execute_operation(
                 },
             )
             .await
-            .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?;
-            serde_json::to_value(response)
-        }
-        SpreadsheetOperation::SheetOverview(request) => {
-            let response = tools::sheet_overview_semantic(
+            .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?,
+        ),
+        SpreadsheetOperation::SheetOverview(request) => serde_json::to_value(
+            tools::sheet_overview_semantic(
                 state,
                 tools::SheetOverviewParams {
                     workbook_or_fork_id: request.resource_id.to_workbook_id(),
@@ -633,11 +980,32 @@ pub async fn execute_operation(
                 },
             )
             .await
-            .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?;
-            serde_json::to_value(response)
-        }
-        SpreadsheetOperation::ReadTable(request) => {
-            let response = tools::read_table_semantic(
+            .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?,
+        ),
+        SpreadsheetOperation::ReadCells(request) => serde_json::to_value(
+            execute_read_cells(
+                state,
+                &request,
+                revision_id.as_deref().expect("read resource revision"),
+            )
+            .await?,
+        ),
+        SpreadsheetOperation::InspectCells(request) => serde_json::to_value(
+            tools::inspect_cells_semantic(
+                state,
+                tools::InspectCellsParams {
+                    workbook_or_fork_id: request.resource_id.to_workbook_id(),
+                    sheet_name: request.sheet_name,
+                    targets: request.targets,
+                    include_empty: request.include_empty,
+                    budget: request.budget,
+                },
+            )
+            .await
+            .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?,
+        ),
+        SpreadsheetOperation::ReadTable(request) => serde_json::to_value(
+            tools::read_table_semantic(
                 state,
                 tools::ReadTableParams {
                     workbook_or_fork_id: request.resource_id.to_workbook_id(),
@@ -650,7 +1018,7 @@ pub async fn execute_operation(
                     columns: request.columns,
                     filters: request
                         .filters
-                        .map(|filters| filters.into_iter().map(tools::TableFilter::from).collect()),
+                        .map(|values| values.into_iter().map(tools::TableFilter::from).collect()),
                     sample_mode: request.sample_mode,
                     limit: request.limit,
                     offset: request.offset,
@@ -660,12 +1028,155 @@ pub async fn execute_operation(
                 },
             )
             .await
+            .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?,
+        ),
+        SpreadsheetOperation::ReadLayout(request) => {
+            let response = tools::layout_page(
+                state,
+                tools::LayoutPageParams {
+                    workbook_or_fork_id: request.resource_id.to_workbook_id(),
+                    sheet_name: request.sheet_name,
+                    range: request.range,
+                    mode: request.mode,
+                    max_col_width: request.max_col_width,
+                    fit_columns: request.fit_columns,
+                    trim_empty_columns: request.trim_empty_columns,
+                    render: request.render,
+                },
+            )
+            .await
             .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?;
-            serde_json::to_value(response)
+            serde_json::to_value(ReadLayoutData {
+                lossiness: LayoutLossiness::Lossy,
+                layout: response,
+            })
         }
+        SpreadsheetOperation::ExportGrid(request) => serde_json::to_value(
+            execute_export_grid(
+                state,
+                request,
+                revision_id.as_deref().expect("read resource revision"),
+            )
+            .await?,
+        ),
+        SpreadsheetOperation::NamedRanges(request) => serde_json::to_value(
+            tools::named_ranges_semantic(
+                state,
+                tools::NamedRangesParams {
+                    workbook_or_fork_id: request.resource_id.to_workbook_id(),
+                    sheet_name: request.sheet_name,
+                    name_prefix: request.name_prefix,
+                },
+            )
+            .await
+            .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?,
+        ),
+        SpreadsheetOperation::AnalyzeStyles(request) => serde_json::to_value(
+            execute_analyze_styles(state, request)
+                .await
+                .map_err(|error| {
+                    CanonicalErrorEnvelope::operation_failed(name, error.to_string())
+                })?,
+        ),
+        SpreadsheetOperation::SearchValues(request) => serde_json::to_value(
+            tools::find_value_semantic(
+                state,
+                tools::FindValueParams {
+                    workbook_or_fork_id: request.resource_id.to_workbook_id(),
+                    query: request.query,
+                    label: request.label,
+                    mode: request.mode,
+                    match_mode: request.match_mode,
+                    case_sensitive: request.case_sensitive,
+                    sheet_name: request.sheet_name,
+                    region_id: request.region_id,
+                    table_name: request.table_name,
+                    value_types: request.value_types,
+                    search_headers_only: request.search_headers_only,
+                    direction: request.direction,
+                    limit: request.limit,
+                    offset: request.offset,
+                    context: request.context,
+                    context_width: request.context_width,
+                },
+            )
+            .await
+            .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?,
+        ),
+        SpreadsheetOperation::SearchFormulas(request) => {
+            serde_json::to_value(execute_search_formulas(state, request).await.map_err(
+                |error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()),
+            )?)
+        }
+        SpreadsheetOperation::FormulaTrace(request) => serde_json::to_value(
+            tools::formula_trace_semantic(
+                state,
+                tools::FormulaTraceParams {
+                    workbook_or_fork_id: request.resource_id.to_workbook_id(),
+                    sheet_name: request.sheet_name,
+                    cell_address: request.cell_address,
+                    direction: request.direction,
+                    depth: request.depth,
+                    limit: request.limit,
+                    page_size: request.page_size,
+                    cursor: request.cursor,
+                    formula_parse_policy: request.formula_parse_policy,
+                },
+            )
+            .await
+            .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?,
+        ),
+        SpreadsheetOperation::FormulaMap(request) => serde_json::to_value(
+            tools::sheet_formula_map_semantic(
+                state,
+                tools::SheetFormulaMapParams {
+                    workbook_or_fork_id: request.resource_id.to_workbook_id(),
+                    sheet_name: request.sheet_name,
+                    range: request.range,
+                    expand: request.expand,
+                    limit: request.limit,
+                    sort_by: request.sort_by,
+                    summary_only: request.summary_only,
+                    include_addresses: request.include_addresses,
+                    addresses_limit: request.addresses_limit,
+                    formula_parse_policy: request.formula_parse_policy,
+                },
+            )
+            .await
+            .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?,
+        ),
+        SpreadsheetOperation::ProfileTable(request) => serde_json::to_value(
+            tools::table_profile_semantic(
+                state,
+                tools::TableProfileParams {
+                    workbook_or_fork_id: request.resource_id.to_workbook_id(),
+                    sheet_name: request.sheet_name,
+                    region_id: request.region_id,
+                    table_name: request.table_name,
+                    sample_mode: request.sample_mode,
+                    sample_size: request.sample_size,
+                    summary_only: request.summary_only,
+                },
+            )
+            .await
+            .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?,
+        ),
+        SpreadsheetOperation::SheetStatistics(request) => serde_json::to_value(
+            tools::sheet_statistics_semantic(
+                state,
+                tools::SheetStatisticsParams {
+                    workbook_or_fork_id: request.resource_id.to_workbook_id(),
+                    sheet_name: request.sheet_name,
+                    sample_rows: request.sample_rows,
+                    summary_only: request.summary_only,
+                },
+            )
+            .await
+            .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?,
+        ),
     }
     .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?;
-
+    let _ = workbook_id;
     Ok(CanonicalResponse {
         schema_version: CANONICAL_SCHEMA_VERSION.to_string(),
         operation: name.to_string(),
@@ -675,13 +1186,10 @@ pub async fn execute_operation(
     })
 }
 
-pub(crate) async fn project_legacy<T>(
+pub(crate) async fn project_legacy<T: serde::de::DeserializeOwned>(
     state: Arc<AppState>,
     operation: SpreadsheetOperation,
-) -> anyhow::Result<T>
-where
-    T: serde::de::DeserializeOwned,
-{
+) -> anyhow::Result<T> {
     let response = execute_operation(state, operation)
         .await
         .map_err(|error| anyhow::anyhow!(error.error.message))?;
@@ -690,7 +1198,6 @@ where
 
 impl TryFrom<tools::ListSheetsParams> for ListSheetsRequest {
     type Error = String;
-
     fn try_from(params: tools::ListSheetsParams) -> Result<Self, Self::Error> {
         Ok(Self {
             resource_id: ResourceId::bind_workbook(&params.workbook_or_fork_id)?,
@@ -700,10 +1207,8 @@ impl TryFrom<tools::ListSheetsParams> for ListSheetsRequest {
         })
     }
 }
-
 impl TryFrom<tools::SheetOverviewParams> for SheetOverviewRequest {
     type Error = String;
-
     fn try_from(params: tools::SheetOverviewParams) -> Result<Self, Self::Error> {
         Ok(Self {
             resource_id: ResourceId::bind_workbook(&params.workbook_or_fork_id)?,
@@ -714,10 +1219,8 @@ impl TryFrom<tools::SheetOverviewParams> for SheetOverviewRequest {
         })
     }
 }
-
 impl TryFrom<tools::ReadTableParams> for ReadTableRequest {
     type Error = String;
-
     fn try_from(params: tools::ReadTableParams) -> Result<Self, Self::Error> {
         Ok(Self {
             resource_id: ResourceId::bind_workbook(&params.workbook_or_fork_id)?,
@@ -728,10 +1231,14 @@ impl TryFrom<tools::ReadTableParams> for ReadTableRequest {
             header_row: params.header_row,
             header_rows: params.header_rows,
             columns: params.columns,
-            filters: params.filters.map(|filters| {
-                filters
+            filters: params.filters.map(|values| {
+                values
                     .into_iter()
-                    .map(CanonicalTableFilter::from)
+                    .map(|value| CanonicalTableFilter {
+                        column: value.column,
+                        op: value.op,
+                        value: value.value,
+                    })
                     .collect()
             }),
             sample_mode: params.sample_mode,
