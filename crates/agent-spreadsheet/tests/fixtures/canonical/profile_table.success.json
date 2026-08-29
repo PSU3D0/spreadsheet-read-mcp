@@ -53,6 +53,7 @@
     "samples": [],
     "sheet_name": "Sheet1",
     "source": {
+      "bounds": "A1:C1",
       "header_provenance": "inferred_first_row",
       "header_row": 1,
       "selector_kind": "sheet_inferred",

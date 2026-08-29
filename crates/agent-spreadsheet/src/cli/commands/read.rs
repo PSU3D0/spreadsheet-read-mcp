@@ -583,6 +583,7 @@ pub async fn table_profile(file: PathBuf, sheet: Option<String>) -> Result<Value
             sheet_name,
             region_id: None,
             table_name: None,
+            range: None,
             sample_mode: None,
             sample_size: None,
             summary_only: None,

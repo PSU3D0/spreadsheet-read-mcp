@@ -745,6 +745,272 @@ async fn canonical_reads_reject_nonprogress_and_project_every_declared_cell_fiel
 }
 
 #[tokio::test]
+async fn read_cells_budget_uses_one_row_prefix_for_rows_and_exact_ranges() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("read-budget-prefix.xlsx");
+    let mut book = umya_spreadsheet::new_file();
+    let sheet = book.get_sheet_by_name_mut("Sheet1").unwrap();
+    let expected = (1..=200)
+        .map(|row| format!("row{row:03}-{}", "x".repeat(213)))
+        .collect::<Vec<_>>();
+    for (row, value) in expected.iter().enumerate() {
+        sheet.get_cell_mut(format!("A{}", row + 1)).set_value(value);
+    }
+    umya_spreadsheet::writer::xlsx::write(&book, &path).unwrap();
+    let (state, resource_id) = bound_path(&path).await;
+    let fields = json!([
+        "value",
+        "formula",
+        "cached_value",
+        "stored_kind",
+        "number_format",
+        "style_tags"
+    ]);
+
+    let mut row_cursor: Option<String> = None;
+    let mut row_values = Vec::new();
+    loop {
+        let mut request = json!({
+            "resource_id":resource_id.as_str(), "sheet_name":"Sheet1",
+            "selection":{"kind":"rows","start_row":1,"row_count":200,"include_header":false},
+            "format":"values", "page_size":200, "fields":fields
+        });
+        if let Some(cursor) = row_cursor.take() {
+            request["cursor"] = json!(cursor);
+        }
+        let response = execute_operation_json(state.clone(), "read_cells", request)
+            .await
+            .unwrap();
+        let block = &response.data["blocks"][0];
+        let count = block["row_count"].as_u64().unwrap() as usize;
+        assert!(count > 0);
+        assert_eq!(block["row_indices"].as_array().unwrap().len(), count);
+        assert_eq!(
+            block["payload"]["values_only"]["rows"]
+                .as_array()
+                .unwrap()
+                .len(),
+            count
+        );
+        assert_eq!(
+            block["payload"]["projected"].as_array().unwrap().len(),
+            count
+        );
+        assert_eq!(
+            block["payload"]["snapshots"].as_array().unwrap().len(),
+            count
+        );
+        for (value_row, projected_row) in block["payload"]["values_only"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(block["payload"]["projected"].as_array().unwrap())
+        {
+            let value = value_row[0]["value"].as_str().unwrap();
+            assert_eq!(projected_row[0]["value"]["value"], value);
+            row_values.push(value.to_string());
+        }
+        let complete = response.data["page"]["complete"].as_bool().unwrap();
+        row_cursor = response.data["page"]["next_cursor"]
+            .as_str()
+            .map(str::to_string);
+        assert_eq!(complete, row_cursor.is_none());
+        if complete {
+            break;
+        }
+    }
+    assert_eq!(row_values, expected);
+
+    let mut range_cursor: Option<String> = None;
+    let mut range_values = Vec::new();
+    loop {
+        let mut request = json!({
+            "resource_id":resource_id.as_str(), "sheet_name":"Sheet1",
+            "selection":{"kind":"range","ranges":["A1:A200"]},
+            "format":"values", "page_size":200, "fields":fields
+        });
+        if let Some(cursor) = range_cursor.take() {
+            request["cursor"] = json!(cursor);
+        }
+        let response = execute_operation_json(state.clone(), "read_cells", request)
+            .await
+            .unwrap();
+        let block = &response.data["blocks"][0];
+        let count = block["row_count"].as_u64().unwrap() as usize;
+        assert!(count > 0);
+        assert_eq!(block["payload"]["values"].as_array().unwrap().len(), count);
+        assert_eq!(
+            block["payload"]["projected"].as_array().unwrap().len(),
+            count
+        );
+        for (value_row, projected_row) in block["payload"]["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(block["payload"]["projected"].as_array().unwrap())
+        {
+            let value = value_row[0].as_str().unwrap();
+            assert_eq!(projected_row[0]["value"]["value"], value);
+            range_values.push(value.to_string());
+        }
+        let complete = response.data["page"]["complete"].as_bool().unwrap();
+        range_cursor = response.data["page"]["next_cursor"]
+            .as_str()
+            .map(str::to_string);
+        assert_eq!(complete, range_cursor.is_none());
+        if complete {
+            break;
+        }
+    }
+    assert_eq!(range_values, expected);
+}
+
+#[tokio::test]
+async fn analyze_styles_scan_limit_bounds_all_returned_evidence() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("style-scan-bound.xlsx");
+    let mut book = umya_spreadsheet::new_file();
+    let sheet = book.get_sheet_by_name_mut("Sheet1").unwrap();
+    for row in 1..=3 {
+        sheet
+            .get_cell_mut(format!("A{row}"))
+            .set_value(format!("value-{row}"));
+    }
+    umya_spreadsheet::writer::xlsx::write(&book, &path).unwrap();
+    let (state, resource_id) = bound_path(&path).await;
+
+    let styles = execute_operation_json(
+        state,
+        "analyze_styles",
+        json!({
+            "resource_id":resource_id.as_str(),
+            "scope":{"kind":"sheet","sheet_name":"Sheet1","selection":{"kind":"all"}},
+            "include":["ranges","example_cells"],
+            "limits":{"cells_scanned":1,"examples_per_style":10,"ranges_per_style":10}
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(styles.data["coverage"]["cells_scanned"], 1);
+    assert_eq!(styles.data["coverage"]["cells_in_scope"], 3);
+    assert_eq!(styles.data["coverage"]["counts_exact"], false);
+    let usages = styles.data["styles"].as_array().unwrap();
+    assert_eq!(
+        usages
+            .iter()
+            .map(|style| style["occurrences"].as_u64().unwrap())
+            .sum::<u64>(),
+        1
+    );
+    let examples = usages
+        .iter()
+        .flat_map(|style| style["example_cells"].as_array().unwrap())
+        .collect::<Vec<_>>();
+    let ranges = usages
+        .iter()
+        .flat_map(|style| style["ranges"].as_array().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(examples.len(), 1);
+    assert_eq!(ranges, examples);
+}
+
+#[tokio::test]
+async fn profile_table_reports_resolved_region_bounds_and_header() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("profile-region-source.xlsx");
+    let mut book = umya_spreadsheet::new_file();
+    let sheet = book.get_sheet_by_name_mut("Sheet1").unwrap();
+    sheet.get_cell_mut("A5").set_value("Name");
+    sheet.get_cell_mut("B5").set_value("Amount");
+    for row in 6..=15 {
+        sheet
+            .get_cell_mut(format!("A{row}"))
+            .set_value(format!("item-{row}"));
+        sheet
+            .get_cell_mut(format!("B{row}"))
+            .set_value_number(row as f64);
+    }
+    let mut table = umya_spreadsheet::structs::Table::new("SourceTable", ("A5", "B15"));
+    table.set_display_name("SourceTable");
+    sheet.add_table(table);
+    umya_spreadsheet::writer::xlsx::write(&book, &path).unwrap();
+    let (state, resource_id) = bound_path(&path).await;
+
+    let overview = execute_operation_json(
+        state.clone(),
+        "sheet_overview",
+        json!({"resource_id":resource_id.as_str(),"sheet_name":"Sheet1"}),
+    )
+    .await
+    .unwrap();
+    let region = overview.data["detected_regions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|region| region["bounds"] == "A5:B15")
+        .expect("A5:B15 region");
+    assert_eq!(region["header_row"], 5);
+
+    let profile = execute_operation_json(
+        state.clone(),
+        "profile_table",
+        json!({
+            "resource_id":resource_id.as_str(), "sheet_name":"Sheet1",
+            "region_id":region["id"], "sample_size":2
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(profile.data["source"]["bounds"], "A5:B15");
+    assert_eq!(profile.data["source"]["header_row"], 5);
+    assert_eq!(
+        profile.data["source"]["header_provenance"],
+        "detected_region"
+    );
+
+    let range_profile = execute_operation_json(
+        state.clone(),
+        "profile_table",
+        json!({
+            "resource_id":resource_id.as_str(), "sheet_name":"Sheet1",
+            "range":"A5:B15", "sample_size":2
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(range_profile.data["source"]["selector_kind"], "range");
+    assert_eq!(range_profile.data["source"]["selector_value"], "A5:B15");
+    assert_eq!(range_profile.data["source"]["bounds"], "A5:B15");
+    assert_eq!(range_profile.data["source"]["header_row"], 5);
+    assert_eq!(
+        range_profile.data["source"]["header_provenance"],
+        "range_first_row"
+    );
+
+    let table_profile = execute_operation_json(
+        state,
+        "profile_table",
+        json!({
+            "resource_id":resource_id.as_str(), "sheet_name":"Sheet1",
+            "table_name":"SourceTable", "sample_size":2
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(table_profile.data["source"]["selector_kind"], "table");
+    assert_eq!(
+        table_profile.data["source"]["selector_value"],
+        "SourceTable"
+    );
+    assert_eq!(table_profile.data["source"]["bounds"], "A5:B15");
+    assert_eq!(table_profile.data["source"]["header_row"], 5);
+    assert_eq!(
+        table_profile.data["source"]["header_provenance"],
+        "table_definition"
+    );
+}
+
+#[tokio::test]
 async fn formula_search_scans_all_pages_honors_range_and_uses_bound_cursor() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("formula-search.xlsx");
@@ -872,7 +1138,7 @@ async fn canonical_analysis_bounds_paths_paging_and_profile_provenance_are_expli
             "resource_id":resource_id.as_str(),
             "scope":{"kind":"sheet","sheet_name":"Sheet1","selection":{"kind":"all"}},
             "include":["ranges","example_cells"],
-            "limits":{"cells_scanned":1,"examples_per_style":0,"ranges_per_style":0}
+            "limits":{"cells_scanned":1,"examples_per_style":10,"ranges_per_style":10}
         }),
     )
     .await
@@ -880,14 +1146,24 @@ async fn canonical_analysis_bounds_paths_paging_and_profile_provenance_are_expli
     assert_eq!(styles.data["coverage"]["status"], "bounded");
     assert_eq!(styles.data["coverage"]["cells_scanned"], 1);
     assert_eq!(styles.data["coverage"]["counts_exact"], false);
+    assert_eq!(
+        styles.data["styles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|style| style["occurrences"].as_u64().unwrap())
+            .sum::<u64>(),
+        1
+    );
     assert!(
         styles.data["styles"]
             .as_array()
             .unwrap()
             .iter()
             .all(|style| {
-                style["ranges"].as_array().unwrap().is_empty()
-                    && style["example_cells"].as_array().unwrap().is_empty()
+                let ranges = style["ranges"].as_array().unwrap();
+                let examples = style["example_cells"].as_array().unwrap();
+                ranges.len() == 1 && examples.len() == 1 && ranges[0] == examples[0]
             })
     );
     assert!(styles.data["conditional_formats_complete"].is_boolean());

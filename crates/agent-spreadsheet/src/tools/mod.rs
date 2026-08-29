@@ -751,6 +751,9 @@ pub struct TableProfileParams {
     /// Profile a named Excel table
     #[serde(default)]
     pub table_name: Option<String>,
+    /// Profile an explicit A1 range.
+    #[serde(default)]
+    pub range: Option<String>,
     /// Sampling mode for selecting sample rows
     #[serde(default)]
     pub sample_mode: Option<SampleMode>,
@@ -936,6 +939,58 @@ pub(crate) async fn sheet_page_with_header_row(
     response.truncated = truncated;
     response.budget = budget;
     Ok(response)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn range_rows_unbudgeted(
+    state: Arc<AppState>,
+    workbook_id: &WorkbookId,
+    sheet_name: &str,
+    start_col: u32,
+    start_row: u32,
+    end_col: u32,
+    end_row: u32,
+    include_formulas: bool,
+    include_styles: bool,
+) -> Result<Vec<RowSnapshot>> {
+    let workbook = state.open_workbook(workbook_id).await?;
+    let columns = (start_col..=end_col).collect::<Vec<_>>();
+    workbook.with_sheet(sheet_name, |sheet| {
+        (start_row..=end_row)
+            .map(|row| {
+                build_row_snapshot(sheet, row, &columns, include_formulas, include_styles)
+            })
+            .collect()
+    })
+}
+
+pub(crate) async fn sheet_rows_unbudgeted_with_header_row(
+    state: Arc<AppState>,
+    params: SheetPageParams,
+    header_row: u32,
+) -> Result<(Option<RowSnapshot>, Vec<RowSnapshot>)> {
+    if params.page_size == 0 {
+        return Err(anyhow!("page_size must be greater than zero"));
+    }
+
+    let workbook = state.open_workbook(&params.workbook_or_fork_id).await?;
+    let start_row = params.start_row.max(1);
+    let page_size = params.page_size.min(500);
+    let page = workbook.with_sheet(&params.sheet_name, |sheet| {
+        build_page(
+            sheet,
+            start_row,
+            page_size,
+            params.columns,
+            params.columns_by_header,
+            params.include_formulas,
+            params.include_styles,
+            params.include_header,
+            header_row.max(1),
+        )
+    })?;
+
+    Ok((page.header, page.rows))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -2407,7 +2462,7 @@ fn cell_matrix_to_rows_keyed(
     out
 }
 
-fn build_range_values_entry(
+pub(crate) fn build_range_values_entry(
     format: TableOutputFormat,
     range: &str,
     rows: &[Vec<Option<CellValue>>],
@@ -2506,7 +2561,7 @@ where
     low
 }
 
-fn build_compact_payload(
+pub(crate) fn build_compact_payload(
     header: &Option<RowSnapshot>,
     rows: &[RowSnapshot],
     include_header: bool,
@@ -2537,7 +2592,7 @@ fn build_compact_payload(
     }
 }
 
-fn build_values_only_payload(
+pub(crate) fn build_values_only_payload(
     header: &Option<RowSnapshot>,
     rows: &[RowSnapshot],
     include_header: bool,
@@ -4195,10 +4250,25 @@ impl StyleAccum {
     }
 }
 
+pub(crate) struct BoundedSheetStyles {
+    pub response: SheetStylesResponse,
+    pub cells_scanned: u64,
+    pub cells_in_scope: u64,
+    pub scan_truncated: bool,
+}
+
 pub async fn sheet_styles(
     state: Arc<AppState>,
     params: SheetStylesParams,
 ) -> Result<SheetStylesResponse> {
+    Ok(sheet_styles_bounded(state, params, None).await?.response)
+}
+
+pub(crate) async fn sheet_styles_bounded(
+    state: Arc<AppState>,
+    params: SheetStylesParams,
+    max_cells_scan: Option<u32>,
+) -> Result<BoundedSheetStyles> {
     let workbook = state.open_workbook(&params.workbook_or_fork_id).await?;
     let config = state.config();
     let output_profile = config.output_profile();
@@ -4247,95 +4317,116 @@ pub async fn sheet_styles(
         .unwrap_or(STYLE_RANGE_LIMIT)
         .clamp(1, MAX_MAX_ITEMS);
 
-    let (mut styles, total_styles, mut styles_truncated) =
-        workbook.with_sheet(&params.sheet_name, |sheet| {
-            let mut acc: HashMap<String, StyleAccum> = HashMap::new();
+    let scan_limit = max_cells_scan.map(u64::from).unwrap_or(u64::MAX);
+    let (
+        mut styles,
+        total_styles,
+        mut styles_truncated,
+        cells_scanned,
+        cells_in_scope,
+        scan_truncated,
+    ) = workbook.with_sheet(&params.sheet_name, |sheet| {
+        let mut acc: HashMap<String, StyleAccum> = HashMap::new();
+        let mut cells_scanned = 0_u64;
+        let mut cells_in_scope = 0_u64;
 
-            for cell in sheet.get_cell_collection() {
-                let address = cell.get_coordinate().get_coordinate().to_string();
-                let Some((col, row)) = parse_address(&address) else {
-                    continue;
-                };
-                if col < bounds.0.0 || col > bounds.1.0 || row < bounds.0.1 || row > bounds.1.1 {
-                    continue;
-                }
+        for cell in sheet.get_cell_collection() {
+            let address = cell.get_coordinate().get_coordinate().to_string();
+            let Some((col, row)) = parse_address(&address) else {
+                continue;
+            };
+            if col < bounds.0.0 || col > bounds.1.0 || row < bounds.0.1 || row > bounds.1.1 {
+                continue;
+            }
+            cells_in_scope += 1;
+            if cells_scanned >= scan_limit {
+                continue;
+            }
+            cells_scanned += 1;
 
-                let descriptor = crate::styles::descriptor_from_style(cell.get_style());
-                let style_id = crate::styles::stable_style_id(&descriptor);
+            let descriptor = crate::styles::descriptor_from_style(cell.get_style());
+            let style_id = crate::styles::stable_style_id(&descriptor);
 
-                let entry = acc
-                    .entry(style_id.clone())
-                    .or_insert_with(|| StyleAccum::new(descriptor.clone()));
-                entry.occurrences += 1;
-                if entry.example_cells.len() < STYLE_EXAMPLE_LIMIT {
-                    entry.example_cells.push(address.clone());
-                }
-
-                if let Some((_, tagging)) = crate::analysis::style::tag_cell(cell) {
-                    for tag in tagging.tags {
-                        entry.tags.insert(tag);
-                    }
-                }
-
-                entry.positions.push((row, col));
+            let entry = acc
+                .entry(style_id.clone())
+                .or_insert_with(|| StyleAccum::new(descriptor.clone()));
+            entry.occurrences += 1;
+            if entry.example_cells.len() < STYLE_EXAMPLE_LIMIT {
+                entry.example_cells.push(address.clone());
             }
 
-            let mut summaries: Vec<StyleSummary> = acc
-                .into_iter()
-                .map(|(style_id, mut entry)| {
-                    entry.positions.sort_unstable();
-                    entry.positions.dedup();
+            if let Some((_, tagging)) = crate::analysis::style::tag_cell(cell) {
+                for tag in tagging.tags {
+                    entry.tags.insert(tag);
+                }
+            }
 
-                    let (cell_ranges, ranges_truncated) = if include_ranges {
-                        if granularity == StyleGranularity::Cells {
-                            let mut out = Vec::new();
-                            for (row, col) in entry.positions.iter().take(max_items) {
-                                out.push(crate::utils::cell_address(*col, *row));
-                            }
-                            (out, entry.positions.len() > max_items)
-                        } else {
-                            crate::styles::compress_positions_to_ranges(&entry.positions, max_items)
+            entry.positions.push((row, col));
+        }
+
+        let mut summaries: Vec<StyleSummary> = acc
+            .into_iter()
+            .map(|(style_id, mut entry)| {
+                entry.positions.sort_unstable();
+                entry.positions.dedup();
+
+                let (cell_ranges, ranges_truncated) = if include_ranges {
+                    if granularity == StyleGranularity::Cells {
+                        let mut out = Vec::new();
+                        for (row, col) in entry.positions.iter().take(max_items) {
+                            out.push(crate::utils::cell_address(*col, *row));
                         }
+                        (out, entry.positions.len() > max_items)
                     } else {
-                        (Vec::new(), false)
-                    };
-
-                    StyleSummary {
-                        style_id,
-                        occurrences: entry.occurrences,
-                        tags: entry.tags.into_iter().collect(),
-                        example_cells: if include_example_cells {
-                            entry.example_cells
-                        } else {
-                            Vec::new()
-                        },
-                        descriptor: if include_descriptor {
-                            Some(entry.descriptor)
-                        } else {
-                            None
-                        },
-                        cell_ranges,
-                        ranges_truncated,
+                        crate::styles::compress_positions_to_ranges(&entry.positions, max_items)
                     }
-                })
-                .collect();
+                } else {
+                    (Vec::new(), false)
+                };
 
-            summaries.sort_by(|a, b| {
-                b.occurrences
-                    .cmp(&a.occurrences)
-                    .then_with(|| a.style_id.cmp(&b.style_id))
-            });
+                StyleSummary {
+                    style_id,
+                    occurrences: entry.occurrences,
+                    tags: entry.tags.into_iter().collect(),
+                    example_cells: if include_example_cells {
+                        entry.example_cells
+                    } else {
+                        Vec::new()
+                    },
+                    descriptor: if include_descriptor {
+                        Some(entry.descriptor)
+                    } else {
+                        None
+                    },
+                    cell_ranges,
+                    ranges_truncated,
+                }
+            })
+            .collect();
 
-            let total = summaries.len() as u32;
-            let truncated = if summaries.len() > style_limit {
-                summaries.truncate(style_limit);
-                true
-            } else {
-                false
-            };
+        summaries.sort_by(|a, b| {
+            b.occurrences
+                .cmp(&a.occurrences)
+                .then_with(|| a.style_id.cmp(&b.style_id))
+        });
 
-            Ok::<_, anyhow::Error>((summaries, total, truncated))
-        })??;
+        let total = summaries.len() as u32;
+        let truncated = if summaries.len() > style_limit {
+            summaries.truncate(style_limit);
+            true
+        } else {
+            false
+        };
+
+        Ok::<_, anyhow::Error>((
+            summaries,
+            total,
+            truncated,
+            cells_scanned,
+            cells_in_scope,
+            cells_scanned < cells_in_scope,
+        ))
+    })??;
 
     if let Some(max_bytes) = max_payload_bytes {
         let row_limit = cap_rows_by_payload_bytes(styles.len(), Some(max_bytes), |count| {
@@ -4357,13 +4448,18 @@ pub async fn sheet_styles(
         }
     }
 
-    Ok(SheetStylesResponse {
-        workbook_id: workbook.id.clone(),
-        sheet_name: params.sheet_name.clone(),
-        styles,
-        conditional_rules: Vec::new(),
-        total_styles,
-        styles_truncated,
+    Ok(BoundedSheetStyles {
+        response: SheetStylesResponse {
+            workbook_id: workbook.id.clone(),
+            sheet_name: params.sheet_name.clone(),
+            styles,
+            conditional_rules: Vec::new(),
+            total_styles,
+            styles_truncated,
+        },
+        cells_scanned,
+        cells_in_scope,
+        scan_truncated,
     })
 }
 
@@ -5025,6 +5121,7 @@ pub async fn table_profile(
         sheet_name: params.sheet_name,
         region_id: params.region_id,
         table_name: params.table_name,
+        range: params.range,
         sample_mode: params.sample_mode,
         sample_size: params.sample_size,
         summary_only: params.summary_only,
@@ -5036,10 +5133,17 @@ pub async fn table_profile(
     .await
 }
 
+pub(crate) struct ResolvedTableProfile {
+    pub response: TableProfileResponse,
+    pub bounds: String,
+    pub header_row: u32,
+    pub header_from_selector: bool,
+}
+
 pub(crate) async fn table_profile_semantic(
     state: Arc<AppState>,
     params: TableProfileParams,
-) -> Result<TableProfileResponse> {
+) -> Result<ResolvedTableProfile> {
     let workbook = state.open_workbook(&params.workbook_or_fork_id).await?;
     let config = state.config();
     let output_profile = config.output_profile();
@@ -5053,7 +5157,7 @@ pub(crate) async fn table_profile_semantic(
             sheet_name: params.sheet_name.clone(),
             table_name: params.table_name.clone(),
             region_id: params.region_id,
-            range: None,
+            range: params.range.clone(),
             header_row: None,
             header_rows: None,
             columns: None,
@@ -5067,6 +5171,19 @@ pub(crate) async fn table_profile_semantic(
         },
     )?;
 
+    let ((start_col, start_row), (end_col, end_row)) = resolved.range;
+    let header_row = resolved
+        .header_hint
+        .unwrap_or(start_row)
+        .clamp(start_row, end_row);
+    let header_from_selector = resolved.header_hint.is_some();
+    let bounds = format!(
+        "{}{}:{}{}",
+        crate::utils::column_number_to_name(start_col),
+        start_row,
+        crate::utils::column_number_to_name(end_col),
+        end_row
+    );
     let sample_size = params.sample_size.unwrap_or(10) as usize;
     let sample_mode = params.sample_mode.unwrap_or(SampleMode::Distributed);
 
@@ -5181,15 +5298,20 @@ pub(crate) async fn table_profile_semantic(
         }
     }
 
-    Ok(TableProfileResponse {
-        workbook_id: workbook.id.clone(),
-        sheet_name: resolved.sheet_name,
-        table_name: resolved.table_name,
-        headers,
-        column_types,
-        row_count: total_rows,
-        samples,
-        notes: Vec::new(),
+    Ok(ResolvedTableProfile {
+        response: TableProfileResponse {
+            workbook_id: workbook.id.clone(),
+            sheet_name: resolved.sheet_name,
+            table_name: resolved.table_name,
+            headers,
+            column_types,
+            row_count: total_rows,
+            samples,
+            notes: Vec::new(),
+        },
+        bounds,
+        header_row,
+        header_from_selector,
     })
 }
 

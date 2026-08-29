@@ -645,6 +645,8 @@ pub struct ProfileTableRequest {
     #[serde(default)]
     pub table_name: Option<String>,
     #[serde(default)]
+    pub range: Option<String>,
+    #[serde(default)]
     pub sample_mode: Option<SampleMode>,
     #[serde(default)]
     pub sample_size: Option<u32>,
@@ -674,6 +676,7 @@ pub struct ProfileSource {
     pub sheet_name: String,
     pub selector_kind: String,
     pub selector_value: Option<String>,
+    pub bounds: String,
     pub header_row: u32,
     pub header_provenance: String,
 }
@@ -1151,6 +1154,127 @@ fn project_cell_snapshots(rows: &[RowSnapshot]) -> Vec<Vec<CanonicalCellProjecti
         .collect()
 }
 
+fn range_payload_from_snapshots(
+    encoding: ReadCellsFormat,
+    returned_range: &str,
+    rows: &[RowSnapshot],
+    include_formulas: bool,
+    include_projection: bool,
+) -> ReadCellsPayload {
+    let values = rows
+        .iter()
+        .map(|row| row.cells.iter().map(|cell| cell.value.clone()).collect())
+        .collect::<Vec<Vec<Option<CellValue>>>>();
+    let formulas = include_formulas.then(|| {
+        rows.iter()
+            .map(|row| row.cells.iter().map(|cell| cell.formula.clone()).collect())
+            .collect::<Vec<Vec<Option<String>>>>()
+    });
+    let entry = tools::build_range_values_entry(
+        encoding.range_format(),
+        returned_range,
+        &values,
+        formulas.as_deref(),
+        None,
+    );
+    ReadCellsPayload {
+        encoding,
+        rows: entry.rows,
+        formulas: entry.formulas,
+        values: entry.values,
+        dense: entry.dense,
+        csv: entry.csv,
+        rows_keyed: entry.rows_keyed,
+        snapshots: None,
+        compact: None,
+        values_only: None,
+        projected: include_projection.then(|| project_cell_snapshots(rows)),
+    }
+}
+
+fn rows_payload_from_snapshots(
+    encoding: ReadCellsFormat,
+    header: &Option<RowSnapshot>,
+    rows: &[RowSnapshot],
+    include_header: bool,
+    include_snapshots: bool,
+    include_projection: bool,
+) -> ReadCellsPayload {
+    let format = encoding.row_format();
+    ReadCellsPayload {
+        encoding,
+        rows: None,
+        formulas: None,
+        values: None,
+        dense: None,
+        csv: None,
+        rows_keyed: None,
+        snapshots: (matches!(format, SheetPageFormat::Full) || include_snapshots)
+            .then(|| rows.to_vec()),
+        compact: matches!(format, SheetPageFormat::Compact)
+            .then(|| tools::build_compact_payload(header, rows, include_header)),
+        values_only: matches!(format, SheetPageFormat::ValuesOnly)
+            .then(|| tools::build_values_only_payload(header, rows, include_header)),
+        projected: include_projection.then(|| project_cell_snapshots(rows)),
+    }
+}
+
+struct CanonicalBudgetDecision {
+    rows: usize,
+    first_row_fits: bool,
+}
+
+fn canonical_budget_decision<F>(
+    available_rows: usize,
+    cells_per_row: usize,
+    cells_already_emitted: usize,
+    max_cells: Option<usize>,
+    max_payload_bytes: Option<usize>,
+    existing_blocks: &[ReadCellsBlock],
+    mut build_block: F,
+) -> CanonicalBudgetDecision
+where
+    F: FnMut(usize) -> ReadCellsBlock,
+{
+    let cell_limited_rows = max_cells.map_or(available_rows, |limit| {
+        if cells_per_row == 0 {
+            available_rows
+        } else {
+            limit
+                .saturating_sub(cells_already_emitted)
+                .checked_div(cells_per_row)
+                .unwrap_or(0)
+                .min(available_rows)
+        }
+    });
+    let fits_payload = |count: usize, block: ReadCellsBlock, existing: &[ReadCellsBlock]| {
+        max_payload_bytes.is_none_or(|limit| {
+            let mut blocks = existing.to_vec();
+            if count > 0 {
+                blocks.push(block);
+            }
+            serde_json::to_vec(&blocks).is_ok_and(|payload| payload.len() <= limit)
+        })
+    };
+    let mut low = 0_usize;
+    let mut high = cell_limited_rows;
+    while low < high {
+        let mid = (low + high).div_ceil(2);
+        if fits_payload(mid, build_block(mid), existing_blocks) {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    let first_row_fits = available_rows == 0
+        || (max_cells.is_none_or(|limit| cells_per_row <= limit)
+            && fits_payload(1, build_block(1), &[]));
+    CanonicalBudgetDecision {
+        rows: low,
+        first_row_fits,
+    }
+}
+
 pub async fn execute_read_cells(
     state: Arc<AppState>,
     request: &ReadCellsRequest,
@@ -1220,10 +1344,14 @@ pub async fn execute_read_cells(
     let mut next_cursor = None;
     let mut header = None;
 
+    let config = state.config();
+    let max_cells = config.max_cells();
+    let max_payload_bytes = config.max_payload_bytes();
+
     match &request.selection {
         ReadCellsSelection::Range {
             ranges,
-            include_headers,
+            include_headers: _,
         } => {
             if ranges.is_empty() {
                 return Err(canonical_error(
@@ -1256,18 +1384,17 @@ pub async fn execute_read_cells(
                     continue;
                 }
                 let remaining = requested_rows as usize - rows_returned;
-                let range = range_string(c1, r1, c2, r2);
-                let response = tools::range_values(
+                let candidate_end = r2.min(r1.saturating_add(remaining as u32).saturating_sub(1));
+                let snapshots = tools::range_rows_unbudgeted(
                     state.clone(),
-                    tools::RangeValuesParams {
-                        workbook_or_fork_id: workbook_id.clone(),
-                        sheet_name: request.sheet_name.clone(),
-                        ranges: vec![range],
-                        include_headers: *include_headers,
-                        include_formulas: Some(include_formulas),
-                        format: Some(encoding.range_format()),
-                        page_size: Some(remaining as u32),
-                    },
+                    &workbook_id,
+                    &request.sheet_name,
+                    c1,
+                    r1,
+                    c2,
+                    candidate_end,
+                    include_formulas || !request.fields.is_empty(),
+                    include_styles || !request.fields.is_empty(),
                 )
                 .await
                 .map_err(|error| {
@@ -1278,106 +1405,75 @@ pub async fn execute_read_cells(
                         None,
                     )
                 })?;
-                let entry = response.values.into_iter().next().ok_or_else(|| {
-                    canonical_error(
-                        CanonicalErrorCode::OperationFailed,
-                        operation,
-                        "range read returned no correlated entry",
-                        None,
-                    )
-                })?;
-                let row_count = entry
-                    .rows
-                    .as_ref()
-                    .map(Vec::len)
-                    .or_else(|| entry.values.as_ref().map(Vec::len))
-                    .or_else(|| entry.dense.as_ref().map(|dense| dense.row_runs.len()))
-                    .or_else(|| entry.rows_keyed.as_ref().map(Vec::len))
-                    .or_else(|| entry.csv.as_ref().map(|csv| csv.lines().count()))
-                    .unwrap_or(0);
-                if row_count == 0 {
-                    return Err(canonical_error(
-                        CanonicalErrorCode::RowExceedsBudget,
-                        operation,
-                        format!("row {r1} cannot fit within the configured read payload budget"),
-                        Some("$.selection.ranges"),
-                    ));
-                }
-                let returned_end = r1 + row_count as u32 - 1;
-                let returned_range = range_string(c1, r1, c2, returned_end);
-                let continuation_row = entry
-                    .next_start_row
-                    .or_else(|| (returned_end < r2).then_some(returned_end + 1));
-                if continuation_row.is_some_and(|next| next <= r1) {
-                    return Err(canonical_error(
-                        CanonicalErrorCode::RowExceedsBudget,
-                        operation,
-                        format!("row {r1} cannot fit within the configured read payload budget"),
-                        Some("$.selection.ranges"),
-                    ));
-                }
-                let projected = if request.fields.is_empty() {
-                    None
-                } else {
-                    let details = tools::sheet_page_with_header_row(
-                        state.clone(),
-                        tools::SheetPageParams {
-                            workbook_or_fork_id: workbook_id.clone(),
-                            sheet_name: request.sheet_name.clone(),
-                            start_row: r1,
-                            page_size: row_count as u32,
-                            columns: Some((c1..=c2).map(col_name).collect()),
-                            columns_by_header: None,
-                            include_formulas: true,
-                            include_styles: true,
-                            include_header: false,
-                            format: Some(SheetPageFormat::Full),
-                        },
-                        1,
-                    )
-                    .await
-                    .map_err(|error| {
-                        canonical_error(
-                            CanonicalErrorCode::OperationFailed,
-                            operation,
-                            error.to_string(),
-                            None,
-                        )
-                    })?;
-                    Some(project_cell_snapshots(&details.rows))
-                };
-                let payload = ReadCellsPayload {
-                    encoding,
-                    rows: entry.rows,
-                    formulas: entry.formulas,
-                    values: entry.values,
-                    dense: entry.dense,
-                    csv: entry.csv,
-                    rows_keyed: entry.rows_keyed,
-                    snapshots: None,
-                    compact: None,
-                    values_only: None,
-                    projected,
-                };
                 let column_count = (c2 - c1 + 1) as usize;
-                rows_returned += row_count;
-                cells_returned += row_count * column_count;
-                blocks.push(ReadCellsBlock {
-                    selection_index: index,
-                    requested_range: requested_range.clone(),
-                    returned_range,
-                    row_count,
+                let build_block = |count: usize| {
+                    let returned_end = r1 + count as u32 - 1;
+                    let returned_range = range_string(c1, r1, c2, returned_end);
+                    ReadCellsBlock {
+                        selection_index: index,
+                        requested_range: requested_range.clone(),
+                        returned_range: returned_range.clone(),
+                        row_count: count,
+                        column_count,
+                        row_indices: None,
+                        payload: range_payload_from_snapshots(
+                            encoding,
+                            &returned_range,
+                            &snapshots[..count],
+                            include_formulas,
+                            !request.fields.is_empty(),
+                        ),
+                    }
+                };
+                let decision = canonical_budget_decision(
+                    snapshots.len(),
                     column_count,
-                    row_indices: None,
-                    payload,
-                });
-                if let Some(next_row) = continuation_row {
+                    cells_returned,
+                    max_cells,
+                    max_payload_bytes,
+                    &blocks,
+                    build_block,
+                );
+                if decision.rows == 0 {
+                    if !decision.first_row_fits {
+                        return Err(canonical_error(
+                            CanonicalErrorCode::RowExceedsBudget,
+                            operation,
+                            format!(
+                                "row {r1} cannot fit within the configured read payload budget"
+                            ),
+                            Some("$.selection.ranges"),
+                        ));
+                    }
                     next_cursor = Some(
                         encode_cursor(&ReadCellsCursor {
                             revision_id: revision_id.to_string(),
                             fingerprint: fingerprint.clone(),
                             selection_index: index,
-                            next_row,
+                            next_row: r1,
+                        })
+                        .map_err(|error| {
+                            canonical_error(
+                                CanonicalErrorCode::OperationFailed,
+                                operation,
+                                error.to_string(),
+                                None,
+                            )
+                        })?,
+                    );
+                    break;
+                }
+                let returned_end = r1 + decision.rows as u32 - 1;
+                blocks.push(build_block(decision.rows));
+                rows_returned += decision.rows;
+                cells_returned += decision.rows * column_count;
+                if returned_end < r2 {
+                    next_cursor = Some(
+                        encode_cursor(&ReadCellsCursor {
+                            revision_id: revision_id.to_string(),
+                            fingerprint: fingerprint.clone(),
+                            selection_index: index,
+                            next_row: returned_end + 1,
                         })
                         .map_err(|error| {
                             canonical_error(
@@ -1452,19 +1548,20 @@ pub async fn execute_read_cells(
                 }
                 _ => (None, None, 1),
             };
-            let response = tools::sheet_page_with_header_row(
+            let include_header = include_header.unwrap_or(true);
+            let (canonical_header, snapshots) = tools::sheet_rows_unbudgeted_with_header_row(
                 state.clone(),
                 tools::SheetPageParams {
-                    workbook_or_fork_id: workbook_id.clone(),
+                    workbook_or_fork_id: workbook_id,
                     sheet_name: request.sheet_name.clone(),
                     start_row: current_row,
                     page_size: remaining,
-                    columns: letters.clone(),
-                    columns_by_header: headers.clone(),
-                    include_formulas,
-                    include_styles,
-                    include_header: include_header.unwrap_or(true),
-                    format: Some(encoding.row_format()),
+                    columns: letters,
+                    columns_by_header: headers,
+                    include_formulas: include_formulas || !request.fields.is_empty(),
+                    include_styles: include_styles || !request.fields.is_empty(),
+                    include_header,
+                    format: Some(SheetPageFormat::Full),
                 },
                 header_row,
             )
@@ -1477,91 +1574,38 @@ pub async fn execute_read_cells(
                     None,
                 )
             })?;
-            header = response.header_row.clone();
-            let mut snapshots = response.rows.clone();
-            if snapshots.is_empty() && (include_formulas || include_styles) {
-                let details = tools::sheet_page_with_header_row(
-                    state.clone(),
-                    tools::SheetPageParams {
-                        workbook_or_fork_id: workbook_id,
-                        sheet_name: request.sheet_name.clone(),
-                        start_row: current_row,
-                        page_size: remaining,
-                        columns: letters,
-                        columns_by_header: headers,
-                        include_formulas,
-                        include_styles,
-                        include_header: include_header.unwrap_or(true),
-                        format: Some(SheetPageFormat::Full),
-                    },
-                    header_row,
-                )
-                .await
-                .map_err(|error| {
-                    canonical_error(
-                        CanonicalErrorCode::OperationFailed,
-                        operation,
-                        error.to_string(),
-                        None,
-                    )
-                })?;
-                header = details.header_row;
-                snapshots = details.rows;
-            }
-            let encoded_row_count = response
-                .compact
-                .as_ref()
-                .map(|compact| compact.rows.len())
-                .or_else(|| {
-                    response
-                        .values_only
-                        .as_ref()
-                        .map(|values| values.rows.len())
-                })
-                .unwrap_or(snapshots.len());
-            let row_indices = if snapshots.is_empty() {
-                (current_row..current_row.saturating_add(encoded_row_count as u32))
-                    .collect::<Vec<_>>()
-            } else {
-                snapshots
-                    .iter()
-                    .map(|row| row.row_index)
-                    .collect::<Vec<_>>()
-            };
-            let returned_row_count = row_indices.len();
-            if returned_row_count == 0 && remaining > 0 {
-                return Err(canonical_error(
-                    CanonicalErrorCode::RowExceedsBudget,
-                    operation,
-                    format!(
-                        "row {current_row} cannot fit within the configured read payload budget"
-                    ),
-                    Some("$.selection"),
-                ));
-            }
-            let column_count = snapshots.first().map_or_else(
-                || {
-                    response.compact.as_ref().map_or_else(
-                        || {
-                            response
-                                .values_only
-                                .as_ref()
-                                .and_then(|values| values.rows.first())
-                                .map_or(0, Vec::len)
-                        },
-                        |compact| compact.headers.len(),
-                    )
-                },
-                |row| row.cells.len(),
-            );
-            let returned_end = row_indices.last().copied().unwrap_or(current_row);
+            let column_count = snapshots.first().map_or(0, |row| row.cells.len());
             let requested_range = format!("rows:{start_row}+{row_count}");
-            let returned_range = format!("rows:{current_row}-{returned_end}");
-            let next_row = response
-                .next_start_row
-                .filter(|next| *next <= final_row)
-                .or_else(|| (returned_end < final_row).then_some(returned_end + 1));
-            if next_row.is_some_and(|next| next <= current_row) {
+            let build_block = |count: usize| {
+                let emitted = &snapshots[..count];
+                let returned_end = emitted.last().map_or(current_row, |row| row.row_index);
+                ReadCellsBlock {
+                    selection_index: 0,
+                    requested_range: requested_range.clone(),
+                    returned_range: format!("rows:{current_row}-{returned_end}"),
+                    row_count: count,
+                    column_count,
+                    row_indices: Some(emitted.iter().map(|row| row.row_index).collect()),
+                    payload: rows_payload_from_snapshots(
+                        encoding,
+                        &canonical_header,
+                        emitted,
+                        include_header,
+                        include_formulas || include_styles || !request.fields.is_empty(),
+                        !request.fields.is_empty(),
+                    ),
+                }
+            };
+            let decision = canonical_budget_decision(
+                snapshots.len(),
+                column_count,
+                0,
+                max_cells,
+                max_payload_bytes,
+                &[],
+                build_block,
+            );
+            if decision.rows == 0 && remaining > 0 {
                 return Err(canonical_error(
                     CanonicalErrorCode::RowExceedsBudget,
                     operation,
@@ -1571,13 +1615,24 @@ pub async fn execute_read_cells(
                     Some("$.selection"),
                 ));
             }
-            if let Some(next_row) = next_row {
+            let block = build_block(decision.rows);
+            let returned_end = block
+                .row_indices
+                .as_ref()
+                .and_then(|rows| rows.last())
+                .copied()
+                .unwrap_or(current_row);
+            header = canonical_header;
+            blocks.push(block);
+            rows_returned = decision.rows;
+            cells_returned = decision.rows * column_count;
+            if returned_end < final_row {
                 next_cursor = Some(
                     encode_cursor(&ReadCellsCursor {
                         revision_id: revision_id.to_string(),
                         fingerprint,
                         selection_index: 0,
-                        next_row,
+                        next_row: returned_end + 1,
                     })
                     .map_err(|error| {
                         canonical_error(
@@ -1589,34 +1644,8 @@ pub async fn execute_read_cells(
                     })?,
                 );
             }
-            let projected =
-                (!request.fields.is_empty()).then(|| project_cell_snapshots(&snapshots));
-            blocks.push(ReadCellsBlock {
-                selection_index: 0,
-                requested_range,
-                returned_range,
-                row_count: returned_row_count,
-                column_count,
-                row_indices: Some(row_indices),
-                payload: ReadCellsPayload {
-                    encoding,
-                    rows: None,
-                    formulas: None,
-                    values: None,
-                    dense: None,
-                    csv: None,
-                    rows_keyed: None,
-                    snapshots: (!snapshots.is_empty()).then_some(snapshots),
-                    compact: response.compact,
-                    values_only: response.values_only,
-                    projected,
-                },
-            });
-            rows_returned = returned_row_count;
-            cells_returned = returned_row_count * column_count;
         }
     }
-    let config = state.config();
     Ok(ReadCellsData {
         sheet_name: request.sheet_name.clone(),
         selection_kind: match request.selection {
@@ -2457,7 +2486,7 @@ pub async fn execute_analyze_styles(
                 }
                 _ => None,
             };
-            let response = tools::sheet_styles(
+            let bounded_response = tools::sheet_styles_bounded(
                 state.clone(),
                 tools::SheetStylesParams {
                     workbook_or_fork_id: workbook_id.clone(),
@@ -2470,6 +2499,10 @@ pub async fn execute_analyze_styles(
                     include_ranges: Some(include_ranges),
                     include_example_cells: Some(include_examples),
                 },
+                request
+                    .limits
+                    .as_ref()
+                    .and_then(|limits| limits.cells_scanned),
             )
             .await?;
             let (conditional_formats, conditional_formats_complete) =
@@ -2499,8 +2532,12 @@ pub async fn execute_analyze_styles(
                 } else {
                     (Vec::new(), true)
                 };
-            let semantic_bounded = response.styles_truncated;
-            let styles = response
+            let semantic_bounded =
+                bounded_response.response.styles_truncated || bounded_response.scan_truncated;
+            let cells_scanned = bounded_response.cells_scanned;
+            let cells_in_scope = bounded_response.cells_in_scope;
+            let styles = bounded_response
+                .response
                 .styles
                 .into_iter()
                 .map(|style| {
@@ -2519,7 +2556,7 @@ pub async fn execute_analyze_styles(
                     }
                 })
                 .collect();
-            let (styles, cells_scanned, cells_in_scope, locally_bounded) =
+            let (styles, _, _, locally_bounded) =
                 apply_style_limits(styles, request.limits.as_ref());
             let bounded = semantic_bounded || locally_bounded;
             Ok(AnalyzeStylesData {
@@ -2555,6 +2592,8 @@ pub async fn execute_profile_table(
         "table"
     } else if request.region_id.is_some() {
         "region"
+    } else if request.range.is_some() {
+        "range"
     } else {
         "sheet_inferred"
     }
@@ -2562,22 +2601,19 @@ pub async fn execute_profile_table(
     let selector_value = request
         .table_name
         .clone()
-        .or_else(|| request.region_id.map(|value| value.to_string()));
-    let header_provenance = if request.table_name.is_some() {
-        "table_definition"
-    } else if request.region_id.is_some() {
-        "detected_region"
-    } else {
-        "inferred_first_row"
-    }
-    .to_string();
-    let response = tools::table_profile_semantic(
+        .or_else(|| request.region_id.map(|value| value.to_string()))
+        .or_else(|| request.range.clone());
+    let table_selector = request.table_name.is_some();
+    let region_selector = request.region_id.is_some();
+    let range_selector = request.range.is_some();
+    let resolved = tools::table_profile_semantic(
         state,
         tools::TableProfileParams {
             workbook_or_fork_id: request.resource_id.to_workbook_id(),
             sheet_name: request.sheet_name,
             region_id: request.region_id,
             table_name: request.table_name,
+            range: request.range,
             sample_mode: request.sample_mode,
             sample_size: request.sample_size,
             summary_only: request.summary_only,
@@ -2592,6 +2628,21 @@ pub async fn execute_profile_table(
             None,
         )
     })?;
+    let header_provenance = if table_selector && resolved.header_from_selector {
+        "table_definition"
+    } else if region_selector && resolved.header_from_selector {
+        "detected_region"
+    } else if region_selector {
+        "inferred_region_first_row"
+    } else if range_selector {
+        "range_first_row"
+    } else {
+        "inferred_first_row"
+    }
+    .to_string();
+    let bounds = resolved.bounds;
+    let header_row = resolved.header_row;
+    let response = resolved.response;
     let rows_scanned = response.row_count.min(sample_size);
     let complete = rows_scanned >= response.row_count;
     Ok(ProfileTableData {
@@ -2607,7 +2658,8 @@ pub async fn execute_profile_table(
             sheet_name: response.sheet_name,
             selector_kind,
             selector_value,
-            header_row: 1,
+            bounds,
+            header_row,
             header_provenance,
         },
         coverage: ProfileCoverage {
