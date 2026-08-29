@@ -11,6 +11,7 @@ pub mod errors;
 pub mod fork;
 pub mod formula;
 pub mod model;
+pub mod operations;
 pub mod read;
 #[cfg(feature = "recalc")]
 pub mod recalc;

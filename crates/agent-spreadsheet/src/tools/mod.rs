@@ -209,6 +209,18 @@ pub async fn list_sheets(
     state: Arc<AppState>,
     params: ListSheetsParams,
 ) -> Result<SheetListResponse> {
+    let request = crate::operations::ListSheetsRequest::from(params);
+    crate::operations::project_legacy(
+        state,
+        crate::operations::SpreadsheetOperation::ListSheets(request),
+    )
+    .await
+}
+
+pub(crate) async fn list_sheets_semantic(
+    state: Arc<AppState>,
+    params: ListSheetsParams,
+) -> Result<SheetListResponse> {
     let workbook = state.open_workbook(&params.workbook_or_fork_id).await?;
     let config = state.config();
     let output_profile = config.output_profile();
@@ -433,6 +445,18 @@ fn priority_from_rationale(rationale: &str) -> u32 {
 }
 
 pub async fn sheet_overview(
+    state: Arc<AppState>,
+    params: SheetOverviewParams,
+) -> Result<SheetOverviewResponse> {
+    let request = crate::operations::SheetOverviewRequest::from(params);
+    crate::operations::project_legacy(
+        state,
+        crate::operations::SpreadsheetOperation::SheetOverview(request),
+    )
+    .await
+}
+
+pub(crate) async fn sheet_overview_semantic(
     state: Arc<AppState>,
     params: SheetOverviewParams,
 ) -> Result<SheetOverviewResponse> {
@@ -4721,6 +4745,18 @@ pub async fn find_value(
 }
 
 pub async fn read_table(
+    state: Arc<AppState>,
+    params: ReadTableParams,
+) -> Result<ReadTableResponse> {
+    let request = crate::operations::ReadTableRequest::from(params);
+    crate::operations::project_legacy(
+        state,
+        crate::operations::SpreadsheetOperation::ReadTable(request),
+    )
+    .await
+}
+
+pub(crate) async fn read_table_semantic(
     state: Arc<AppState>,
     params: ReadTableParams,
 ) -> Result<ReadTableResponse> {

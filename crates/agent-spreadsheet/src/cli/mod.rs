@@ -499,10 +499,31 @@ enum SurfaceDiscoverabilityCommands {
     Write(SurfaceDiscoverabilityWriteCommands),
     #[command(subcommand, about = "Discoverability targets for session payloads")]
     Session(SurfaceDiscoverabilitySessionCommands),
+    #[command(external_subcommand)]
+    Canonical(Vec<OsString>),
 }
 
 #[derive(Debug, Subcommand)]
 enum SurfaceCommands {
+    #[command(about = "List canonical operations and their policy metadata")]
+    Operations,
+    #[command(about = "Execute a canonical operation against an ephemeral bound resource")]
+    Op {
+        #[arg(value_name = "OPERATION")]
+        operation: String,
+        #[arg(
+            long,
+            value_name = "FILE",
+            help = "Bind a workbook path as an ephemeral resource"
+        )]
+        bind: PathBuf,
+        #[arg(
+            long,
+            value_name = "JSON",
+            help = "Canonical JSON payload (reads stdin when omitted)"
+        )]
+        json: Option<String>,
+    },
     #[command(subcommand, about = "Read workbook data and structure")]
     Read(SurfaceReadCommands),
     #[command(subcommand, about = "Analyze workbook contents and formulas")]
@@ -3293,10 +3314,22 @@ fn normalize_legacy_global_format_argv(argv: Vec<OsString>) -> Vec<OsString> {
 }
 
 #[derive(Debug)]
+enum ResolvedDiscoverabilityCommand {
+    Legacy(DiscoverabilityCommands),
+    Canonical(String),
+}
+
+#[derive(Debug)]
 enum ResolvedSurfaceCommand {
     Command(Commands),
-    Schema(DiscoverabilityCommands),
-    Example(DiscoverabilityCommands),
+    Operations,
+    Operation {
+        operation: String,
+        bind: PathBuf,
+        json: Option<String>,
+    },
+    Schema(ResolvedDiscoverabilityCommand),
+    Example(ResolvedDiscoverabilityCommand),
 }
 
 fn flat_to_canonical_command(flat: &str) -> Option<&'static str> {
@@ -3698,8 +3731,8 @@ fn parse_flat_command_from_surface(
 
 fn resolve_surface_discoverability(
     command: SurfaceDiscoverabilityCommands,
-) -> DiscoverabilityCommands {
-    match command {
+) -> ResolvedDiscoverabilityCommand {
+    let legacy = match command {
         SurfaceDiscoverabilityCommands::Write(command) => match command {
             SurfaceDiscoverabilityWriteCommands::Batch(command) => match command {
                 SurfaceDiscoverabilityBatchCommands::Transform => {
@@ -3726,13 +3759,32 @@ fn resolve_surface_discoverability(
                 DiscoverabilityCommands::SessionOp { kind }
             }
         },
-    }
+        SurfaceDiscoverabilityCommands::Canonical(parts) => {
+            let name = parts
+                .into_iter()
+                .map(|part| part.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(" ");
+            return ResolvedDiscoverabilityCommand::Canonical(name);
+        }
+    };
+    ResolvedDiscoverabilityCommand::Legacy(legacy)
 }
 
 fn resolve_surface_command(
     command: SurfaceCommands,
 ) -> Result<ResolvedSurfaceCommand, clap::Error> {
     match command {
+        SurfaceCommands::Operations => Ok(ResolvedSurfaceCommand::Operations),
+        SurfaceCommands::Op {
+            operation,
+            bind,
+            json,
+        } => Ok(ResolvedSurfaceCommand::Operation {
+            operation,
+            bind,
+            json,
+        }),
         SurfaceCommands::Read(command) => match command {
             SurfaceReadCommands::Sheets(args) => {
                 parse_flat_command_from_surface("list-sheets", args.args)
@@ -3918,6 +3970,98 @@ fn resolve_surface_command(
     }
 }
 
+fn emit_exact_json<T: serde::Serialize>(value: &T, stderr: bool) -> std::io::Result<()> {
+    use std::io::Write;
+    if stderr {
+        let stream = std::io::stderr();
+        let mut handle = stream.lock();
+        serde_json::to_writer(&mut handle, value)?;
+        handle.write_all(b"\n")
+    } else {
+        let stream = std::io::stdout();
+        let mut handle = stream.lock();
+        serde_json::to_writer(&mut handle, value)?;
+        handle.write_all(b"\n")
+    }
+}
+
+fn emit_canonical_error_and_exit(error: crate::operations::CanonicalErrorEnvelope) -> ! {
+    let _ = emit_exact_json(&error, true);
+    std::process::exit(1)
+}
+
+async fn run_machine_operation(
+    operation: &str,
+    bind: PathBuf,
+    json_payload: Option<String>,
+) -> Result<crate::operations::CanonicalResponse, crate::operations::CanonicalErrorEnvelope> {
+    use crate::operations::{CanonicalErrorCode, CanonicalErrorEnvelope};
+    use std::io::Read;
+
+    let payload_text = match json_payload {
+        Some(payload) => payload,
+        None => {
+            let mut payload = String::new();
+            std::io::stdin()
+                .read_to_string(&mut payload)
+                .map_err(|error| {
+                    CanonicalErrorEnvelope::new(
+                        CanonicalErrorCode::InvalidRequest,
+                        format!("failed to read JSON payload from stdin: {error}"),
+                        Some(operation),
+                        Some("$".to_string()),
+                    )
+                })?;
+            payload
+        }
+    };
+    let mut payload: Value = serde_json::from_str(&payload_text).map_err(|error| {
+        CanonicalErrorEnvelope::new(
+            CanonicalErrorCode::InvalidRequest,
+            error.to_string(),
+            Some(operation),
+            Some(format!(
+                "$ (line {}, column {})",
+                error.line(),
+                error.column()
+            )),
+        )
+    })?;
+    let object = payload.as_object_mut().ok_or_else(|| {
+        CanonicalErrorEnvelope::new(
+            CanonicalErrorCode::InvalidRequest,
+            "canonical request payload must be a JSON object",
+            Some(operation),
+            Some("$".to_string()),
+        )
+    })?;
+
+    let runtime = crate::runtime::stateless::StatelessRuntime;
+    let (state, workbook_id) = runtime.open_state_for_file(&bind).await.map_err(|error| {
+        CanonicalErrorEnvelope::new(
+            CanonicalErrorCode::ResourceNotFound,
+            error.to_string(),
+            Some(operation),
+            Some("--bind".to_string()),
+        )
+    })?;
+    if let Some(provided) = object.get("resource_id")
+        && provided.as_str() != Some(workbook_id.as_str())
+    {
+        return Err(CanonicalErrorEnvelope::new(
+            CanonicalErrorCode::InvalidRequest,
+            "payload resource_id does not match the ephemeral --bind resource",
+            Some(operation),
+            Some("$.resource_id".to_string()),
+        ));
+    }
+    object.insert(
+        "resource_id".to_string(),
+        Value::String(workbook_id.as_str().to_string()),
+    );
+    crate::operations::execute_operation_json(state, operation, payload).await
+}
+
 pub async fn run() -> Result<()> {
     let argv = normalize_legacy_global_format_argv(std::env::args_os().collect());
     let (argv, warnings) = normalize_legacy_command_argv(argv);
@@ -3928,51 +4072,72 @@ pub async fn run() -> Result<()> {
         Err(error) => error.exit(),
     };
 
-    let result = match resolve_surface_command(surface.command) {
-        Ok(ResolvedSurfaceCommand::Command(command)) => {
-            run_with_options(
-                command,
-                surface.output_format,
-                surface.shape,
-                surface.compact,
-                surface.quiet,
-            )
-            .await
-        }
-        Ok(ResolvedSurfaceCommand::Schema(command)) => match run_schema_command(command) {
-            Ok(payload) => {
-                if let Err(error) = output::emit_value(
-                    &payload,
+    let result =
+        match resolve_surface_command(surface.command) {
+            Ok(ResolvedSurfaceCommand::Command(command)) => {
+                run_with_options(
+                    command,
                     surface.output_format,
                     surface.shape,
-                    output::CompactProjectionTarget::None,
                     surface.compact,
                     surface.quiet,
-                ) {
-                    emit_error_and_exit(error);
+                )
+                .await
+            }
+            Ok(ResolvedSurfaceCommand::Operations) => {
+                let payload = crate::operations::operations_discovery(
+                    &crate::operations::RuntimeCapabilities::native(),
+                );
+                if let Err(error) = emit_exact_json(&payload, false) {
+                    emit_error_and_exit(error.into());
                 }
                 Ok(())
             }
-            Err(error) => emit_error_and_exit(error),
-        },
-        Ok(ResolvedSurfaceCommand::Example(command)) => match run_example_command(command) {
-            Ok(payload) => {
-                if let Err(error) = output::emit_value(
-                    &payload,
-                    surface.output_format,
-                    surface.shape,
-                    output::CompactProjectionTarget::None,
-                    surface.compact,
-                    surface.quiet,
-                ) {
-                    emit_error_and_exit(error);
+            Ok(ResolvedSurfaceCommand::Operation {
+                operation,
+                bind,
+                json,
+            }) => match run_machine_operation(&operation, bind, json).await {
+                Ok(response) => {
+                    if let Err(error) = emit_exact_json(&response, false) {
+                        emit_error_and_exit(error.into());
+                    }
+                    Ok(())
+                }
+                Err(error) => emit_canonical_error_and_exit(error),
+            },
+            Ok(ResolvedSurfaceCommand::Schema(command)) => {
+                let payload = match command {
+                    ResolvedDiscoverabilityCommand::Legacy(command) => run_schema_command(command)
+                        .unwrap_or_else(|error| emit_error_and_exit(error)),
+                    ResolvedDiscoverabilityCommand::Canonical(operation) => {
+                        crate::operations::operation_schema(&operation)
+                            .unwrap_or_else(|error| emit_canonical_error_and_exit(error))
+                    }
+                };
+                if let Err(error) = emit_exact_json(&payload, false) {
+                    emit_error_and_exit(error.into());
                 }
                 Ok(())
             }
-            Err(error) => emit_error_and_exit(error),
-        },
-        Err(error) => emit_rewritten_clap_error_and_exit(error),
-    };
+            Ok(ResolvedSurfaceCommand::Example(command)) => {
+                let payload = match command {
+                    ResolvedDiscoverabilityCommand::Legacy(command) => run_example_command(command)
+                        .unwrap_or_else(|error| emit_error_and_exit(error)),
+                    ResolvedDiscoverabilityCommand::Canonical(operation) => {
+                        emit_error_and_exit(anyhow::anyhow!(
+                            "canonical operation '{}' has schemas but no example fixture",
+                            operation
+                        ))
+                    }
+                };
+                if let Err(error) = emit_exact_json(&payload, false) {
+                    emit_error_and_exit(error.into());
+                }
+                Ok(())
+            }
+            Err(error) => emit_rewritten_clap_error_and_exit(error),
+        };
 
     if result.is_ok() && !surface.quiet {
         for warning in &warnings {
@@ -5351,7 +5516,9 @@ mod tests {
 
         let resolved = resolve_surface_command(cli.command).expect("resolve schema command");
         match resolved {
-            ResolvedSurfaceCommand::Schema(DiscoverabilityCommands::TransformBatch) => {}
+            ResolvedSurfaceCommand::Schema(ResolvedDiscoverabilityCommand::Legacy(
+                DiscoverabilityCommands::TransformBatch,
+            )) => {}
             other => panic!("unexpected resolved command: {other:?}"),
         }
     }
