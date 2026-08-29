@@ -71,10 +71,16 @@ jobs:
             source_name="${binary}${{ matrix.binary_extension }}"
             asset_name="${binary}-${{ matrix.asset_suffix }}${{ matrix.binary_extension }}"
             cp "${release_dir}/${source_name}" "dist/${asset_name}"
+            archive_members="$source_name"
+            if [[ "$binary" == "agent-spreadsheet" ]]; then
+              # CLI archives carry both bin names so cargo-binstall (pkg-fmt tgz/zip)
+              # can materialize the crate's two declared bins.
+              archive_members="$source_name asp${{ matrix.binary_extension }}"
+            fi
             if [[ "${{ matrix.archive_extension }}" == ".zip" ]]; then
-              (cd "$release_dir" && 7z a "$GITHUB_WORKSPACE/dist/${binary}-${{ matrix.asset_suffix }}.zip" "$source_name")
+              (cd "$release_dir" && 7z a "$GITHUB_WORKSPACE/dist/${binary}-${{ matrix.asset_suffix }}.zip" $archive_members)
             else
-              tar -czf "dist/${binary}-${{ matrix.asset_suffix }}.tar.gz" -C "$release_dir" "$source_name"
+              tar -czf "dist/${binary}-${{ matrix.asset_suffix }}.tar.gz" -C "$release_dir" $archive_members
             fi
           done
 
