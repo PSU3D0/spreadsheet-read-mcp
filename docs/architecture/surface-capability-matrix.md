@@ -153,13 +153,15 @@ Wave 3A registers the complete canonical discovery/read/search/analysis surface 
 | `describe_workbook` | legacy metadata and workbook-summary tools remain separate | exact metadata plus opt-in scoped derived summary | `workbook_read` | low |
 | `list_sheets`, `sheet_overview`, `read_table` | CLI/MCP wrappers project canonical `data` | shared semantic implementations | `workbook_read` | low |
 | `read_cells` | legacy `range_values` and `sheet_page` remain available | correlated range/row engine with revision/request-bound opaque cursor | `workbook_read` | low |
-| `inspect_cells`, `named_ranges` | legacy MCP wrappers project canonical `data` | shared semantic implementations | `workbook_read` | low |
+| `inspect_cells` | legacy detail view stays separate to retain its historical partial-payload behavior; canonical fails before truncation | shared semantic implementation with distinct truncation policy | `workbook_read` | low |
+| `named_ranges` | legacy MCP wrapper projects canonical `data` | shared semantic implementation | `workbook_read` | low |
 | `read_layout` | legacy `layout_page` stays separate | explicitly lossy layout projection | `workbook_read` | low |
 | `export_grid` | legacy `grid_export` stays separate | coordinate-preserving paged grid export of cell content and explicit formatting; implicit presentation defaults excluded | `workbook_read` | low |
 | `analyze_styles` | legacy sheet/workbook style tools stay separate | closed `scope.kind` union with bounded-count coverage | `workbook_read` | low |
 | `search_values` | legacy `find_value` projects canonical `data` | preserves label, direction, scope, type, header, and context options | `workbook_read` | low |
 | `search_formulas` | legacy formula search/volatile tools stay separate | closed `result_mode` branches and actual function classifications | `workbook_read` | low |
-| `formula_trace`, `formula_map` | legacy MCP wrappers project canonical `data` | shared formula analysis | `workbook_read` | low |
+| `formula_trace` | legacy structured-cursor wrapper stays separate; canonical uses a revision/request-bound opaque cursor | shared formula analysis |
+| `formula_map` | legacy MCP wrapper projects canonical `data` | shared formula analysis with opaque canonical continuation | `workbook_read` | low |
 | `profile_table`, `sheet_statistics` | legacy MCP wrappers project canonical `data` | shared bounded analysis | `workbook_read` | low |
 
 Canonical responses use the versioned operation envelope and state reads carry `revision_id`. Value-bearing reads expose calculation state. Merged responses echo branch discriminants. Checked-in full JSON fixtures cover both branches of `describe_workbook`, `read_cells`, `analyze_styles`, and `search_formulas`, plus every unbranched operation.
