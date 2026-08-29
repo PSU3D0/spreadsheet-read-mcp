@@ -5525,7 +5525,7 @@ pub async fn recalculate_with_backend(
     } else {
         "completed_with_errors"
     };
-    let error_count = result.evaluation_coverage.error_formula_cells as usize;
+    let error_count = result.eval_errors.as_ref().map(Vec::len);
     Ok(RecalculateResponse {
         fork_id: params.fork_id,
         duration_ms: result.duration_ms,
@@ -5533,7 +5533,7 @@ pub async fn recalculate_with_backend(
         state: result.state,
         evaluation_coverage: result.evaluation_coverage,
         status: status.to_string(),
-        error_count: (error_count > 0).then_some(error_count),
+        error_count,
         cells_evaluated: result.cells_evaluated,
         eval_errors: result.eval_errors,
     })

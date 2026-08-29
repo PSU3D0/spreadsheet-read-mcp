@@ -129,6 +129,55 @@ pub struct EvaluatedWorkbook {
     pub coverage: EvaluationCoverage,
 }
 
+pub struct EvaluatedWorkbookPair {
+    baseline: EvaluatedWorkbook,
+    current: Option<EvaluatedWorkbook>,
+}
+
+impl EvaluatedWorkbookPair {
+    pub fn baseline(&self) -> &EvaluatedWorkbook {
+        &self.baseline
+    }
+
+    pub fn current(&self) -> &EvaluatedWorkbook {
+        self.current.as_ref().unwrap_or(&self.baseline)
+    }
+
+    pub fn evaluations_performed(&self) -> u8 {
+        if self.current.is_some() { 2 } else { 1 }
+    }
+}
+
+pub fn can_reuse_verification_evaluation(
+    baseline: &WorkbookContext,
+    current: &WorkbookContext,
+) -> bool {
+    baseline.id == current.id && baseline.revision_id == current.revision_id
+}
+
+pub async fn evaluate_workbook_pair_for_verification(
+    baseline_config: &std::sync::Arc<crate::config::ServerConfig>,
+    baseline: &WorkbookContext,
+    current_config: &std::sync::Arc<crate::config::ServerConfig>,
+    current: &WorkbookContext,
+) -> Result<EvaluatedWorkbookPair> {
+    if can_reuse_verification_evaluation(baseline, current) {
+        return Ok(EvaluatedWorkbookPair {
+            baseline: evaluate_workbook_for_verification(baseline_config, baseline).await?,
+            current: None,
+        });
+    }
+
+    let (baseline, current) = tokio::try_join!(
+        evaluate_workbook_for_verification(baseline_config, baseline),
+        evaluate_workbook_for_verification(current_config, current),
+    )?;
+    Ok(EvaluatedWorkbookPair {
+        baseline,
+        current: Some(current),
+    })
+}
+
 #[cfg(feature = "recalc-formualizer")]
 pub async fn evaluate_workbook_for_verification(
     config: &std::sync::Arc<crate::config::ServerConfig>,
@@ -263,9 +312,13 @@ pub fn compare_workbooks_with_coverage(
     let current_state = current_evaluation_coverage.state();
     let complete_and_fresh = baseline_evaluation_coverage.is_complete_and_fresh()
         && current_evaluation_coverage.is_complete_and_fresh();
+    let changed_preexisting_error = preexisting_errors.iter().any(|delta| {
+        delta.before_error != delta.after_error || delta.before_formula != delta.after_formula
+    });
     let has_differences = target_deltas.iter().any(|delta| delta.changed)
         || !new_errors.is_empty()
         || !resolved_errors.is_empty()
+        || changed_preexisting_error
         || !named_range_deltas.is_empty();
     let proof_status = if !complete_and_fresh {
         ProofStatus::InconclusiveUnevaluated
@@ -455,7 +508,9 @@ fn collect_error_cells(
             let mut items = Vec::new();
             for cell in sheet.get_cell_collection() {
                 let raw = cell.get_value();
-                if !is_error_text(&raw) {
+                let is_typed_error =
+                    cell.get_data_type() == "e" || (cell.is_formula() && is_error_text(&raw));
+                if !is_typed_error {
                     continue;
                 }
                 let address = format!("{}!{}", sheet_name, cell.get_coordinate().get_coordinate());

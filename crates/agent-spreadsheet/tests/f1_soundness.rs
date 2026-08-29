@@ -3,8 +3,12 @@
 use agent_spreadsheet::cli::RangeValuesFormatArg;
 use agent_spreadsheet::cli::commands::{read, recalc, verify};
 use agent_spreadsheet::config::ServerConfig;
-use agent_spreadsheet::model::{CellValue, EvaluationState};
-use agent_spreadsheet::verification::evaluate_workbook_for_verification;
+use agent_spreadsheet::model::{
+    CellValue, EvaluationCoverage, EvaluationFreshness, EvaluationSource, EvaluationState,
+};
+use agent_spreadsheet::verification::{
+    evaluate_workbook_for_verification, evaluate_workbook_pair_for_verification,
+};
 use agent_spreadsheet::workbook::{WorkbookContext, cell_to_value};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -37,6 +41,7 @@ fn all_eight_adversarial_fixtures_are_vendored() {
         "ratio_600_percent.xlsx",
         "all_formulas_uncached.xlsx",
         "evaluated_empty_string.xlsx",
+        "error_cell_types.xlsx",
     ] {
         assert!(fixture(name).is_file(), "missing fixture {name}");
     }
@@ -47,7 +52,7 @@ fn imported_caches_never_claim_clean() {
     let stale = load("stale_cache.xlsx").imported_evaluation_coverage();
     assert_eq!(stale.formula_cells, 1);
     assert_eq!(stale.evaluated_formula_cells, 1);
-    assert_eq!(stale.freshness, "unknown");
+    assert_eq!(stale.freshness, EvaluationFreshness::Unknown);
     assert_eq!(stale.state(), EvaluationState::NotEvaluated);
 
     let partial = load("partial.xlsx").imported_evaluation_coverage();
@@ -60,6 +65,44 @@ fn imported_caches_never_claim_clean() {
     assert_eq!(uncached.state(), EvaluationState::NotEvaluated);
 }
 
+#[test]
+fn imported_coverage_is_scanned_once_per_workbook_revision() {
+    let workbook = load("partial.xlsx");
+    assert_eq!(workbook.imported_evaluation_scan_count(), 0);
+
+    let first = workbook.calculation_metadata();
+    let second = workbook.calculation_metadata();
+
+    assert_eq!(first.revision_id, second.revision_id);
+    assert_eq!(workbook.imported_evaluation_scan_count(), 1);
+}
+
+#[test]
+fn proof_coverage_requires_valid_counts_and_a_trusted_source() {
+    let complete = EvaluationCoverage {
+        formula_cells: 2,
+        evaluated_formula_cells: 2,
+        unsupported_formula_cells: 0,
+        error_formula_cells: 0,
+        source: EvaluationSource::Formualizer,
+        freshness: EvaluationFreshness::CurrentRevision,
+        revision_id: "revision".to_string(),
+    };
+    assert!(complete.is_complete_and_fresh());
+
+    let mut untrusted = complete.clone();
+    untrusted.source = EvaluationSource::None;
+    assert!(!untrusted.is_complete_and_fresh());
+
+    let mut over_evaluated = complete.clone();
+    over_evaluated.evaluated_formula_cells = 3;
+    assert!(!over_evaluated.is_complete_and_fresh());
+
+    let mut impossible_errors = complete;
+    impossible_errors.error_formula_cells = 3;
+    assert!(!impossible_errors.is_complete_and_fresh());
+}
+
 #[tokio::test]
 async fn formualizer_coverage_counts_errors_and_empty_results_as_evaluated() -> Result<()> {
     let config = test_config();
@@ -69,7 +112,10 @@ async fn formualizer_coverage_counts_errors_and_empty_results_as_evaluated() -> 
     assert_eq!(stale.coverage.state(), EvaluationState::Clean);
     assert_eq!(stale.coverage.formula_cells, 1);
     assert_eq!(stale.coverage.evaluated_formula_cells, 1);
-    assert_eq!(stale.coverage.freshness, "current_revision");
+    assert_eq!(
+        stale.coverage.freshness,
+        EvaluationFreshness::CurrentRevision
+    );
     let value = stale.workbook.with_sheet("Sheet1", |sheet| {
         cell_to_value(sheet.get_cell("B1").unwrap())
     })?;
@@ -126,7 +172,18 @@ async fn recalculate_response_reports_canonical_state_and_coverage() -> Result<(
 }
 
 #[tokio::test]
-async fn verify_evaluates_both_sides_before_proving() -> Result<()> {
+async fn verify_evaluates_errors_and_detects_same_address_changes() -> Result<()> {
+    let config = test_config();
+    let identical_workbook = load("unevaluated_broken.xlsx");
+    let evaluated = evaluate_workbook_pair_for_verification(
+        &config,
+        &identical_workbook,
+        &config,
+        &identical_workbook,
+    )
+    .await?;
+    assert_eq!(evaluated.evaluations_performed(), 1);
+
     let response = verify::verify(
         fixture("unevaluated_broken.xlsx"),
         fixture("unevaluated_broken.xlsx"),
@@ -149,6 +206,45 @@ async fn verify_evaluates_both_sides_before_proving() -> Result<()> {
         2
     );
     assert_eq!(response["preexisting_errors"].as_array().unwrap().len(), 2);
+
+    let temp = tempfile::tempdir()?;
+    let changed_path = temp.path().join("changed-errors.xlsx");
+    let mut changed = umya_spreadsheet::reader::xlsx::read(fixture("real_errors.xlsx"))?;
+    changed
+        .get_sheet_by_name_mut("Sheet1")
+        .unwrap()
+        .get_cell_mut("A1")
+        .set_formula("UNKNOWNFN(2)")
+        .set_formula_result_default("#NAME?");
+    umya_spreadsheet::writer::xlsx::write(&changed, &changed_path)?;
+
+    let changed_errors = verify::verify(
+        fixture("real_errors.xlsx"),
+        changed_path,
+        None,
+        None,
+        false,
+        true,
+        false,
+    )
+    .await?;
+    assert_eq!(changed_errors["proof_status"], "differences_found");
+    assert_eq!(changed_errors["new_errors"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        changed_errors["preexisting_errors"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    let changed_a1 = changed_errors["preexisting_errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|delta| delta["address"] == "Sheet1!A1")
+        .unwrap();
+    assert_ne!(changed_a1["before_error"], changed_a1["after_error"]);
+    assert_ne!(changed_a1["before_formula"], changed_a1["after_formula"]);
 
     let differences = verify::verify(
         fixture("baseline.xlsx"),
@@ -184,16 +280,26 @@ fn formula_ratios_are_structural_and_bounded() {
 }
 
 #[test]
-fn persisted_and_formualizer_errors_are_typed_errors() {
-    let real_errors = load("real_errors.xlsx");
-    real_errors
+fn ooxml_errors_are_typed_but_error_like_strings_remain_text() {
+    let cell_types = load("error_cell_types.xlsx");
+    cell_types
         .with_sheet("Sheet1", |sheet| {
-            for address in ["A1", "A2", "A3"] {
-                assert!(matches!(
-                    cell_to_value(sheet.get_cell(address).unwrap()),
-                    Some(CellValue::Error(_))
-                ));
-            }
+            assert!(matches!(
+                cell_to_value(sheet.get_cell("A1").unwrap()),
+                Some(CellValue::Error(value)) if value == "#N/A"
+            ));
+            assert!(matches!(
+                cell_to_value(sheet.get_cell("B1").unwrap()),
+                Some(CellValue::Text(value)) if value == "#N/A"
+            ));
+            assert!(matches!(
+                cell_to_value(sheet.get_cell("C1").unwrap()),
+                Some(CellValue::Text(value)) if value == "#REF!"
+            ));
+            assert!(matches!(
+                cell_to_value(sheet.get_cell("D1").unwrap()),
+                Some(CellValue::Error(value)) if value == "#DIV/0!"
+            ));
         })
         .unwrap();
 }

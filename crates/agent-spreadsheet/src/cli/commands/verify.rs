@@ -1,7 +1,7 @@
 use crate::runtime::stateless::StatelessRuntime;
 use crate::tools::{self, NamedRangesParams};
 use crate::verification::{
-    VerifyOptions, compare_workbooks_with_coverage, evaluate_workbook_for_verification,
+    VerifyOptions, compare_workbooks_with_coverage, evaluate_workbook_pair_for_verification,
     failed_verification_response,
 };
 use anyhow::Result;
@@ -69,26 +69,22 @@ pub async fn verify(
 
     let baseline_config = baseline_state.config();
     let current_config = current_state.config();
-    let (evaluated_baseline, evaluated_current) = tokio::join!(
-        evaluate_workbook_for_verification(&baseline_config, &baseline_workbook),
-        evaluate_workbook_for_verification(&current_config, &current_workbook),
-    );
-    let (evaluated_baseline, evaluated_current) = match (evaluated_baseline, evaluated_current) {
-        (Ok(baseline), Ok(current)) => (baseline, current),
-        (baseline_result, current_result) => {
-            let mut failures = Vec::new();
-            if let Err(error) = baseline_result {
-                failures.push(format!("baseline evaluation failed: {error}"));
-            }
-            if let Err(error) = current_result {
-                failures.push(format!("current evaluation failed: {error}"));
-            }
+    let evaluated = match evaluate_workbook_pair_for_verification(
+        &baseline_config,
+        &baseline_workbook,
+        &current_config,
+        &current_workbook,
+    )
+    .await
+    {
+        Ok(evaluated) => evaluated,
+        Err(error) => {
             return Ok(serde_json::to_value(failed_verification_response(
                 baseline.display().to_string(),
                 current.display().to_string(),
                 &baseline_workbook,
                 &current_workbook,
-                failures.join("; "),
+                format!("verification evaluation failed: {error}"),
             ))?);
         }
     };
@@ -96,13 +92,13 @@ pub async fn verify(
     let response = compare_workbooks_with_coverage(
         baseline.display().to_string(),
         current.display().to_string(),
-        &evaluated_baseline.workbook,
-        &evaluated_current.workbook,
+        &evaluated.baseline().workbook,
+        &evaluated.current().workbook,
         &options,
         baseline_named.as_ref().map(|r| r.items.as_slice()),
         current_named.as_ref().map(|r| r.items.as_slice()),
-        evaluated_baseline.coverage,
-        evaluated_current.coverage,
+        evaluated.baseline().coverage.clone(),
+        evaluated.current().coverage.clone(),
     )?;
 
     Ok(serde_json::to_value(response)?)

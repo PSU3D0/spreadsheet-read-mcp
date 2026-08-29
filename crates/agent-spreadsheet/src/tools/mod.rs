@@ -21,7 +21,7 @@ use crate::state::AppState;
 use crate::utils::column_number_to_name;
 use crate::verification::{
     VerifyOptions, VerifyResponse, compare_workbooks_with_coverage,
-    evaluate_workbook_for_verification, failed_verification_response,
+    evaluate_workbook_pair_for_verification, failed_verification_response,
 };
 use crate::workbook::{WorkbookContext, cell_to_value};
 use anyhow::{Context, Result, anyhow};
@@ -1330,26 +1330,22 @@ pub async fn verify_workbook(
     };
 
     let config = state.config();
-    let (evaluated_baseline, evaluated_current) = tokio::join!(
-        evaluate_workbook_for_verification(&config, &baseline_workbook),
-        evaluate_workbook_for_verification(&config, &current_workbook),
-    );
-    let (evaluated_baseline, evaluated_current) = match (evaluated_baseline, evaluated_current) {
-        (Ok(baseline), Ok(current)) => (baseline, current),
-        (baseline_result, current_result) => {
-            let mut failures = Vec::new();
-            if let Err(error) = baseline_result {
-                failures.push(format!("baseline evaluation failed: {error}"));
-            }
-            if let Err(error) = current_result {
-                failures.push(format!("current evaluation failed: {error}"));
-            }
+    let evaluated = match evaluate_workbook_pair_for_verification(
+        &config,
+        &baseline_workbook,
+        &config,
+        &current_workbook,
+    )
+    .await
+    {
+        Ok(evaluated) => evaluated,
+        Err(error) => {
             return Ok(failed_verification_response(
                 params.baseline_workbook_or_fork_id.as_str().to_string(),
                 params.current_workbook_or_fork_id.as_str().to_string(),
                 &baseline_workbook,
                 &current_workbook,
-                failures.join("; "),
+                format!("verification evaluation failed: {error}"),
             ));
         }
     };
@@ -1357,13 +1353,13 @@ pub async fn verify_workbook(
     compare_workbooks_with_coverage(
         params.baseline_workbook_or_fork_id.as_str().to_string(),
         params.current_workbook_or_fork_id.as_str().to_string(),
-        &evaluated_baseline.workbook,
-        &evaluated_current.workbook,
+        &evaluated.baseline().workbook,
+        &evaluated.current().workbook,
         &options,
         baseline_named.as_ref().map(|r| r.items.as_slice()),
         current_named.as_ref().map(|r| r.items.as_slice()),
-        evaluated_baseline.coverage,
-        evaluated_current.coverage,
+        evaluated.baseline().coverage.clone(),
+        evaluated.current().coverage.clone(),
     )
 }
 

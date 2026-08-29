@@ -17,13 +17,16 @@ use crate::utils::{
 };
 use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Utc};
+use once_cell::sync::Lazy;
 use parking_lot::RwLock;
+use regex::Regex;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::io::Cursor;
+use std::fs::{self, File};
+use std::io::{Cursor, Read, Seek};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use umya_spreadsheet::reader::xlsx;
 use umya_spreadsheet::{DefinedName, Spreadsheet, Worksheet};
@@ -65,6 +68,19 @@ const DETECT_MAX_MS: u64 = 200;
 const DETECT_OUTLIER_FRACTION: f32 = 0.01;
 const DETECT_OUTLIER_MIN_CELLS: usize = 50;
 
+static OOXML_SHEET_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?s)<sheet\b([^>]*)/?>"#).unwrap());
+static OOXML_REL_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?s)<Relationship\b([^>]*)/?>"#).unwrap());
+static OOXML_CELL_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?s)<c\b([^>]*)>(.*?)</c>"#).unwrap());
+static OOXML_TEXT_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?s)<t(?:\s[^>]*)?>(.*?)</t>"#).unwrap());
+static OOXML_R_ID_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"\br:id="([^"]+)""#).unwrap());
+static OOXML_ID_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"\bId="([^"]+)""#).unwrap());
+static OOXML_TARGET_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"\bTarget="([^"]+)""#).unwrap());
+static OOXML_COORD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"\br="([^"]+)""#).unwrap());
+static OOXML_TYPE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"\bt="([^"]+)""#).unwrap());
+
 pub struct WorkbookContext {
     pub id: WorkbookId,
     pub short_id: String,
@@ -77,6 +93,8 @@ pub struct WorkbookContext {
     spreadsheet: Arc<RwLock<Spreadsheet>>,
     sheet_cache: RwLock<HashMap<String, Arc<SheetCacheEntry>>>,
     formula_atlas: Arc<FormulaAtlas>,
+    imported_evaluation_coverage: OnceLock<crate::model::EvaluationCoverage>,
+    imported_evaluation_scans: AtomicU64,
 }
 
 pub struct SheetCacheEntry {
@@ -141,6 +159,90 @@ impl SheetCacheEntry {
     }
 }
 
+fn zip_text<R: Read + Seek>(archive: &mut zip::ZipArchive<R>, name: &str) -> Option<String> {
+    let mut entry = archive.by_name(name).ok()?;
+    let mut text = String::new();
+    entry.read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
+fn relationship_target(target: &str) -> String {
+    let target = target.trim_start_matches('/');
+    if target.starts_with("xl/") {
+        target.to_string()
+    } else {
+        format!("xl/{target}")
+    }
+}
+
+fn restore_inline_error_text_types<R: Read + Seek>(
+    spreadsheet: &mut Spreadsheet,
+    archive: &mut zip::ZipArchive<R>,
+) {
+    let Some(workbook_xml) = zip_text(archive, "xl/workbook.xml") else {
+        return;
+    };
+    let Some(relationships_xml) = zip_text(archive, "xl/_rels/workbook.xml.rels") else {
+        return;
+    };
+
+    let relationships: HashMap<String, String> = OOXML_REL_RE
+        .captures_iter(&relationships_xml)
+        .filter_map(|captures| {
+            let attributes = captures.get(1)?.as_str();
+            let id = OOXML_ID_RE.captures(attributes)?.get(1)?.as_str();
+            let target = OOXML_TARGET_RE.captures(attributes)?.get(1)?.as_str();
+            Some((id.to_string(), relationship_target(target)))
+        })
+        .collect();
+    let worksheet_paths: Vec<String> = OOXML_SHEET_RE
+        .captures_iter(&workbook_xml)
+        .filter_map(|captures| {
+            let attributes = captures.get(1)?.as_str();
+            let id = OOXML_R_ID_RE.captures(attributes)?.get(1)?.as_str();
+            relationships.get(id).cloned()
+        })
+        .collect();
+
+    for (sheet_index, worksheet_path) in worksheet_paths.iter().enumerate() {
+        let Some(worksheet_xml) = zip_text(archive, worksheet_path) else {
+            continue;
+        };
+        let Some(sheet) = spreadsheet.get_sheet_collection_mut().get_mut(sheet_index) else {
+            continue;
+        };
+        for captures in OOXML_CELL_RE.captures_iter(&worksheet_xml) {
+            let Some(attributes) = captures.get(1).map(|value| value.as_str()) else {
+                continue;
+            };
+            let Some(body) = captures.get(2).map(|value| value.as_str()) else {
+                continue;
+            };
+            let is_inline_string = OOXML_TYPE_RE
+                .captures(attributes)
+                .and_then(|capture| capture.get(1))
+                .is_some_and(|value| value.as_str() == "inlineStr");
+            if !is_inline_string || body.contains("<f") {
+                continue;
+            }
+            let text = OOXML_TEXT_RE
+                .captures_iter(body)
+                .filter_map(|capture| capture.get(1).map(|value| value.as_str()))
+                .collect::<String>();
+            if !is_spreadsheet_error(&text) {
+                continue;
+            }
+            if let Some(coordinate) = OOXML_COORD_RE
+                .captures(attributes)
+                .and_then(|capture| capture.get(1))
+                .map(|value| value.as_str())
+            {
+                sheet.get_cell_mut(coordinate).set_value_string(text);
+            }
+        }
+    }
+}
+
 impl WorkbookContext {
     pub fn load(_config: &Arc<ServerConfig>, path: &Path) -> Result<Self> {
         fs::metadata(path).with_context(|| format!("unable to read metadata for {:?}", path))?;
@@ -177,8 +279,13 @@ impl WorkbookContext {
             None => hash_file_sha256_hex(path)
                 .with_context(|| format!("unable to hash workbook {:?}", path))?,
         };
-        let spreadsheet =
+        let mut spreadsheet =
             xlsx::read(path).with_context(|| format!("failed to parse workbook {:?}", path))?;
+        if let Ok(file) = File::open(path)
+            && let Ok(mut archive) = zip::ZipArchive::new(file)
+        {
+            restore_inline_error_text_types(&mut spreadsheet, &mut archive);
+        }
 
         Ok(Self {
             id: stable_id,
@@ -192,6 +299,8 @@ impl WorkbookContext {
             spreadsheet: Arc::new(RwLock::new(spreadsheet)),
             sheet_cache: RwLock::new(HashMap::new()),
             formula_atlas: Arc::new(FormulaAtlas::default()),
+            imported_evaluation_coverage: OnceLock::new(),
+            imported_evaluation_scans: AtomicU64::new(0),
         })
     }
 
@@ -208,8 +317,11 @@ impl WorkbookContext {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "workbook".to_string());
         let cursor = Cursor::new(bytes);
-        let spreadsheet = xlsx::read_reader(cursor, true)
+        let mut spreadsheet = xlsx::read_reader(cursor, true)
             .with_context(|| format!("failed to parse workbook bytes for {display_name}"))?;
+        if let Ok(mut archive) = zip::ZipArchive::new(Cursor::new(bytes)) {
+            restore_inline_error_text_types(&mut spreadsheet, &mut archive);
+        }
         let revision_id = revision_id.unwrap_or_else(|| hash_bytes_sha256_hex(bytes));
 
         Ok(Self {
@@ -224,6 +336,8 @@ impl WorkbookContext {
             spreadsheet: Arc::new(RwLock::new(spreadsheet)),
             sheet_cache: RwLock::new(HashMap::new()),
             formula_atlas: Arc::new(FormulaAtlas::default()),
+            imported_evaluation_coverage: OnceLock::new(),
+            imported_evaluation_scans: AtomicU64::new(0),
         })
     }
 
@@ -242,44 +356,55 @@ impl WorkbookContext {
     }
 
     pub fn imported_evaluation_coverage(&self) -> crate::model::EvaluationCoverage {
-        let book = self.spreadsheet.read();
-        let mut formula_cells = 0u64;
-        let mut cached_formula_cells = 0u64;
-        let mut error_formula_cells = 0u64;
+        self.imported_evaluation_coverage
+            .get_or_init(|| {
+                self.imported_evaluation_scans
+                    .fetch_add(1, AtomicOrdering::Relaxed);
+                let book = self.spreadsheet.read();
+                let mut formula_cells = 0u64;
+                let mut cached_formula_cells = 0u64;
+                let mut error_formula_cells = 0u64;
 
-        for sheet in book.get_sheet_collection() {
-            for cell in sheet.get_cell_collection() {
-                if !cell.is_formula() {
-                    continue;
+                for sheet in book.get_sheet_collection() {
+                    for cell in sheet.get_cell_collection() {
+                        if !cell.is_formula() {
+                            continue;
+                        }
+                        formula_cells += 1;
+                        let value = cell.get_value();
+                        if !value.is_empty() {
+                            cached_formula_cells += 1;
+                        }
+                        if is_spreadsheet_error(&value) {
+                            error_formula_cells += 1;
+                        }
+                    }
                 }
-                formula_cells += 1;
-                let value = cell.get_value();
-                if !value.is_empty() {
-                    cached_formula_cells += 1;
-                }
-                if is_spreadsheet_error(&value) {
-                    error_formula_cells += 1;
-                }
-            }
-        }
 
-        crate::model::EvaluationCoverage {
-            formula_cells,
-            evaluated_formula_cells: cached_formula_cells,
-            unsupported_formula_cells: 0,
-            error_formula_cells,
-            source: if cached_formula_cells > 0 {
-                "trusted_cache".to_string()
-            } else {
-                "none".to_string()
-            },
-            freshness: if formula_cells == 0 {
-                "current_revision".to_string()
-            } else {
-                "unknown".to_string()
-            },
-            revision_id: self.revision_id.clone(),
-        }
+                crate::model::EvaluationCoverage {
+                    formula_cells,
+                    evaluated_formula_cells: cached_formula_cells,
+                    unsupported_formula_cells: 0,
+                    error_formula_cells,
+                    source: if cached_formula_cells > 0 {
+                        crate::model::EvaluationSource::TrustedCache
+                    } else {
+                        crate::model::EvaluationSource::None
+                    },
+                    freshness: if formula_cells == 0 {
+                        crate::model::EvaluationFreshness::CurrentRevision
+                    } else {
+                        crate::model::EvaluationFreshness::Unknown
+                    },
+                    revision_id: self.revision_id.clone(),
+                }
+            })
+            .clone()
+    }
+
+    #[doc(hidden)]
+    pub fn imported_evaluation_scan_count(&self) -> u64 {
+        self.imported_evaluation_scans.load(AtomicOrdering::Relaxed)
     }
 
     pub fn calculation_metadata(&self) -> crate::model::CalculationMetadata {
@@ -677,7 +802,7 @@ pub fn cell_to_value_with_date_system(
     if raw.is_empty() {
         return None;
     }
-    if cell.get_data_type() == "e" || is_spreadsheet_error(&raw) {
+    if cell.get_data_type() == "e" || (cell.is_formula() && is_spreadsheet_error(&raw)) {
         return Some(crate::model::CellValue::Error(raw.to_string()));
     }
     if let Ok(number) = raw.parse::<f64>() {
