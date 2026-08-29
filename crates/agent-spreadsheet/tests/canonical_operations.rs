@@ -1,12 +1,11 @@
-use agent_spreadsheet::model::{TableOutputFormat, WorkbookId};
+use agent_spreadsheet::model::WorkbookId;
 use agent_spreadsheet::operations::{
-    CanonicalErrorCode, CanonicalErrorEnvelope, OperationRisk, RuntimeCapabilities,
-    canonical_error_schema, decode_operation, execute_operation_json, operation_registry,
+    CanonicalErrorCode, CanonicalErrorEnvelope, CanonicalResponse, OperationRisk, ResourceId,
+    RuntimeCapabilities, canonical_error_schema, decode_operation, execute_operation_json,
+    operation_registry,
 };
 use agent_spreadsheet::runtime::stateless::StatelessRuntime;
-use agent_spreadsheet::tools::{
-    ListSheetsParams, ReadTableParams, SheetOverviewParams, list_sheets, read_table, sheet_overview,
-};
+use agent_spreadsheet::tools::{SheetOverviewParams, sheet_overview};
 use assert_cmd::Command;
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -19,14 +18,17 @@ fn fixture() -> PathBuf {
 async fn bound_state() -> (
     std::sync::Arc<agent_spreadsheet::state::AppState>,
     WorkbookId,
+    ResourceId,
 ) {
-    StatelessRuntime
+    let (state, workbook_id) = StatelessRuntime
         .open_state_for_file(&fixture())
         .await
-        .expect("bind fixture")
+        .expect("bind fixture");
+    let resource_id = ResourceId::bind_workbook(&workbook_id).expect("canonical binding");
+    (state, workbook_id, resource_id)
 }
 
-fn with_resource(resource_id: &WorkbookId, mut payload: Value) -> Value {
+fn with_resource(resource_id: &ResourceId, mut payload: Value) -> Value {
     payload
         .as_object_mut()
         .expect("object payload")
@@ -57,97 +59,35 @@ fn assert_object_schemas_closed(schema: &Value) {
     }
 }
 
-#[test]
-fn registry_descriptors_are_unique_closed_and_policy_complete() {
-    let registry = operation_registry();
-    let names = registry
-        .iter()
-        .map(|descriptor| descriptor.name)
-        .collect::<HashSet<_>>();
-    assert_eq!(names.len(), registry.len());
-    assert_eq!(
-        names,
-        HashSet::from(["list_sheets", "sheet_overview", "read_table"])
-    );
-
-    let capabilities = RuntimeCapabilities::native();
-    for descriptor in registry {
-        assert_eq!(descriptor.schema_version, "1");
-        assert!(!descriptor.description.is_empty());
-        assert_eq!(descriptor.capability.name, "workbook_read");
-        assert!(descriptor.is_available(&capabilities));
-        assert_eq!(descriptor.risk_ceiling, OperationRisk::Low);
-        assert!(!descriptor.cost.bounded_by.is_empty());
-        assert_object_schemas_closed(&(descriptor.input_schema)());
-        assert_object_schemas_closed(&(descriptor.output_schema)());
+fn validate(schema: &Value, instance: &Value) {
+    let validator = jsonschema::validator_for(schema).expect("valid generated JSON Schema");
+    if let Err(error) = validator.validate(instance) {
+        panic!("schema validation failed: {error}\ninstance: {instance}\nschema: {schema}");
     }
-    assert_object_schemas_closed(&canonical_error_schema());
-
-    let operation = decode_operation("list_sheets", json!({"resource_id":"wb_123"})).unwrap();
-    let descriptor = operation_registry()
-        .iter()
-        .find(|descriptor| descriptor.name == "list_sheets")
-        .unwrap();
-    assert_eq!((descriptor.risk_for)(&operation), OperationRisk::Low);
 }
 
-#[test]
-fn request_decoding_rejects_unknown_operations_fields_and_paths() {
-    let unknown = decode_operation("not_an_operation", json!({})).unwrap_err();
-    assert_eq!(unknown.error.code, CanonicalErrorCode::UnknownOperation);
-
-    let extra = decode_operation(
-        "list_sheets",
-        json!({"resource_id":"wb_123","unexpected":true}),
+fn golden(name: &str, response: &Value) -> Value {
+    let text = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/canonical")
+            .join(format!("{name}.json")),
     )
-    .unwrap_err();
-    assert_eq!(extra.error.code, CanonicalErrorCode::InvalidRequest);
-    assert!(extra.error.message.contains("unknown field"));
-
-    let path =
-        decode_operation("list_sheets", json!({"resource_id":"/tmp/workbook.xlsx"})).unwrap_err();
-    assert_eq!(path.error.code, CanonicalErrorCode::InvalidRequest);
-    assert!(path.error.message.contains("opaque identifier"));
-
-    let nested_extra = decode_operation(
-        "read_table",
-        json!({
-            "resource_id":"wb_123",
-            "filters":[{"column":"A","op":"eq","value":1,"extra":true}]
-        }),
-    )
-    .unwrap_err();
-    assert_eq!(nested_extra.error.code, CanonicalErrorCode::InvalidRequest);
+    .expect("read golden");
+    let mut text = text;
+    if let Some(resource_id) = response.get("resource_id").and_then(Value::as_str) {
+        text = text.replace("{{RESOURCE_ID}}", resource_id);
+        text = text.replace(
+            "{{WORKBOOK_ID}}",
+            resource_id.split_once(':').expect("typed resource").1,
+        );
+    }
+    if let Some(revision_id) = response.get("revision_id").and_then(Value::as_str) {
+        text = text.replace("{{REVISION_ID}}", revision_id);
+    }
+    serde_json::from_str(&text).expect("valid golden")
 }
 
-#[tokio::test]
-async fn canonical_envelope_has_stable_identity_and_data() {
-    let (state, resource_id) = bound_state().await;
-    let response = execute_operation_json(
-        state,
-        "list_sheets",
-        with_resource(&resource_id, json!({"include_bounds":true})),
-    )
-    .await
-    .expect("dispatch");
-
-    assert_eq!(response.schema_version, "1");
-    assert_eq!(response.operation, "list_sheets");
-    assert_eq!(response.resource_id.as_str(), resource_id.as_str());
-    assert_eq!(response.revision_id.len(), 64);
-    assert_eq!(response.data["workbook_id"], resource_id.as_str());
-    assert_eq!(response.data["sheets"][0]["name"], "Sheet1");
-}
-
-async fn dispatcher_data(operation: &str, payload: Value) -> Value {
-    let (state, resource_id) = bound_state().await;
-    execute_operation_json(state, operation, with_resource(&resource_id, payload))
-        .await
-        .expect("dispatch")
-        .data
-}
-
-fn asp_op(operation: &str, payload: Value) -> Value {
+fn asp_op(operation: &str, payload: Value) -> Result<Value, Value> {
     let output = Command::cargo_bin("asp")
         .expect("asp binary")
         .args([
@@ -160,100 +100,172 @@ fn asp_op(operation: &str, payload: Value) -> Value {
         ])
         .output()
         .expect("run asp op");
-    assert!(
-        output.status.success(),
-        "asp op failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+    if output.status.success() {
+        Ok(serde_json::from_slice(&output.stdout).expect("canonical stdout JSON"))
+    } else {
+        Err(serde_json::from_slice(&output.stderr).expect("canonical stderr JSON"))
+    }
+}
+
+#[test]
+fn registry_schemas_are_closed_typed_and_discriminated() {
+    let registry = operation_registry();
+    let names = registry
+        .iter()
+        .map(|descriptor| descriptor.name)
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        names,
+        HashSet::from(["list_sheets", "sheet_overview", "read_table"])
     );
-    serde_json::from_slice(&output.stdout).expect("canonical CLI JSON")
+
+    let capabilities = RuntimeCapabilities::native();
+    for descriptor in registry {
+        assert_eq!(descriptor.schema_version, "1");
+        assert!(descriptor.is_available(&capabilities));
+        assert_eq!(descriptor.risk_ceiling, OperationRisk::Low);
+        let input = (descriptor.input_schema)();
+        let output = (descriptor.output_schema)();
+        assert_object_schemas_closed(&input);
+        assert_object_schemas_closed(&output);
+        assert_eq!(
+            input["$defs"]["ResourceId"]["pattern"],
+            "^(wb|fork|session):[A-Za-z0-9][A-Za-z0-9_-]{0,243}$"
+        );
+        assert_eq!(input["$defs"]["ResourceId"]["minLength"], 4);
+        assert_eq!(input["$defs"]["ResourceId"]["maxLength"], 256);
+        assert_eq!(output["properties"]["schema_version"]["const"], "1");
+        assert_eq!(output["properties"]["operation"]["const"], descriptor.name);
+    }
+    let error = canonical_error_schema();
+    assert_object_schemas_closed(&error);
+    assert_eq!(error["properties"]["schema_version"]["const"], "1");
+}
+
+#[test]
+fn resource_ids_reject_untyped_path_dot_drive_and_file_forms() {
+    for invalid in [
+        "book.xlsx",
+        "..",
+        ".",
+        "C:book.xlsx",
+        "file:book.xlsx",
+        "wb-good",
+        "shortid",
+        "wb:/tmp/book.xlsx",
+        r"wb:C:\\book.xlsx",
+        "wb:book.xlsx",
+        "wb:..",
+        "other:abc",
+        "wb:",
+    ] {
+        let error =
+            decode_operation("list_sheets", json!({"resource_id":invalid})).expect_err(invalid);
+        assert_eq!(error.error.code, CanonicalErrorCode::InvalidRequest);
+    }
+    for valid in ["wb:abc", "fork:fork-abc123", "session:session-123"] {
+        decode_operation("list_sheets", json!({"resource_id":valid})).expect(valid);
+    }
+
+    assert_eq!(
+        ResourceId::bind_workbook(&WorkbookId("abc123".to_string()))
+            .unwrap()
+            .as_str(),
+        "wb:abc123"
+    );
+    assert_eq!(
+        ResourceId::bind_workbook(&WorkbookId("fork-abc123".to_string()))
+            .unwrap()
+            .as_str(),
+        "fork:fork-abc123"
+    );
+    assert!(ResourceId::bind_workbook(&WorkbookId("book.xlsx".to_string())).is_err());
 }
 
 #[tokio::test]
-async fn dispatcher_cli_and_mcp_projection_have_golden_parity_for_initial_reads() {
-    let (state, resource_id) = bound_state().await;
-    let mcp_list = serde_json::to_value(
-        list_sheets(
-            state.clone(),
-            ListSheetsParams {
-                workbook_or_fork_id: resource_id.clone(),
-                limit: None,
-                offset: None,
-                include_bounds: Some(true),
-            },
-        )
-        .await
-        .expect("MCP list wrapper"),
-    )
-    .unwrap();
-    let list_payload = json!({"include_bounds":true});
-    let dispatched = dispatcher_data("list_sheets", list_payload.clone()).await;
-    let cli = asp_op("list_sheets", list_payload);
-    assert_eq!(dispatched, mcp_list);
-    assert_eq!(cli["data"], dispatched);
+async fn full_success_envelopes_match_dispatcher_cli_golden_and_schema() {
+    let cases = [
+        ("list_sheets", json!({"include_bounds":true})),
+        ("sheet_overview", json!({"sheet_name":"Sheet1"})),
+        (
+            "read_table",
+            json!({"sheet_name":"Sheet1","range":"A1:C1","format":"values"}),
+        ),
+    ];
 
-    let mcp_overview = serde_json::to_value(
-        sheet_overview(
-            state.clone(),
-            SheetOverviewParams {
-                workbook_or_fork_id: resource_id.clone(),
-                sheet_name: "Sheet1".to_string(),
-                max_regions: None,
-                max_headers: None,
-                include_headers: None,
-            },
-        )
-        .await
-        .expect("MCP overview wrapper"),
-    )
-    .unwrap();
-    let overview_payload = json!({"sheet_name":"Sheet1"});
-    let dispatched = dispatcher_data("sheet_overview", overview_payload.clone()).await;
-    let cli = asp_op("sheet_overview", overview_payload);
-    assert_eq!(dispatched, mcp_overview);
-    assert_eq!(cli["data"], dispatched);
-
-    let mcp_table = serde_json::to_value(
-        read_table(
+    for (operation, payload) in cases {
+        let (state, _, resource_id) = bound_state().await;
+        let dispatcher = execute_operation_json(
             state,
-            ReadTableParams {
-                workbook_or_fork_id: resource_id,
-                sheet_name: Some("Sheet1".to_string()),
-                range: Some("A1:C1".to_string()),
-                format: Some(TableOutputFormat::Values),
-                ..ReadTableParams::default()
-            },
+            operation,
+            with_resource(&resource_id, payload.clone()),
         )
         .await
-        .expect("MCP table wrapper"),
-    )
-    .unwrap();
-    let table_payload = json!({
-        "sheet_name":"Sheet1",
-        "range":"A1:C1",
-        "format":"values"
-    });
-    let dispatched = dispatcher_data("read_table", table_payload.clone()).await;
-    let cli = asp_op("read_table", table_payload);
-    assert_eq!(dispatched, mcp_table);
-    assert_eq!(cli["data"], dispatched);
+        .expect("dispatcher success");
+        let dispatcher = serde_json::to_value(dispatcher).unwrap();
+        let cli = asp_op(operation, payload).expect("CLI success");
+        assert_eq!(cli, dispatcher);
+        assert_eq!(
+            dispatcher,
+            golden(&format!("{operation}.success"), &dispatcher)
+        );
+        let descriptor = operation_registry()
+            .iter()
+            .find(|descriptor| descriptor.name == operation)
+            .unwrap();
+        validate(&(descriptor.output_schema)(), &dispatcher);
+    }
 }
 
 #[tokio::test]
-async fn canonical_errors_match_dispatcher_cli_and_mcp_projection() {
-    let (state, resource_id) = bound_state().await;
-    let payload = json!({"sheet_name":"Missing"});
-    let dispatcher_error = execute_operation_json(
+async fn full_error_envelopes_match_dispatcher_cli_golden_and_schema() {
+    let cases = [
+        ("list_sheets", json!({"unexpected":true})),
+        ("sheet_overview", json!({"sheet_name":"Missing"})),
+        (
+            "read_table",
+            json!({"sheet_name":"Missing","range":"A1:C1","format":"values"}),
+        ),
+    ];
+    let schema = canonical_error_schema();
+
+    for (operation, payload) in cases {
+        let (state, _, resource_id) = bound_state().await;
+        let dispatcher = execute_operation_json(
+            state,
+            operation,
+            with_resource(&resource_id, payload.clone()),
+        )
+        .await
+        .expect_err("dispatcher error");
+        let dispatcher = serde_json::to_value(dispatcher).unwrap();
+        let cli = asp_op(operation, payload).expect_err("CLI error");
+        assert_eq!(cli, dispatcher);
+        assert_eq!(
+            dispatcher,
+            golden(&format!("{operation}.error"), &dispatcher)
+        );
+        validate(&schema, &dispatcher);
+    }
+}
+
+#[tokio::test]
+async fn canonical_semantic_errors_are_conservative_and_legacy_strings_are_unchanged() {
+    let (state, workbook_id, resource_id) = bound_state().await;
+    let canonical = execute_operation_json(
         state.clone(),
         "sheet_overview",
-        with_resource(&resource_id, payload.clone()),
+        with_resource(&resource_id, json!({"sheet_name":"Missing"})),
     )
     .await
     .unwrap_err();
+    assert_eq!(canonical.error.code, CanonicalErrorCode::OperationFailed);
+    assert_eq!(canonical.error.message, "sheet Missing not found");
 
-    let mcp_error = sheet_overview(
+    let legacy = sheet_overview(
         state,
         SheetOverviewParams {
-            workbook_or_fork_id: resource_id,
+            workbook_or_fork_id: workbook_id,
             sheet_name: "Missing".to_string(),
             max_regions: None,
             max_headers: None,
@@ -262,39 +274,62 @@ async fn canonical_errors_match_dispatcher_cli_and_mcp_projection() {
     )
     .await
     .unwrap_err();
-    let mcp_envelope: CanonicalErrorEnvelope =
-        serde_json::from_str(&mcp_error.to_string()).expect("structured MCP projection error");
+    assert_eq!(legacy.to_string(), "sheet Missing not found");
+    assert!(serde_json::from_str::<CanonicalErrorEnvelope>(&legacy.to_string()).is_err());
+}
 
-    let output = Command::cargo_bin("asp")
-        .expect("asp binary")
+#[test]
+fn unknown_operation_precedes_json_and_binding_failures() {
+    for payload in ["{", "{}"] {
+        let output = Command::cargo_bin("asp")
+            .unwrap()
+            .args([
+                "op",
+                "not_an_operation",
+                "--bind",
+                "/definitely/missing.xlsx",
+                "--json",
+                payload,
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let error: CanonicalErrorEnvelope = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error.error.code, CanonicalErrorCode::UnknownOperation);
+    }
+}
+
+#[test]
+fn malformed_unknown_and_missing_resource_errors_are_canonical() {
+    let malformed = Command::cargo_bin("asp")
+        .unwrap()
         .args([
             "op",
-            "sheet_overview",
+            "list_sheets",
             "--bind",
             fixture().to_str().unwrap(),
             "--json",
-            &payload.to_string(),
+            "{",
         ])
         .output()
-        .expect("run asp op error");
-    assert!(!output.status.success());
-    let cli_envelope: CanonicalErrorEnvelope =
-        serde_json::from_slice(&output.stderr).expect("structured CLI error");
+        .unwrap();
+    let malformed: CanonicalErrorEnvelope = serde_json::from_slice(&malformed.stderr).unwrap();
+    assert_eq!(malformed.error.code, CanonicalErrorCode::InvalidRequest);
 
-    assert_eq!(
-        dispatcher_error.error.code,
-        CanonicalErrorCode::ResourceNotFound
-    );
-    assert_eq!(mcp_envelope.error.code, dispatcher_error.error.code);
-    assert_eq!(cli_envelope.error.code, dispatcher_error.error.code);
-    assert_eq!(
-        mcp_envelope.error.operation,
-        dispatcher_error.error.operation
-    );
-    assert_eq!(
-        cli_envelope.error.operation,
-        dispatcher_error.error.operation
-    );
+    let missing = Command::cargo_bin("asp")
+        .unwrap()
+        .args([
+            "op",
+            "list_sheets",
+            "--bind",
+            "/definitely/missing.xlsx",
+            "--json",
+            "{}",
+        ])
+        .output()
+        .unwrap();
+    let missing: CanonicalErrorEnvelope = serde_json::from_slice(&missing.stderr).unwrap();
+    assert_eq!(missing.error.code, CanonicalErrorCode::ResourceNotFound);
 }
 
 #[test]
@@ -316,3 +351,6 @@ fn machine_mode_accepts_stdin_json_and_discovery_commands_work() {
         .assert()
         .success();
 }
+
+#[allow(dead_code)]
+fn _response_types_are_public(_: CanonicalResponse) {}

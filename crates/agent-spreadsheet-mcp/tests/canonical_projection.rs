@@ -1,24 +1,18 @@
-use agent_spreadsheet::operations::{CanonicalErrorEnvelope, execute_operation_json};
-use agent_spreadsheet_mcp::model::TableOutputFormat;
-use agent_spreadsheet_mcp::tools::{
-    ListSheetsParams, ListWorkbooksParams, ReadTableParams, SheetOverviewParams, list_workbooks,
+use anyhow::Result;
+use rmcp::{
+    ServiceExt,
+    transport::{ConfigureCommandExt, TokioChildProcess},
 };
-use rmcp::handler::server::wrapper::Parameters;
-use serde_json::{Value, json};
+use serde_json::json;
+use std::process::Stdio;
+use tokio::process::Command;
 
 mod support;
 
-fn canonical_payload(resource_id: &str, payload: Value) -> Value {
-    let mut payload = payload;
-    payload
-        .as_object_mut()
-        .expect("object payload")
-        .insert("resource_id".to_string(), json!(resource_id));
-    payload
-}
+use support::mcp::{call_tool, extract_json};
 
-#[tokio::test(flavor = "current_thread")]
-async fn live_mcp_handlers_match_canonical_dispatcher_data_and_errors() {
+#[tokio::test(flavor = "multi_thread")]
+async fn live_json_rpc_tools_call_preserves_legacy_projection_and_decoding() -> Result<()> {
     let workspace = support::TestWorkspace::new();
     workspace.create_workbook("canonical.xlsx", |book| {
         let sheet = book.get_sheet_by_name_mut("Sheet1").unwrap();
@@ -28,119 +22,102 @@ async fn live_mcp_handlers_match_canonical_dispatcher_data_and_errors() {
         sheet.get_cell_mut((2, 2)).set_value_number(42_f64);
     });
 
-    let state = workspace.app_state();
-    let workbook_id = list_workbooks(
-        state.clone(),
-        ListWorkbooksParams {
-            slug_prefix: None,
-            folder: None,
-            path_glob: None,
-            limit: None,
-            offset: None,
-            include_paths: None,
-        },
+    let root = workspace.root().to_path_buf();
+    let (transport, _stderr) = TokioChildProcess::builder(
+        Command::new(env!("CARGO_BIN_EXE_agent-spreadsheet-mcp")).configure(move |command| {
+            command.args([
+                "--transport",
+                "stdio",
+                "--workspace-root",
+                root.to_str().expect("UTF-8 workspace"),
+            ]);
+        }),
     )
-    .await
-    .unwrap()
-    .workbooks[0]
-        .workbook_id
-        .clone();
-    let server = workspace.server().await.unwrap();
+    .stderr(Stdio::piped())
+    .spawn()?;
+    let client = ().serve(transport).await?;
 
-    let list_payload = json!({"include_bounds":true});
-    let dispatched = execute_operation_json(
-        state.clone(),
-        "list_sheets",
-        canonical_payload(workbook_id.as_str(), list_payload),
-    )
-    .await
-    .unwrap();
-    let mcp = server
-        .list_sheets(Parameters(ListSheetsParams {
-            workbook_or_fork_id: workbook_id.clone(),
-            limit: None,
-            offset: None,
-            include_bounds: Some(true),
-        }))
-        .await
-        .unwrap()
-        .0
-        .0;
-    assert_eq!(serde_json::to_value(mcp).unwrap(), dispatched.data);
+    let workbooks = client
+        .call_tool(call_tool("list_workbooks", json!({})))
+        .await?;
+    let workbooks = extract_json(&workbooks)?;
+    let workbook_id = workbooks["workbooks"][0]["workbook_id"]
+        .as_str()
+        .expect("workbook id");
 
-    let overview_payload = json!({"sheet_name":"Sheet1"});
-    let dispatched = execute_operation_json(
-        state.clone(),
-        "sheet_overview",
-        canonical_payload(workbook_id.as_str(), overview_payload),
-    )
-    .await
-    .unwrap();
-    let mcp = server
-        .sheet_overview(Parameters(SheetOverviewParams {
-            workbook_or_fork_id: workbook_id.clone(),
-            sheet_name: "Sheet1".to_string(),
-            max_regions: None,
-            max_headers: None,
-            include_headers: None,
-        }))
-        .await
-        .unwrap()
-        .0
-        .0;
-    assert_eq!(serde_json::to_value(mcp).unwrap(), dispatched.data);
+    let cases = [
+        (
+            "list_sheets",
+            json!({"workbook_or_fork_id":workbook_id,"include_bounds":true}),
+        ),
+        (
+            "sheet_overview",
+            json!({"workbook_or_fork_id":workbook_id,"sheet_name":"Sheet1"}),
+        ),
+        (
+            "read_table",
+            json!({
+                "workbook_or_fork_id":workbook_id,
+                "sheet_name":"Sheet1",
+                "range":"A1:B2",
+                "format":"values"
+            }),
+        ),
+    ];
+    for (tool, arguments) in cases {
+        let result = client.call_tool(call_tool(tool, arguments)).await?;
+        assert_ne!(result.is_error, Some(true), "{tool} returned a tool error");
+        let value = extract_json(&result)?;
+        assert_eq!(value["workbook_id"], workbook_id);
+        assert!(
+            value.get("schema_version").is_none(),
+            "legacy MCP is data-only"
+        );
+        serde_json::to_vec(&result).expect("MCP result serializes");
+    }
 
-    let table_payload = json!({
-        "sheet_name":"Sheet1",
-        "range":"A1:B2",
-        "format":"values"
-    });
-    let dispatched = execute_operation_json(
-        state.clone(),
-        "read_table",
-        canonical_payload(workbook_id.as_str(), table_payload),
-    )
-    .await
-    .unwrap();
-    let mcp = server
-        .read_table(Parameters(ReadTableParams {
-            workbook_or_fork_id: workbook_id.clone(),
-            sheet_name: Some("Sheet1".to_string()),
-            range: Some("A1:B2".to_string()),
-            format: Some(TableOutputFormat::Values),
-            ..ReadTableParams::default()
-        }))
+    let malformed = client
+        .call_tool(call_tool("list_sheets", json!({"workbook_or_fork_id":42})))
         .await
-        .unwrap()
-        .0
-        .0;
-    assert_eq!(serde_json::to_value(mcp).unwrap(), dispatched.data);
+        .expect_err("malformed argument must fail JSON-RPC decoding");
+    assert!(malformed.to_string().contains("string"));
 
-    let dispatcher_error = execute_operation_json(
-        state,
-        "sheet_overview",
-        canonical_payload(workbook_id.as_str(), json!({"sheet_name":"Missing"})),
-    )
-    .await
-    .unwrap_err();
-    let mcp_error = match server
-        .sheet_overview(Parameters(SheetOverviewParams {
-            workbook_or_fork_id: workbook_id,
-            sheet_name: "Missing".to_string(),
-            max_regions: None,
-            max_headers: None,
-            include_headers: None,
-        }))
+    let unknown_field = client
+        .call_tool(call_tool(
+            "list_sheets",
+            json!({"workbook_or_fork_id":workbook_id,"unexpected":true}),
+        ))
         .await
-    {
-        Ok(_) => panic!("missing sheet should fail"),
-        Err(error) => error,
-    };
-    let mcp_envelope: CanonicalErrorEnvelope =
-        serde_json::from_str(&mcp_error.message).expect("canonical MCP error envelope");
-    assert_eq!(mcp_envelope.error.code, dispatcher_error.error.code);
-    assert_eq!(
-        mcp_envelope.error.operation,
-        dispatcher_error.error.operation
+        .expect_err("unknown argument must fail JSON-RPC decoding");
+    assert!(unknown_field.to_string().contains("unknown field"));
+
+    let missing_resource = client
+        .call_tool(call_tool(
+            "list_sheets",
+            json!({"workbook_or_fork_id":"definitely-missing"}),
+        ))
+        .await
+        .expect_err("missing resource must fail");
+    assert!(
+        missing_resource
+            .to_string()
+            .contains("workbook id definitely-missing not found"),
+        "legacy error shape changed: {missing_resource}"
     );
+
+    let semantic = client
+        .call_tool(call_tool(
+            "sheet_overview",
+            json!({"workbook_or_fork_id":workbook_id,"sheet_name":"Missing"}),
+        ))
+        .await
+        .expect_err("missing sheet must fail");
+    assert!(
+        semantic.to_string().contains("sheet Missing not found"),
+        "legacy semantic error shape changed: {semantic}"
+    );
+    assert!(!semantic.to_string().contains("schema_version"));
+
+    client.cancel().await?;
+    Ok(())
 }

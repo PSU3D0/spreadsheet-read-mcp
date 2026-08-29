@@ -12,28 +12,62 @@ pub const CANONICAL_SCHEMA_VERSION: &str = "1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 #[serde(transparent)]
-pub struct ResourceId(String);
+pub struct ResourceId(
+    #[schemars(
+        pattern(r"^(wb|fork|session):[A-Za-z0-9][A-Za-z0-9_-]{0,243}$"),
+        length(min = 4, max = 256)
+    )]
+    String,
+);
 
 impl ResourceId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    pub(crate) fn from_workbook_id(id: WorkbookId) -> Self {
-        Self(id.0)
+    pub fn bind_workbook(id: &WorkbookId) -> Result<Self, String> {
+        let prefix = if id.0.starts_with("fork-") {
+            "fork"
+        } else if id.0.starts_with("session-") {
+            "session"
+        } else {
+            "wb"
+        };
+        Self::validate(format!("{prefix}:{}", id.0))
     }
 
     fn validate(value: String) -> Result<Self, String> {
-        if value.is_empty() {
-            return Err("resource_id must not be empty".to_string());
+        if !(4..=256).contains(&value.len()) {
+            return Err("resource_id must contain 4 to 256 bytes".to_string());
         }
-        if value.len() > 256 {
-            return Err("resource_id must not exceed 256 bytes".to_string());
+        let (prefix, opaque) = value.split_once(':').ok_or_else(|| {
+            "resource_id must use a typed wb:, fork:, or session: prefix".to_string()
+        })?;
+        if !matches!(prefix, "wb" | "fork" | "session") {
+            return Err("resource_id must use a typed wb:, fork:, or session: prefix".to_string());
         }
-        if value.contains(['/', '\\']) || value.chars().any(char::is_control) {
-            return Err("resource_id must be an opaque identifier, not a path".to_string());
+        let valid_opaque = !opaque.is_empty()
+            && opaque.len() <= 244
+            && opaque.bytes().enumerate().all(|(index, byte)| match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' => true,
+                b'_' | b'-' => index > 0,
+                _ => false,
+            });
+        if !valid_opaque {
+            return Err(
+                "resource_id must be an opaque typed identifier, not a path, drive, dot, or file form"
+                    .to_string(),
+            );
         }
         Ok(Self(value))
+    }
+
+    fn to_workbook_id(&self) -> WorkbookId {
+        let (_, opaque) = self
+            .0
+            .split_once(':')
+            .expect("validated resource ids always have a typed prefix");
+        WorkbookId(opaque.to_string())
     }
 }
 
@@ -44,12 +78,6 @@ impl<'de> Deserialize<'de> for ResourceId {
     {
         let value = String::deserialize(deserializer)?;
         Self::validate(value).map_err(serde::de::Error::custom)
-    }
-}
-
-impl From<ResourceId> for WorkbookId {
-    fn from(value: ResourceId) -> Self {
-        WorkbookId(value.0)
     }
 }
 
@@ -308,12 +336,12 @@ impl CanonicalErrorEnvelope {
     }
 
     fn operation_failed(operation: &str, message: String) -> Self {
-        let code = if message.contains("not found") || message.contains("no workbook found") {
-            CanonicalErrorCode::ResourceNotFound
-        } else {
-            CanonicalErrorCode::OperationFailed
-        };
-        Self::new(code, message, Some(operation), None)
+        Self::new(
+            CanonicalErrorCode::OperationFailed,
+            message,
+            Some(operation),
+            None,
+        )
     }
 }
 
@@ -380,19 +408,38 @@ fn list_sheets_input_schema() -> Value {
     closed_schema::<ListSheetsRequest>()
 }
 fn list_sheets_output_schema() -> Value {
-    closed_schema::<CanonicalResponseSchema<SheetListResponse>>()
+    operation_output_schema::<SheetListResponse>("list_sheets")
 }
 fn sheet_overview_input_schema() -> Value {
     closed_schema::<SheetOverviewRequest>()
 }
 fn sheet_overview_output_schema() -> Value {
-    closed_schema::<CanonicalResponseSchema<SheetOverviewResponse>>()
+    operation_output_schema::<SheetOverviewResponse>("sheet_overview")
 }
 fn read_table_input_schema() -> Value {
     closed_schema::<ReadTableRequest>()
 }
 fn read_table_output_schema() -> Value {
-    closed_schema::<CanonicalResponseSchema<ReadTableResponse>>()
+    operation_output_schema::<ReadTableResponse>("read_table")
+}
+
+fn set_property_const(schema: &mut Value, property: &str, value: &str) {
+    let property_schema = schema
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+        .and_then(|properties| properties.get_mut(property))
+        .and_then(Value::as_object_mut)
+        .expect("canonical envelope property exists");
+    property_schema.clear();
+    property_schema.insert("type".to_string(), Value::String("string".to_string()));
+    property_schema.insert("const".to_string(), Value::String(value.to_string()));
+}
+
+fn operation_output_schema<T: JsonSchema>(operation: &str) -> Value {
+    let mut schema = closed_schema::<CanonicalResponseSchema<T>>();
+    set_property_const(&mut schema, "schema_version", CANONICAL_SCHEMA_VERSION);
+    set_property_const(&mut schema, "operation", operation);
+    schema
 }
 
 const WORKBOOK_READ: CapabilityMetadata = CapabilityMetadata {
@@ -456,7 +503,9 @@ pub fn operation_descriptor(name: &str) -> Option<&'static OperationDescriptor> 
 }
 
 pub fn canonical_error_schema() -> Value {
-    closed_schema::<CanonicalErrorEnvelope>()
+    let mut schema = closed_schema::<CanonicalErrorEnvelope>();
+    set_property_const(&mut schema, "schema_version", CANONICAL_SCHEMA_VERSION);
+    schema
 }
 
 pub fn operation_schema(name: &str) -> Result<Value, CanonicalErrorEnvelope> {
@@ -535,12 +584,26 @@ pub async fn execute_operation(
     }
 
     let requested_resource = operation.resource_id().clone();
-    let requested_workbook = WorkbookId(requested_resource.as_str().to_string());
+    let requested_workbook = requested_resource.to_workbook_id();
     let workbook = state
         .open_workbook(&requested_workbook)
         .await
-        .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?;
-    let resource_id = ResourceId::from_workbook_id(workbook.id.clone());
+        .map_err(|error| {
+            CanonicalErrorEnvelope::new(
+                CanonicalErrorCode::ResourceNotFound,
+                error.to_string(),
+                Some(name),
+                Some("$.resource_id".to_string()),
+            )
+        })?;
+    let resource_id = ResourceId::bind_workbook(&workbook.id).map_err(|message| {
+        CanonicalErrorEnvelope::new(
+            CanonicalErrorCode::OperationFailed,
+            message,
+            Some(name),
+            Some("$.resource_id".to_string()),
+        )
+    })?;
     let revision_id = workbook.revision_id.clone();
 
     let data = match operation {
@@ -548,7 +611,7 @@ pub async fn execute_operation(
             let response = tools::list_sheets_semantic(
                 state,
                 tools::ListSheetsParams {
-                    workbook_or_fork_id: request.resource_id.into(),
+                    workbook_or_fork_id: request.resource_id.to_workbook_id(),
                     limit: request.limit,
                     offset: request.offset,
                     include_bounds: request.include_bounds,
@@ -562,7 +625,7 @@ pub async fn execute_operation(
             let response = tools::sheet_overview_semantic(
                 state,
                 tools::SheetOverviewParams {
-                    workbook_or_fork_id: request.resource_id.into(),
+                    workbook_or_fork_id: request.resource_id.to_workbook_id(),
                     sheet_name: request.sheet_name,
                     max_regions: request.max_regions,
                     max_headers: request.max_headers,
@@ -577,7 +640,7 @@ pub async fn execute_operation(
             let response = tools::read_table_semantic(
                 state,
                 tools::ReadTableParams {
-                    workbook_or_fork_id: request.resource_id.into(),
+                    workbook_or_fork_id: request.resource_id.to_workbook_id(),
                     sheet_name: request.sheet_name,
                     table_name: request.table_name,
                     region_id: request.region_id,
@@ -621,37 +684,43 @@ where
 {
     let response = execute_operation(state, operation)
         .await
-        .map_err(anyhow::Error::new)?;
+        .map_err(|error| anyhow::anyhow!(error.error.message))?;
     serde_json::from_value(response.data).map_err(Into::into)
 }
 
-impl From<tools::ListSheetsParams> for ListSheetsRequest {
-    fn from(params: tools::ListSheetsParams) -> Self {
-        Self {
-            resource_id: ResourceId::from_workbook_id(params.workbook_or_fork_id),
+impl TryFrom<tools::ListSheetsParams> for ListSheetsRequest {
+    type Error = String;
+
+    fn try_from(params: tools::ListSheetsParams) -> Result<Self, Self::Error> {
+        Ok(Self {
+            resource_id: ResourceId::bind_workbook(&params.workbook_or_fork_id)?,
             limit: params.limit,
             offset: params.offset,
             include_bounds: params.include_bounds,
-        }
+        })
     }
 }
 
-impl From<tools::SheetOverviewParams> for SheetOverviewRequest {
-    fn from(params: tools::SheetOverviewParams) -> Self {
-        Self {
-            resource_id: ResourceId::from_workbook_id(params.workbook_or_fork_id),
+impl TryFrom<tools::SheetOverviewParams> for SheetOverviewRequest {
+    type Error = String;
+
+    fn try_from(params: tools::SheetOverviewParams) -> Result<Self, Self::Error> {
+        Ok(Self {
+            resource_id: ResourceId::bind_workbook(&params.workbook_or_fork_id)?,
             sheet_name: params.sheet_name,
             max_regions: params.max_regions,
             max_headers: params.max_headers,
             include_headers: params.include_headers,
-        }
+        })
     }
 }
 
-impl From<tools::ReadTableParams> for ReadTableRequest {
-    fn from(params: tools::ReadTableParams) -> Self {
-        Self {
-            resource_id: ResourceId::from_workbook_id(params.workbook_or_fork_id),
+impl TryFrom<tools::ReadTableParams> for ReadTableRequest {
+    type Error = String;
+
+    fn try_from(params: tools::ReadTableParams) -> Result<Self, Self::Error> {
+        Ok(Self {
+            resource_id: ResourceId::bind_workbook(&params.workbook_or_fork_id)?,
             sheet_name: params.sheet_name,
             table_name: params.table_name,
             region_id: params.region_id,
@@ -671,6 +740,6 @@ impl From<tools::ReadTableParams> for ReadTableRequest {
             format: params.format,
             include_headers: params.include_headers,
             include_types: params.include_types,
-        }
+        })
     }
 }

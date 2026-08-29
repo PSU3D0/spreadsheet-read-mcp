@@ -97,3 +97,4 @@ recalc-libreoffice = ["recalc"]
 
 [dev-dependencies]
 assert_cmd = "2.0"
+jsonschema = { version = "0.33", default-features = false }

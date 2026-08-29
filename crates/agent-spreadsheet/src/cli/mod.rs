@@ -3995,8 +3995,17 @@ async fn run_machine_operation(
     bind: PathBuf,
     json_payload: Option<String>,
 ) -> Result<crate::operations::CanonicalResponse, crate::operations::CanonicalErrorEnvelope> {
-    use crate::operations::{CanonicalErrorCode, CanonicalErrorEnvelope};
+    use crate::operations::{CanonicalErrorCode, CanonicalErrorEnvelope, ResourceId};
     use std::io::Read;
+
+    if crate::operations::operation_descriptor(operation).is_none() {
+        return Err(CanonicalErrorEnvelope::new(
+            CanonicalErrorCode::UnknownOperation,
+            format!("unknown operation '{operation}'"),
+            Some(operation),
+            Some("$.operation".to_string()),
+        ));
+    }
 
     let payload_text = match json_payload {
         Some(payload) => payload,
@@ -4045,8 +4054,16 @@ async fn run_machine_operation(
             Some("--bind".to_string()),
         )
     })?;
+    let resource_id = ResourceId::bind_workbook(&workbook_id).map_err(|message| {
+        CanonicalErrorEnvelope::new(
+            CanonicalErrorCode::InvalidRequest,
+            message,
+            Some(operation),
+            Some("--bind".to_string()),
+        )
+    })?;
     if let Some(provided) = object.get("resource_id")
-        && provided.as_str() != Some(workbook_id.as_str())
+        && provided.as_str() != Some(resource_id.as_str())
     {
         return Err(CanonicalErrorEnvelope::new(
             CanonicalErrorCode::InvalidRequest,
@@ -4057,7 +4074,7 @@ async fn run_machine_operation(
     }
     object.insert(
         "resource_id".to_string(),
-        Value::String(workbook_id.as_str().to_string()),
+        Value::String(resource_id.as_str().to_string()),
     );
     crate::operations::execute_operation_json(state, operation, payload).await
 }
