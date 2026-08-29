@@ -255,6 +255,59 @@ async fn staged_bundle_applies_through_the_canonical_dispatcher_in_order() {
     assert_eq!(sheet.get_cell("B1").unwrap().get_formula(), "A1*3");
 }
 
+#[tokio::test]
+async fn staged_replay_conflict_is_typed_and_retains_bundle() {
+    let (_temp, state, resource, _fork_path, revision) = forked().await;
+    let staged = execute_operation_json(
+        state.clone(),
+        "write",
+        request(
+            &resource,
+            &revision,
+            "stage",
+            true,
+            vec![set_cell(json!(2))],
+        ),
+    )
+    .await
+    .unwrap();
+    let change_id = staged.data["change_id"].as_str().unwrap().to_string();
+    let stage_revision = staged.data["revision_after"].as_str().unwrap();
+    execute_operation_json(
+        state.clone(),
+        "write",
+        request(
+            &resource,
+            stage_revision,
+            "apply",
+            true,
+            vec![set_cell(json!(9))],
+        ),
+    )
+    .await
+    .unwrap();
+    let fork_id = resource.as_str().strip_prefix("fork:").unwrap().to_string();
+    let error = agent_spreadsheet::tools::fork::apply_staged_change(
+        state.clone(),
+        agent_spreadsheet::tools::fork::ApplyStagedChangeParams {
+            fork_id: fork_id.clone(),
+            change_id,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().starts_with("revision conflict:"));
+    assert_eq!(
+        state
+            .fork_registry()
+            .unwrap()
+            .list_staged_changes(&fork_id)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
 #[test]
 fn asp_op_write_requires_explicit_atomic_export_and_never_mutates_bind_silently() {
     let temp = tempfile::tempdir().unwrap();
@@ -386,5 +439,263 @@ fn every_canonical_write_kind_has_a_closed_union_fixture() {
     }))
     .unwrap_err();
     assert_eq!(exact_error.error.code, CanonicalErrorCode::InvalidRequest);
+    let write_op = &input_schema["$defs"]["WriteOp"];
+    assert_eq!(write_op["oneOf"].as_array().unwrap().len(), 39);
+    assert!(write_op.get("anyOf").is_none());
+    assert_eq!(input_schema["properties"]["ops"]["maxItems"], 128);
     let _ = WriteOpStatus::Previewed;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn concurrent_same_revision_has_exactly_one_success() {
+    let (_temp, state, resource, _fork_path, revision) = forked().await;
+    let barrier = Arc::new(tokio::sync::Barrier::new(8));
+    let mut tasks = Vec::new();
+    for index in 0..8 {
+        let state = state.clone();
+        let resource = resource.clone();
+        let revision = revision.clone();
+        let barrier = barrier.clone();
+        tasks.push(tokio::spawn(async move {
+            barrier.wait().await;
+            execute_operation_json(
+                state,
+                "write",
+                request(
+                    &resource,
+                    &revision,
+                    "apply",
+                    true,
+                    vec![set_cell(json!(index))],
+                ),
+            )
+            .await
+        }));
+    }
+    let mut successes = 0;
+    let mut conflicts = 0;
+    for task in tasks {
+        match task.await.unwrap() {
+            Ok(response) => {
+                assert_eq!(response.data["status"], "applied");
+                successes += 1;
+            }
+            Err(error) => {
+                assert_eq!(error.error.code, CanonicalErrorCode::RevisionConflict);
+                conflicts += 1;
+            }
+        }
+    }
+    assert_eq!((successes, conflicts), (1, 7));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn concurrent_stage_same_revision_has_exactly_one_success() {
+    let (_temp, state, resource, _fork_path, revision) = forked().await;
+    let barrier = Arc::new(tokio::sync::Barrier::new(8));
+    let mut tasks = Vec::new();
+    for index in 0..8 {
+        let state = state.clone();
+        let resource = resource.clone();
+        let revision = revision.clone();
+        let barrier = barrier.clone();
+        tasks.push(tokio::spawn(async move {
+            barrier.wait().await;
+            execute_operation_json(
+                state,
+                "write",
+                request(
+                    &resource,
+                    &revision,
+                    "stage",
+                    true,
+                    vec![set_cell(json!(index))],
+                ),
+            )
+            .await
+        }));
+    }
+    let mut successes = 0;
+    let mut conflicts = 0;
+    for task in tasks {
+        match task.await.unwrap() {
+            Ok(response) => {
+                assert_eq!(response.data["status"], "staged");
+                successes += 1;
+            }
+            Err(error) => {
+                assert_eq!(error.error.code, CanonicalErrorCode::RevisionConflict);
+                conflicts += 1;
+            }
+        }
+    }
+    assert_eq!((successes, conflicts), (1, 7));
+}
+
+#[tokio::test]
+async fn malformed_late_address_is_invalid_before_non_atomic_effects() {
+    let (_temp, state, resource, fork_path, revision) = forked().await;
+    let error = execute_operation_json(
+        state,
+        "write",
+        request(
+            &resource,
+            &revision,
+            "apply",
+            false,
+            vec![
+                set_cell(json!(99)),
+                json!({"kind":"set_cells","sheet_name":"Sheet1","cells":{"BAD":{"kind":"value","value":1}}}),
+            ],
+        ),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.error.code, CanonicalErrorCode::InvalidRequest);
+    assert_eq!(hash_file_sha256_hex(&fork_path).unwrap(), revision);
+}
+
+#[tokio::test]
+async fn merge_preview_has_structured_effect_and_grid_merges_translate() {
+    let (_temp, state, resource, fork_path, revision) = forked().await;
+    let preview = execute_operation_json(
+        state.clone(),
+        "write",
+        request(
+            &resource,
+            &revision,
+            "preview",
+            true,
+            vec![json!({"kind":"merge_cells","sheet_name":"Sheet1","target_range":"A10:B10"})],
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(preview.data["status"], "previewed");
+    assert!(preview.data["diff"]["change_count"].as_u64().unwrap() > 0);
+    assert!(
+        preview.data["diff"]["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|change| change["kind"] == "operation_effect")
+    );
+
+    let applied = execute_operation_json(
+        state,
+        "write",
+        request(
+            &resource,
+            &revision,
+            "apply",
+            true,
+            vec![json!({
+                "kind":"import_grid","sheet_name":"Sheet1","anchor":"D5",
+                "grid":{"sheet":"Sheet1","anchor":"A1","merges":["A1:B1"],"rows":[{"cells":[{"offset":[0,0],"v":"header"}]}]}
+            })],
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(applied.data["status"], "applied");
+    let book = umya_spreadsheet::reader::xlsx::read(&fork_path).unwrap();
+    let merges = book.get_sheet_by_name("Sheet1").unwrap().get_merge_cells();
+    assert!(merges.iter().any(|merge| merge.get_range() == "D5:E5"));
+    assert!(!merges.iter().any(|merge| merge.get_range() == "A1:B1"));
+}
+
+#[tokio::test]
+async fn update_name_replaces_definition_and_non_atomic_stage_is_rejected() {
+    let (_temp, state, resource, fork_path, revision) = forked().await;
+    let stage_error = execute_operation_json(
+        state.clone(),
+        "write",
+        request(
+            &resource,
+            &revision,
+            "stage",
+            false,
+            vec![set_cell(json!(1))],
+        ),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(stage_error.error.code, CanonicalErrorCode::InvalidRequest);
+
+    let applied = execute_operation_json(
+        state,
+        "write",
+        request(
+            &resource,
+            &revision,
+            "apply",
+            true,
+            vec![
+                json!({"kind":"define_name","name":"Rate","refers_to":"Sheet1!$A$1","scope":"workbook"}),
+                json!({"kind":"update_name","name":"Rate","refers_to":"Sheet1!$B$1"}),
+            ],
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(applied.data["status"], "applied");
+    let book = umya_spreadsheet::reader::xlsx::read(&fork_path).unwrap();
+    let address = book
+        .get_defined_names()
+        .iter()
+        .chain(
+            book.get_sheet_collection()
+                .iter()
+                .flat_map(|sheet| sheet.get_defined_names().iter()),
+        )
+        .find(|name| name.get_name() == "Rate")
+        .map(|name| name.get_address())
+        .expect("Rate definition");
+    assert_eq!(address, "'Sheet1'!$B$1");
+    assert!(!address.contains(','));
+}
+
+#[test]
+fn checked_in_write_response_goldens_cover_closed_status_union() {
+    let schema = (agent_spreadsheet::operations::operation_descriptor("write")
+        .unwrap()
+        .output_schema)();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    for status in [
+        "previewed",
+        "staged",
+        "applied",
+        "partial",
+        "failed",
+        "rolled_back",
+    ] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/canonical")
+            .join(format!("write.{status}.json"));
+        let value: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        validator.validate(&value).unwrap();
+        assert_eq!(value["data"]["status"], status);
+    }
+}
+
+#[test]
+fn discoverability_write_needs_no_separator() {
+    let schema = assert_cmd::cargo::cargo_bin_cmd!("asp")
+        .args(["schema", "write"])
+        .output()
+        .unwrap();
+    assert!(
+        schema.status.success(),
+        "{}",
+        String::from_utf8_lossy(&schema.stderr)
+    );
+    let example = assert_cmd::cargo::cargo_bin_cmd!("asp")
+        .args(["example", "write"])
+        .output()
+        .unwrap();
+    assert!(
+        example.status.success(),
+        "{}",
+        String::from_utf8_lossy(&example.stderr)
+    );
 }

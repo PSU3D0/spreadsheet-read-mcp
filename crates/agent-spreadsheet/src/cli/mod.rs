@@ -451,7 +451,10 @@ enum SurfaceWorkbookCommands {
 
 #[derive(Debug, Subcommand)]
 enum SurfaceVerifyCommands {
-    #[command(about = "Compare two workbook states and verify target deltas plus error provenance", after_help = "Also available:\n  asp verify diff <BASELINE> <CURRENT>    Diff two workbook versions with summary-first, paged details\n\nRun `asp verify diff --help` for the full diff contract.")]
+    #[command(
+        about = "Compare two workbook states and verify target deltas plus error provenance",
+        after_help = "Also available:\n  asp verify diff <BASELINE> <CURRENT>    Diff two workbook versions with summary-first, paged details\n\nRun `asp verify diff --help` for the full diff contract."
+    )]
     Proof(SurfaceLeafArgs),
     #[command(about = "Diff two workbook versions with summary-first, paged details")]
     Diff(SurfaceLeafArgs),
@@ -4012,6 +4015,16 @@ fn emit_canonical_error_and_exit(error: crate::operations::CanonicalErrorEnvelop
     std::process::exit(1)
 }
 
+fn normalize_canonical_discoverability_argv(mut argv: Vec<OsString>) -> Vec<OsString> {
+    if argv.len() == 3
+        && matches!(argv[1].to_str(), Some("schema" | "example"))
+        && argv[2] == "write"
+    {
+        argv.insert(2, OsString::from("--"));
+    }
+    argv
+}
+
 async fn run_machine_operation(
     operation: &str,
     bind: PathBuf,
@@ -4173,7 +4186,10 @@ async fn run_machine_operation(
     let response = crate::operations::execute_operation_json(state, operation, payload).await?;
     if is_write
         && write_mode.as_deref() == Some("apply")
-        && response.data["rolled_back"] != Value::Bool(true)
+        && matches!(
+            response.data["status"].as_str(),
+            Some("applied" | "partial")
+        )
     {
         let source = fork_path.expect("write binds an ephemeral fork");
         let target = if in_place {
@@ -4262,6 +4278,7 @@ async fn run_machine_operation(
 pub async fn run() -> Result<()> {
     let argv = normalize_legacy_global_format_argv(std::env::args_os().collect());
     let (argv, warnings) = normalize_legacy_command_argv(argv);
+    let argv = normalize_canonical_discoverability_argv(argv);
     maybe_emit_forwarded_leaf_help(&argv);
 
     let surface = match SurfaceCli::try_parse_from(argv) {
@@ -4269,84 +4286,97 @@ pub async fn run() -> Result<()> {
         Err(error) => error.exit(),
     };
 
-    let result =
-        match resolve_surface_command(surface.command) {
-            Ok(ResolvedSurfaceCommand::Command(command)) => {
-                run_with_options(
-                    command,
-                    surface.output_format,
-                    surface.shape,
-                    surface.compact,
-                    surface.quiet,
-                )
-                .await
-            }
-            Ok(ResolvedSurfaceCommand::Operations) => {
-                let payload = crate::operations::operations_discovery(
-                    &crate::operations::RuntimeCapabilities::native(),
-                );
-                if let Err(error) = emit_exact_json(&payload, false) {
-                    emit_error_and_exit(error.into());
-                }
-                Ok(())
-            }
-            Ok(ResolvedSurfaceCommand::Operation {
-                operation,
-                bind,
-                json,
-                output,
-                in_place,
-                force,
-            }) => match run_machine_operation(
-                &operation,
-                bind,
-                json,
-                output,
-                in_place,
-                force,
+    let result = match resolve_surface_command(surface.command) {
+        Ok(ResolvedSurfaceCommand::Command(command)) => {
+            run_with_options(
+                command,
+                surface.output_format,
+                surface.shape,
+                surface.compact,
+                surface.quiet,
             )
             .await
-            {
-                Ok(response) => {
-                    if let Err(error) = emit_exact_json(&response, false) {
-                        emit_error_and_exit(error.into());
-                    }
-                    Ok(())
-                }
-                Err(error) => emit_canonical_error_and_exit(error),
-            },
-            Ok(ResolvedSurfaceCommand::Schema(command)) => {
-                let payload = match command {
-                    ResolvedDiscoverabilityCommand::Legacy(command) => run_schema_command(command)
-                        .unwrap_or_else(|error| emit_error_and_exit(error)),
-                    ResolvedDiscoverabilityCommand::Canonical(operation) => {
-                        crate::operations::operation_schema(&operation)
-                            .unwrap_or_else(|error| emit_canonical_error_and_exit(error))
-                    }
-                };
-                if let Err(error) = emit_exact_json(&payload, false) {
+        }
+        Ok(ResolvedSurfaceCommand::Operations) => {
+            let payload = crate::operations::operations_discovery(
+                &crate::operations::RuntimeCapabilities::native(),
+            );
+            if let Err(error) = emit_exact_json(&payload, false) {
+                emit_error_and_exit(error.into());
+            }
+            Ok(())
+        }
+        Ok(ResolvedSurfaceCommand::Operation {
+            operation,
+            bind,
+            json,
+            output,
+            in_place,
+            force,
+        }) => match run_machine_operation(&operation, bind, json, output, in_place, force).await {
+            Ok(response) => {
+                if let Err(error) = emit_exact_json(&response, false) {
                     emit_error_and_exit(error.into());
                 }
-                Ok(())
+                // Automation policy: complete apply/preview/stage exits 0,
+                // failed or rolled-back work exits 1, and an exported
+                // non-atomic partial result exits 2.
+                match response.data["status"].as_str() {
+                    Some("failed" | "rolled_back") => std::process::exit(1),
+                    Some("partial") => std::process::exit(2),
+                    _ => Ok(()),
+                }
             }
-            Ok(ResolvedSurfaceCommand::Example(command)) => {
-                let payload = match command {
-                    ResolvedDiscoverabilityCommand::Legacy(command) => run_example_command(command)
-                        .unwrap_or_else(|error| emit_error_and_exit(error)),
-                    ResolvedDiscoverabilityCommand::Canonical(operation) => {
+            Err(error) => emit_canonical_error_and_exit(error),
+        },
+        Ok(ResolvedSurfaceCommand::Schema(command)) => {
+            let payload = match command {
+                ResolvedDiscoverabilityCommand::Legacy(command) => {
+                    run_schema_command(command).unwrap_or_else(|error| emit_error_and_exit(error))
+                }
+                ResolvedDiscoverabilityCommand::Canonical(operation) => {
+                    crate::operations::operation_schema(&operation)
+                        .unwrap_or_else(|error| emit_canonical_error_and_exit(error))
+                }
+            };
+            if let Err(error) = emit_exact_json(&payload, false) {
+                emit_error_and_exit(error.into());
+            }
+            Ok(())
+        }
+        Ok(ResolvedSurfaceCommand::Example(command)) => {
+            let payload = match command {
+                ResolvedDiscoverabilityCommand::Legacy(command) => {
+                    run_example_command(command).unwrap_or_else(|error| emit_error_and_exit(error))
+                }
+                ResolvedDiscoverabilityCommand::Canonical(operation) => {
+                    if operation == "write" {
+                        serde_json::json!({
+                            "resource_id": "fork:fork-example",
+                            "expected_revision": "sha256-revision",
+                            "mode": "preview",
+                            "atomic": true,
+                            "ops": [{
+                                "kind": "set_cells",
+                                "sheet_name": "Sheet1",
+                                "cells": {"A1": {"kind": "value", "value": 42}}
+                            }]
+                        })
+                    } else {
                         emit_error_and_exit(anyhow::anyhow!(
                             "canonical operation '{}' has schemas but no example fixture",
                             operation
                         ))
                     }
-                };
-                if let Err(error) = emit_exact_json(&payload, false) {
-                    emit_error_and_exit(error.into());
                 }
-                Ok(())
+            };
+            if let Err(error) = emit_exact_json(&payload, false) {
+                emit_error_and_exit(error.into());
             }
-            Err(error) => emit_rewritten_clap_error_and_exit(error),
-        };
+            Ok(())
+        }
+        Err(error) => emit_rewritten_clap_error_and_exit(error),
+    };
 
     if result.is_ok() && !surface.quiet {
         for warning in &warnings {

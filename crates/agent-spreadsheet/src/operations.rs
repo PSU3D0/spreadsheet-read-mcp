@@ -368,6 +368,7 @@ fn workbook_read(capabilities: &RuntimeCapabilities) -> bool {
 fn workbook_discovery(capabilities: &RuntimeCapabilities) -> bool {
     capabilities.workbook_discovery
 }
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 fn workbook_write(capabilities: &RuntimeCapabilities) -> bool {
     capabilities.workbook_write
 }
@@ -572,13 +573,120 @@ schemas!(
     "sheet_statistics"
 );
 #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
-schemas!(
-    write_input_schema,
-    write_output_schema,
-    WriteRequest,
-    WriteResponseData,
-    "write"
-);
+fn write_input_schema() -> Value {
+    fn apply_write_bounds(value: &mut Value, property: Option<&str>) {
+        if let Some(object) = value.as_object_mut() {
+            if matches!(property, Some("ops")) {
+                object.insert("maxItems".to_string(), json!(128));
+            }
+            if matches!(property, Some("cells")) {
+                if object.get("type") == Some(&Value::String("object".to_string())) {
+                    object.insert("maxProperties".to_string(), json!(100_000));
+                } else {
+                    object.insert("maxItems".to_string(), json!(100_000));
+                }
+            }
+            if matches!(
+                property,
+                Some("rows" | "merges" | "columns" | "row_breaks" | "col_breaks")
+            ) {
+                object.insert("maxItems".to_string(), json!(100_000));
+            }
+            if matches!(property, Some("items"))
+                && object.get("type") == Some(&Value::String("array".to_string()))
+            {
+                object.insert("maxItems".to_string(), json!(100_000));
+            }
+            if matches!(property, Some("csv")) {
+                object.insert("maxLength".to_string(), json!(1_048_576));
+            }
+            let keys = object.keys().cloned().collect::<Vec<_>>();
+            for key in keys {
+                if let Some(child) = object.get_mut(&key) {
+                    apply_write_bounds(child, Some(&key));
+                }
+            }
+        } else if let Some(array) = value.as_array_mut() {
+            for child in array {
+                apply_write_bounds(child, property);
+            }
+        }
+    }
+
+    let mut schema = closed_schema::<WriteRequest>();
+    let defs = schema
+        .get_mut("$defs")
+        .and_then(Value::as_object_mut)
+        .expect("write schema definitions");
+    let family_names = [
+        "CanonicalStructureOp",
+        "StyleWriteOp",
+        "ColumnWriteOp",
+        "FormulaWriteOp",
+        "NameWriteOp",
+        "ImportAndHelperOp",
+        "TransformOp",
+        "SheetLayoutOp",
+        "RulesOp",
+    ];
+    let mut variants = vec![json!({"$ref":"#/$defs/SetCellsOp"})];
+    for family in family_names {
+        let family_variants = defs
+            .get(family)
+            .and_then(|value| value.get("oneOf"))
+            .and_then(Value::as_array)
+            .expect("tagged write family")
+            .clone();
+        variants.extend(family_variants);
+    }
+    defs.insert("WriteOp".to_string(), json!({"oneOf": variants}));
+    for family in family_names {
+        defs.remove(family);
+    }
+    apply_write_bounds(&mut schema, None);
+    schema
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+fn write_output_schema() -> Value {
+    let mut schema = resource_output_schema::<WriteResponseData>("write");
+    if let Some(variants) = schema
+        .pointer_mut("/$defs/WriteResponseData/oneOf")
+        .and_then(Value::as_array_mut)
+    {
+        for variant in variants {
+            let Some(properties) = variant.get_mut("properties").and_then(Value::as_object_mut)
+            else {
+                continue;
+            };
+            let status = properties
+                .get("status")
+                .and_then(|value| value.get("const"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let mode = match status.as_deref() {
+                Some("previewed") => Some("preview"),
+                Some("staged") => Some("stage"),
+                Some("applied" | "partial" | "rolled_back") => Some("apply"),
+                _ => None,
+            };
+            if let Some(mode) = mode {
+                properties.insert("mode".to_string(), json!({"type":"string","const":mode}));
+            }
+            if let Some(atomic) = match status.as_deref() {
+                Some("staged" | "rolled_back") => Some(true),
+                Some("partial") => Some(false),
+                _ => None,
+            } {
+                properties.insert(
+                    "atomic".to_string(),
+                    json!({"type":"boolean","const":atomic}),
+                );
+            }
+        }
+    }
+    schema
+}
 
 const WORKBOOK_DISCOVERY: CapabilityMetadata = CapabilityMetadata {
     name: "workbook_discovery",
@@ -588,6 +696,7 @@ const WORKBOOK_READ: CapabilityMetadata = CapabilityMetadata {
     name: "workbook_read",
     description: "Read an already-bound workbook resource",
 };
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 const WORKBOOK_WRITE: CapabilityMetadata = CapabilityMetadata {
     name: "workbook_write",
     description: "Mutate an isolated fork or session resource with revision CAS",
@@ -994,6 +1103,7 @@ pub async fn execute_operation(
         ));
     }
 
+    #[allow(unused_mut)]
     let (resource_id, mut revision_id) = if let Some(requested) = operation.resource_id() {
         let workbook = state
             .open_workbook(&requested.to_workbook_id())
@@ -1220,12 +1330,14 @@ pub async fn execute_operation(
                     let message = error.to_string();
                     let code = if message.starts_with("revision conflict:") {
                         CanonicalErrorCode::RevisionConflict
+                    } else if message.starts_with("invalid request:") {
+                        CanonicalErrorCode::InvalidRequest
                     } else {
                         CanonicalErrorCode::OperationFailed
                     };
                     CanonicalErrorEnvelope::new(code, message, Some(name), None)
                 })?;
-            revision_id = Some(result.revision_after.clone());
+            revision_id = Some(result.revision_after().to_string());
             serde_json::to_value(result)
         }
     }

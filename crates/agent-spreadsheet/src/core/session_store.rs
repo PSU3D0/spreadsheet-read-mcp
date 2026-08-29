@@ -635,6 +635,7 @@ impl Drop for SessionLock {
 ///
 /// This reuses the battle-tested file-based `apply_*_to_file()` functions
 /// and defers in-memory optimization to a future phase.
+#[cfg(feature = "recalc")]
 fn replay_via_temp_file<F>(
     session: &mut crate::core::session::WorkbookSession,
     apply_fn: F,
@@ -653,6 +654,7 @@ where
 /// This is the core event-to-mutation mapping. Each OpKind is routed to the
 /// appropriate session method or file-based apply function (via temp-file
 /// round-trip).
+#[cfg(feature = "recalc")]
 fn replay_event_on_session(
     session: &mut crate::core::session::WorkbookSession,
     event: &OpEvent,
@@ -826,11 +828,20 @@ fn replay_event_on_session(
     Ok(())
 }
 
+#[cfg(not(feature = "recalc"))]
+fn replay_event_on_session(
+    _session: &mut crate::core::session::WorkbookSession,
+    _event: &OpEvent,
+) -> Result<()> {
+    bail!("session event replay requires the recalc feature")
+}
+
 /// Deserialize an ops array from an event payload.
 ///
 /// Tries `payload["ops"]` first (the standard `{"ops": [...]}` envelope used by
 /// batch commands). Falls back to wrapping the entire payload as a single-element
 /// vec for events that store a flat operation object.
+#[cfg(feature = "recalc")]
 fn deserialize_ops_array<T: serde::de::DeserializeOwned>(
     payload: &serde_json::Value,
 ) -> Result<Vec<T>> {

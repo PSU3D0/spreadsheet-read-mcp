@@ -1,0 +1,32 @@
+{
+  "schema_version": "1",
+  "operation": "write",
+  "resource_id": "fork:fork-golden",
+  "revision_id": "stage:chg-golden",
+  "data": {
+    "atomic": true,
+    "revision_before": "rev-before",
+    "diff": {
+      "change_count": 0,
+      "changes": []
+    },
+    "impact": {
+      "op_kinds": [
+        "set_cells"
+      ],
+      "risk": "moderate"
+    },
+    "status": "staged",
+    "mode": "stage",
+    "revision_after": "stage:chg-golden",
+    "ops_staged": 1,
+    "change_id": "chg-golden",
+    "results": [
+      {
+        "index": 0,
+        "kind": "set_cells",
+        "status": "staged"
+      }
+    ]
+  }
+}

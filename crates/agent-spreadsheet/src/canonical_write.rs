@@ -1,4 +1,3 @@
-use crate::cli::{AppendRegionFooterPolicyArg, CloneMergePolicyArg, ClonePatchTargetsArg};
 use crate::fork::{ChangeSummary, StagedChange, StagedOp};
 use crate::model::{
     CellValuePrimitive, FormulaParsePolicy, GridPayload, NamedRangeScope, StylePatch, WorkbookId,
@@ -14,7 +13,7 @@ use crate::tools::fork::{
     apply_transform_ops_to_file,
 };
 use crate::tools::param_enums::{FillDirection, FormulaRelativeMode};
-use crate::tools::rules_batch::{RulesOp, apply_rules_ops_to_file};
+use crate::tools::rules_batch::{ConditionalFormatRuleSpec, RulesOp, apply_rules_ops_to_file};
 use crate::tools::sheet_layout::{SheetLayoutOp, apply_sheet_layout_ops_to_file};
 use crate::utils::{hash_file_sha256_hex, make_short_random_id};
 use anyhow::{Result, anyhow, bail};
@@ -26,6 +25,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+
+const MAX_WRITE_OPS: usize = 128;
+const MAX_WRITE_CELLS: usize = 100_000;
+const MAX_WRITE_PAYLOAD_BYTES: usize = 1_048_576;
 
 fn default_true() -> bool {
     true
@@ -326,53 +329,7 @@ pub enum NameWriteOp {
     },
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum AppendFooterPolicy {
-    Auto,
-    BeforeFooter,
-    AppendAtEnd,
-}
-impl From<AppendFooterPolicy> for AppendRegionFooterPolicyArg {
-    fn from(value: AppendFooterPolicy) -> Self {
-        match value {
-            AppendFooterPolicy::Auto => AppendRegionFooterPolicyArg::Auto,
-            AppendFooterPolicy::BeforeFooter => AppendRegionFooterPolicyArg::BeforeFooter,
-            AppendFooterPolicy::AppendAtEnd => AppendRegionFooterPolicyArg::AppendAtEnd,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ClonePatchTargets {
-    LikelyInputs,
-    AllNonFormula,
-    None,
-}
-impl From<ClonePatchTargets> for ClonePatchTargetsArg {
-    fn from(value: ClonePatchTargets) -> Self {
-        match value {
-            ClonePatchTargets::LikelyInputs => ClonePatchTargetsArg::LikelyInputs,
-            ClonePatchTargets::AllNonFormula => ClonePatchTargetsArg::AllNonFormula,
-            ClonePatchTargets::None => ClonePatchTargetsArg::None,
-        }
-    }
-}
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum CloneMergePolicy {
-    Safe,
-    Strict,
-}
-impl From<CloneMergePolicy> for CloneMergePolicyArg {
-    fn from(value: CloneMergePolicy) -> Self {
-        match value {
-            CloneMergePolicy::Safe => CloneMergePolicyArg::Safe,
-            CloneMergePolicy::Strict => CloneMergePolicyArg::Strict,
-        }
-    }
-}
+pub use crate::core::write_planner::{AppendFooterPolicy, CloneMergePolicy, ClonePatchTargets};
 fn default_patch_targets() -> ClonePatchTargets {
     ClonePatchTargets::LikelyInputs
 }
@@ -551,7 +508,7 @@ pub struct WriteRequest {
     pub mode: WriteMode,
     #[serde(default = "default_true")]
     pub atomic: bool,
-    #[schemars(length(min = 1))]
+    #[schemars(length(min = 1, max = 128))]
     pub ops: Vec<WriteOp>,
     #[serde(default)]
     pub label: Option<String>,
@@ -572,6 +529,15 @@ pub enum WriteOpStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct WriteOpError {
+    pub code: String,
+    pub message: String,
+    pub path: String,
+    pub retryable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WriteOpResult {
     pub index: usize,
     pub kind: String,
@@ -579,7 +545,7 @@ pub struct WriteOpResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    pub error: Option<WriteOpError>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -597,106 +563,276 @@ pub struct WriteImpact {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct WriteResponseData {
-    pub mode: WriteMode,
-    pub atomic: bool,
-    pub revision_before: String,
-    pub revision_after: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ops_previewed: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ops_applied: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ops_staged: Option<usize>,
-    pub rolled_back: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub change_id: Option<String>,
-    pub diff: WriteDiff,
-    pub impact: WriteImpact,
-    pub results: Vec<WriteOpResult>,
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WriteResponseData {
+    Previewed {
+        mode: WriteMode,
+        atomic: bool,
+        revision_before: String,
+        revision_after: String,
+        ops_previewed: usize,
+        diff: WriteDiff,
+        impact: WriteImpact,
+        results: Vec<WriteOpResult>,
+    },
+    Staged {
+        mode: WriteMode,
+        atomic: bool,
+        revision_before: String,
+        revision_after: String,
+        ops_staged: usize,
+        change_id: String,
+        diff: WriteDiff,
+        impact: WriteImpact,
+        results: Vec<WriteOpResult>,
+    },
+    Applied {
+        mode: WriteMode,
+        atomic: bool,
+        revision_before: String,
+        revision_after: String,
+        ops_applied: usize,
+        diff: WriteDiff,
+        impact: WriteImpact,
+        results: Vec<WriteOpResult>,
+    },
+    Partial {
+        mode: WriteMode,
+        atomic: bool,
+        revision_before: String,
+        revision_after: String,
+        ops_applied: usize,
+        diff: WriteDiff,
+        impact: WriteImpact,
+        results: Vec<WriteOpResult>,
+    },
+    Failed {
+        mode: WriteMode,
+        atomic: bool,
+        revision_before: String,
+        revision_after: String,
+        ops_applied: usize,
+        diff: WriteDiff,
+        impact: WriteImpact,
+        results: Vec<WriteOpResult>,
+    },
+    RolledBack {
+        mode: WriteMode,
+        atomic: bool,
+        revision_before: String,
+        revision_after: String,
+        ops_applied: usize,
+        rolled_back: bool,
+        diff: WriteDiff,
+        impact: WriteImpact,
+        results: Vec<WriteOpResult>,
+    },
+}
+
+impl WriteResponseData {
+    pub fn revision_after(&self) -> &str {
+        match self {
+            Self::Previewed { revision_after, .. }
+            | Self::Staged { revision_after, .. }
+            | Self::Applied { revision_after, .. }
+            | Self::Partial { revision_after, .. }
+            | Self::Failed { revision_after, .. }
+            | Self::RolledBack { revision_after, .. } => revision_after,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CanonicalStagedBundle {
     pub base_revision: String,
+    pub expected_revision: String,
+    pub atomic: bool,
     pub ops: Vec<WriteOp>,
     pub formula_parse_policy: Option<FormulaParsePolicy>,
 }
 
+fn invalid_request(message: impl std::fmt::Display) -> anyhow::Error {
+    anyhow!("invalid request: {message}")
+}
+
+fn validate_sheet_name(value: &str) -> Result<()> {
+    if value.is_empty()
+        || value.chars().count() > 31
+        || value
+            .chars()
+            .any(|ch| matches!(ch, '[' | ']' | ':' | '*' | '?' | '/' | '\\'))
+        || value.starts_with('\'')
+        || value.ends_with('\'')
+    {
+        bail!("invalid sheet name '{value}'");
+    }
+    Ok(())
+}
+
+fn validate_cell(value: &str) -> Result<()> {
+    let (column, row) = parse_cell_ref(value)?;
+    if column > 16_384 || row > 1_048_576 {
+        bail!("cell reference '{value}' exceeds XLSX grid bounds");
+    }
+    Ok(())
+}
+
+fn validate_range(value: &str) -> Result<()> {
+    let bare = value.rsplit_once('!').map_or(value, |(_, range)| range);
+    if bare.split(':').all(|part| {
+        part.trim_matches('$')
+            .chars()
+            .all(|ch| ch.is_ascii_alphabetic())
+    }) {
+        return validate_column_range(bare);
+    }
+    let mut parts = bare.split(':');
+    let start = parts.next().unwrap_or_default();
+    let end = parts.next().unwrap_or(start);
+    if parts.next().is_some() {
+        bail!("invalid A1 range '{value}'");
+    }
+    validate_cell(start)?;
+    validate_cell(end)?;
+    let (start_col, start_row) = parse_cell_ref(start)?;
+    let (end_col, end_row) = parse_cell_ref(end)?;
+    if start_col > end_col || start_row > end_row {
+        bail!("range '{value}' must be ascending");
+    }
+    Ok(())
+}
+
+fn validate_column(value: &str) -> Result<()> {
+    let value = value.trim().trim_matches('$');
+    if value.is_empty() || !value.chars().all(|ch| ch.is_ascii_alphabetic()) {
+        bail!("invalid column '{value}'");
+    }
+    let index = umya_spreadsheet::helper::coordinate::column_index_from_string(value);
+    if index == 0 || index > 16_384 {
+        bail!("column '{value}' exceeds XLSX grid bounds");
+    }
+    Ok(())
+}
+
+fn validate_column_range(value: &str) -> Result<()> {
+    let (start, end) = value.split_once(':').unwrap_or((value, value));
+    validate_column(start)?;
+    validate_column(end)?;
+    let start_index =
+        umya_spreadsheet::helper::coordinate::column_index_from_string(start.trim_matches('$'));
+    let end_index =
+        umya_spreadsheet::helper::coordinate::column_index_from_string(end.trim_matches('$'));
+    if start_index > end_index {
+        bail!("column range '{value}' must be ascending");
+    }
+    Ok(())
+}
+
+fn validate_defined_name(value: &str) -> Result<()> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 255 {
+        bail!("defined name must contain 1..=255 bytes");
+    }
+    let mut chars = value.chars();
+    let first = chars.next().expect("non-empty name");
+    if !(first.is_ascii_alphabetic() || matches!(first, '_' | '\\'))
+        || !chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '\\'))
+        || parse_cell_ref(value).is_ok()
+    {
+        bail!("invalid defined name '{value}'");
+    }
+    Ok(())
+}
+
+fn validate_row_range(value: &str) -> Result<()> {
+    let (start, end) = value
+        .split_once(':')
+        .ok_or_else(|| anyhow!("row range must use START:END notation"))?;
+    let start = start.parse::<u32>()?;
+    let end = end.parse::<u32>()?;
+    if start == 0 || end < start || end > 1_048_576 {
+        bail!("invalid row range '{value}'");
+    }
+    Ok(())
+}
+
+fn validate_static_fields(value: &Value) -> Result<()> {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                validate_static_fields(value)?;
+            }
+        }
+        Value::Object(object) => {
+            for (key, value) in object {
+                match (key.as_str(), value) {
+                    (
+                        "sheet" | "sheet_name" | "dest_sheet_name" | "scope_sheet_name"
+                        | "old_name" | "new_name",
+                        Value::String(value),
+                    ) => validate_sheet_name(value)?,
+                    (
+                        "anchor" | "dest_anchor" | "anchor_cell" | "top_left_cell",
+                        Value::String(value),
+                    ) => validate_cell(value)?,
+                    ("range" | "target_range" | "src_range", Value::String(value)) => {
+                        validate_range(value)?
+                    }
+                    ("at_col" | "start_col", Value::String(value)) => validate_column(value)?,
+                    ("source_rows", Value::String(value)) => validate_row_range(value)?,
+                    ("cells", Value::Object(cells)) => {
+                        for address in cells.keys() {
+                            validate_cell(address)?;
+                        }
+                    }
+                    ("cells", Value::Array(cells)) => {
+                        for address in cells.iter().filter_map(Value::as_str) {
+                            validate_cell(address)?;
+                        }
+                    }
+                    ("columns", Value::String(value)) => validate_column_range(value)?,
+                    _ => {}
+                }
+                validate_static_fields(value)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn validate_request(request: &WriteRequest) -> Result<()> {
-    if request.ops.is_empty() {
-        bail!("ops must not be empty");
+    let payload_bytes = serde_json::to_vec(request)?.len();
+    if request.ops.is_empty() || request.ops.len() > MAX_WRITE_OPS {
+        return Err(invalid_request(format!(
+            "ops must contain 1..={MAX_WRITE_OPS} operations"
+        )));
     }
     if request.expected_revision.trim().is_empty() {
-        bail!("expected_revision must not be empty");
+        return Err(invalid_request("expected_revision must not be empty"));
     }
+    if payload_bytes > MAX_WRITE_PAYLOAD_BYTES {
+        return Err(invalid_request(format!(
+            "request exceeds {MAX_WRITE_PAYLOAD_BYTES} bytes"
+        )));
+    }
+    if request.mode == WriteMode::Stage && !request.atomic {
+        return Err(invalid_request(
+            "stage requires atomic:true; non-atomic staged replay is unsupported",
+        ));
+    }
+    let mut cells = 0usize;
     for (index, op) in request.ops.iter().enumerate() {
-        let invalid = |message: &str| anyhow!("ops[{index}] ({}): {message}", op.kind());
+        let invalid =
+            |message: &str| invalid_request(format!("ops[{index}] ({}): {message}", op.kind()));
+        validate_static_fields(&serde_json::to_value(op)?)
+            .map_err(|error| invalid(&error.to_string()))?;
         match op {
-            WriteOp::SetCells(value) if value.cells.is_empty() => {
-                return Err(invalid("cells must not be empty"));
-            }
-            WriteOp::Structure(CanonicalStructureOp::InsertRows { at_row, count, .. })
-                if *at_row == 0 || *count == 0 =>
-            {
-                return Err(invalid("row and count values must be positive"));
-            }
-            WriteOp::Structure(CanonicalStructureOp::DeleteRows {
-                start_row, count, ..
-            }) if *start_row == 0 || *count == 0 => {
-                return Err(invalid("row and count values must be positive"));
-            }
-            WriteOp::Structure(
-                CanonicalStructureOp::InsertCols { count, .. }
-                | CanonicalStructureOp::DeleteCols { count, .. },
-            ) if *count == 0 => return Err(invalid("count must be positive")),
-            WriteOp::ImportAndHelper(ImportAndHelperOp::AppendRows {
-                region_id,
-                table_name,
-                rows,
-                ..
-            }) if region_id.is_some() == table_name.is_some() || rows.is_empty() => {
-                return Err(invalid(
-                    "append_rows requires non-empty rows and exactly one of region_id or table_name",
-                ));
-            }
-            WriteOp::ImportAndHelper(ImportAndHelperOp::CloneRow {
-                source_row,
-                insert_at,
-                count,
-                ..
-            }) if *source_row == 0 || *insert_at == 0 || *count == 0 => {
-                return Err(invalid("source_row, insert_at, and count must be positive"));
-            }
-            WriteOp::ImportAndHelper(ImportAndHelperOp::CloneRowBand {
-                insert_at,
-                repeat,
-                source_rows,
-                ..
-            }) if *insert_at == 0 || *repeat == 0 || !source_rows.contains(':') => {
-                return Err(invalid(
-                    "clone_row_band requires a START:END source_rows range and positive insert_at/repeat",
-                ));
-            }
-            WriteOp::Formula(FormulaWriteOp::ReplaceInFormulas { find, .. }) if find.is_empty() => {
-                return Err(invalid("find must not be empty"));
-            }
-            WriteOp::Formula(FormulaWriteOp::ReplaceInFormulas {
-                find, regex: true, ..
-            }) => {
-                regex::Regex::new(find)
-                    .map_err(|error| invalid(&format!("invalid regex: {error}")))?;
-            }
-            WriteOp::ImportAndHelper(ImportAndHelperOp::ImportCsv { csv, .. }) => {
-                csv_records(csv).map_err(|error| invalid(&error.to_string()))?;
-            }
-            WriteOp::Name(NameWriteOp::DefineName {
-                scope: NameScope::Sheet,
-                scope_sheet_name: None,
-                ..
-            }) => return Err(invalid("sheet-scoped names require scope_sheet_name")),
             WriteOp::SetCells(value) => {
+                if value.cells.is_empty() {
+                    return Err(invalid("cells must not be empty"));
+                }
+                cells = cells.saturating_add(value.cells.len());
                 for content in value.cells.values() {
                     if let CellContent::Formula { formula } = content {
                         crate::model::validate_formula(formula)
@@ -704,15 +840,241 @@ fn validate_request(request: &WriteRequest) -> Result<()> {
                     }
                 }
             }
+            WriteOp::Structure(CanonicalStructureOp::InsertRows { at_row, count, .. })
+                if *at_row == 0 || *count == 0 || at_row.saturating_add(*count) > 1_048_577 =>
+            {
+                return Err(invalid("row and count values exceed XLSX bounds"));
+            }
+            WriteOp::Structure(CanonicalStructureOp::DeleteRows {
+                start_row, count, ..
+            }) if *start_row == 0
+                || *count == 0
+                || start_row.saturating_add(*count) > 1_048_577 =>
+            {
+                return Err(invalid("row and count values exceed XLSX bounds"));
+            }
+            WriteOp::Structure(
+                CanonicalStructureOp::InsertCols { count, .. }
+                | CanonicalStructureOp::DeleteCols { count, .. },
+            ) if *count == 0 || *count > 16_384 => {
+                return Err(invalid("column count exceeds XLSX bounds"));
+            }
+            WriteOp::Structure(CanonicalStructureOp::RenameSheet { old_name, new_name }) => {
+                validate_sheet_name(old_name).map_err(|error| invalid(&error.to_string()))?;
+                validate_sheet_name(new_name).map_err(|error| invalid(&error.to_string()))?;
+                if old_name == new_name {
+                    return Err(invalid("old_name and new_name must differ"));
+                }
+            }
+            WriteOp::Structure(CanonicalStructureOp::CreateSheet { name, position }) => {
+                validate_sheet_name(name).map_err(|error| invalid(&error.to_string()))?;
+                if position.is_some_and(|position| position > 1_000) {
+                    return Err(invalid("sheet position exceeds planner bound"));
+                }
+            }
+            WriteOp::Structure(CanonicalStructureOp::DeleteSheet { name }) => {
+                validate_sheet_name(name).map_err(|error| invalid(&error.to_string()))?
+            }
+            WriteOp::ImportAndHelper(ImportAndHelperOp::AppendRows {
+                region_id,
+                table_name,
+                rows,
+                ..
+            }) => {
+                if region_id.is_some() == table_name.is_some()
+                    || rows.is_empty()
+                    || rows.iter().any(Vec::is_empty)
+                {
+                    return Err(invalid(
+                        "append_rows requires non-empty rows and exactly one of region_id or table_name",
+                    ));
+                }
+                if table_name
+                    .as_ref()
+                    .is_some_and(|name| name.trim().is_empty())
+                {
+                    return Err(invalid("table_name must not be empty"));
+                }
+                for formula in rows.iter().flatten().filter_map(|cell| match cell {
+                    Some(MatrixCell::Formula(formula)) => Some(formula),
+                    _ => None,
+                }) {
+                    crate::model::validate_formula(formula)
+                        .map_err(|error| invalid(&format!("invalid formula: {error}")))?;
+                }
+                cells = cells.saturating_add(rows.iter().map(Vec::len).sum::<usize>());
+            }
+            WriteOp::ImportAndHelper(ImportAndHelperOp::CloneRow {
+                source_row,
+                insert_at,
+                count,
+                ..
+            }) if *source_row == 0
+                || *insert_at == 0
+                || *count == 0
+                || insert_at.saturating_add(*count) > 1_048_577 =>
+            {
+                return Err(invalid("clone row fields exceed XLSX bounds"));
+            }
+            WriteOp::ImportAndHelper(ImportAndHelperOp::CloneRowBand {
+                insert_at,
+                repeat,
+                source_rows,
+                ..
+            }) => {
+                if *insert_at == 0 || *repeat == 0 {
+                    return Err(invalid("insert_at and repeat must be positive"));
+                }
+                validate_row_range(source_rows).map_err(|error| invalid(&error.to_string()))?;
+                let (start, end) = source_rows.split_once(':').expect("validated row range");
+                let band = end.parse::<u32>().expect("validated end")
+                    - start.parse::<u32>().expect("validated start")
+                    + 1;
+                if insert_at
+                    .checked_add(band.saturating_mul(*repeat))
+                    .is_none_or(|end| end > 1_048_577)
+                {
+                    return Err(invalid("cloned row band exceeds XLSX bounds"));
+                }
+            }
+            WriteOp::Formula(FormulaWriteOp::ReplaceInFormulas { find, regex, .. }) => {
+                if find.is_empty() {
+                    return Err(invalid("find must not be empty"));
+                }
+                if *regex {
+                    regex::Regex::new(find)
+                        .map_err(|error| invalid(&format!("invalid regex: {error}")))?;
+                }
+            }
+            WriteOp::ImportAndHelper(ImportAndHelperOp::ImportCsv {
+                anchor,
+                csv,
+                header,
+                ..
+            }) => {
+                let records = csv_records(csv).map_err(|error| invalid(&error.to_string()))?;
+                let (anchor_col, anchor_row) =
+                    parse_cell_ref(anchor).map_err(|error| invalid(&error.to_string()))?;
+                let data_rows = records.len().saturating_sub(usize::from(*header));
+                let width = records.iter().map(Vec::len).max().unwrap_or(0);
+                if anchor_row.saturating_add(data_rows as u32) > 1_048_577
+                    || anchor_col.saturating_add(width as u32) > 16_385
+                {
+                    return Err(invalid("CSV exceeds XLSX grid bounds"));
+                }
+                cells = cells.saturating_add(records.iter().map(Vec::len).sum::<usize>());
+            }
+            WriteOp::ImportAndHelper(ImportAndHelperOp::ImportGrid { anchor, grid, .. }) => {
+                validate_cell(&grid.anchor).map_err(|error| invalid(&error.to_string()))?;
+                for merge in &grid.merges {
+                    validate_range(merge).map_err(|error| invalid(&error.to_string()))?;
+                }
+                let (target_col, target_row) =
+                    parse_cell_ref(anchor).map_err(|error| invalid(&error.to_string()))?;
+                if grid.rows.iter().flat_map(|row| &row.cells).any(|cell| {
+                    target_row
+                        .checked_add(cell.offset[0])
+                        .is_none_or(|row| row > 1_048_576)
+                        || target_col
+                            .checked_add(cell.offset[1])
+                            .is_none_or(|col| col > 16_384)
+                }) {
+                    return Err(invalid("grid cell offset exceeds XLSX bounds"));
+                }
+                if grid.columns.iter().any(|column| {
+                    target_col
+                        .checked_add(column.offset)
+                        .is_none_or(|col| col > 16_384)
+                        || !column.width_chars.is_finite()
+                        || column.width_chars < 0.0
+                        || column.width_chars > 255.0
+                }) {
+                    return Err(invalid("grid column hint is invalid"));
+                }
+                cells = cells
+                    .saturating_add(grid.rows.iter().map(|row| row.cells.len()).sum::<usize>());
+            }
+            WriteOp::Name(NameWriteOp::DefineName {
+                name,
+                refers_to,
+                scope,
+                scope_sheet_name,
+            }) => {
+                validate_defined_name(name).map_err(|error| invalid(&error.to_string()))?;
+                if refers_to.trim().is_empty() {
+                    return Err(invalid("refers_to must not be empty"));
+                }
+                if matches!(scope, NameScope::Sheet) && scope_sheet_name.is_none() {
+                    return Err(invalid("sheet-scoped names require scope_sheet_name"));
+                }
+            }
+            WriteOp::Name(NameWriteOp::UpdateName {
+                name,
+                refers_to,
+                scope,
+                scope_sheet_name,
+            }) => {
+                validate_defined_name(name).map_err(|error| invalid(&error.to_string()))?;
+                if matches!(scope, Some(NameScope::Sheet)) && scope_sheet_name.is_none() {
+                    return Err(invalid("sheet-scoped names require scope_sheet_name"));
+                }
+                if refers_to
+                    .as_ref()
+                    .is_some_and(|value| value.trim().is_empty())
+                {
+                    return Err(invalid("refers_to must not be empty"));
+                }
+            }
+            WriteOp::Name(NameWriteOp::DeleteName {
+                name,
+                scope,
+                scope_sheet_name,
+            }) => {
+                validate_defined_name(name).map_err(|error| invalid(&error.to_string()))?;
+                if matches!(scope, Some(NameScope::Sheet)) && scope_sheet_name.is_none() {
+                    return Err(invalid("sheet-scoped names require scope_sheet_name"));
+                }
+            }
+            WriteOp::Style(StyleWriteOp::Style {
+                target: StyleTarget::Cells { cells: addresses },
+                ..
+            }) if addresses.is_empty() => return Err(invalid("style cells must not be empty")),
+            WriteOp::Transform(
+                TransformOp::ClearRange {
+                    target: TransformTarget::Cells { cells: addresses },
+                    ..
+                }
+                | TransformOp::FillRange {
+                    target: TransformTarget::Cells { cells: addresses },
+                    ..
+                }
+                | TransformOp::ReplaceInRange {
+                    target: TransformTarget::Cells { cells: addresses },
+                    ..
+                },
+            ) if addresses.is_empty() => return Err(invalid("target cells must not be empty")),
             WriteOp::Transform(TransformOp::FillRange {
                 value,
                 is_formula: true,
                 ..
-            }) => {
-                crate::model::validate_formula(value)
-                    .map_err(|error| invalid(&format!("invalid formula: {error}")))?;
+            }) => crate::model::validate_formula(value)
+                .map_err(|error| invalid(&format!("invalid formula: {error}")))?,
+            WriteOp::Transform(TransformOp::ReplaceInRange { find, .. }) if find.is_empty() => {
+                return Err(invalid("find must not be empty"));
             }
-            WriteOp::Transform(TransformOp::WriteMatrix { rows, .. }) => {
+            WriteOp::Transform(TransformOp::WriteMatrix { anchor, rows, .. }) => {
+                if rows.is_empty() || rows.iter().any(Vec::is_empty) {
+                    return Err(invalid("matrix rows must not be empty"));
+                }
+                let (anchor_col, anchor_row) =
+                    parse_cell_ref(anchor).map_err(|error| invalid(&error.to_string()))?;
+                let width = rows.iter().map(Vec::len).max().unwrap_or(0) as u32;
+                if anchor_row.saturating_add(rows.len() as u32) > 1_048_577
+                    || anchor_col.saturating_add(width) > 16_385
+                {
+                    return Err(invalid("matrix exceeds XLSX grid bounds"));
+                }
+                cells = cells.saturating_add(rows.iter().map(Vec::len).sum::<usize>());
                 for formula in rows.iter().flatten().filter_map(|cell| match cell {
                     Some(MatrixCell::Formula(formula)) => Some(formula),
                     _ => None,
@@ -721,11 +1083,113 @@ fn validate_request(request: &WriteRequest) -> Result<()> {
                         .map_err(|error| invalid(&format!("invalid formula: {error}")))?;
                 }
             }
+            WriteOp::Column(ColumnWriteOp::ColumnSize { size, .. }) => match size {
+                ColumnSizeSpec::Width { width_chars }
+                    if !width_chars.is_finite() || *width_chars < 0.0 || *width_chars > 255.0 =>
+                {
+                    return Err(invalid("width_chars must be finite and between 0 and 255"));
+                }
+                ColumnSizeSpec::Auto {
+                    min_width_chars,
+                    max_width_chars,
+                } => {
+                    if min_width_chars
+                        .is_some_and(|value| !value.is_finite() || value < 0.0 || value > 255.0)
+                        || max_width_chars
+                            .is_some_and(|value| !value.is_finite() || value < 0.0 || value > 255.0)
+                        || matches!((min_width_chars, max_width_chars), (Some(min), Some(max)) if min > max)
+                    {
+                        return Err(invalid(
+                            "auto width bounds must be finite, ordered, and between 0 and 255",
+                        ));
+                    }
+                }
+                _ => {}
+            },
+            WriteOp::Layout(SheetLayoutOp::FreezePanes {
+                freeze_rows,
+                freeze_cols,
+                ..
+            }) if *freeze_rows > 1_048_576 || *freeze_cols > 16_384 => {
+                return Err(invalid("freeze panes exceed XLSX grid bounds"));
+            }
+            WriteOp::Layout(SheetLayoutOp::SetZoom { zoom_percent, .. })
+                if !(10..=400).contains(zoom_percent) =>
+            {
+                return Err(invalid("zoom_percent must be between 10 and 400"));
+            }
+            WriteOp::Layout(SheetLayoutOp::SetPageMargins {
+                left,
+                right,
+                top,
+                bottom,
+                header,
+                footer,
+                ..
+            }) => {
+                if [
+                    Some(*left),
+                    Some(*right),
+                    Some(*top),
+                    Some(*bottom),
+                    *header,
+                    *footer,
+                ]
+                .into_iter()
+                .flatten()
+                .any(|value| !value.is_finite() || value < 0.0)
+                {
+                    return Err(invalid("page margins must be finite and non-negative"));
+                }
+            }
+            WriteOp::Layout(SheetLayoutOp::SetPageSetup {
+                fit_to_width,
+                fit_to_height,
+                scale_percent,
+                ..
+            }) => {
+                if fit_to_width.is_some_and(|value| value == 0)
+                    || fit_to_height.is_some_and(|value| value == 0)
+                    || scale_percent.is_some_and(|value| !(10..=400).contains(&value))
+                {
+                    return Err(invalid("invalid page setup fit or scale value"));
+                }
+            }
+            WriteOp::Layout(SheetLayoutOp::SetPageBreaks {
+                row_breaks,
+                col_breaks,
+                ..
+            }) => {
+                if row_breaks
+                    .iter()
+                    .any(|value| *value == 0 || *value > 1_048_576)
+                    || col_breaks
+                        .iter()
+                        .any(|value| *value == 0 || *value > 16_384)
+                {
+                    return Err(invalid("page break exceeds XLSX grid bounds"));
+                }
+            }
+            WriteOp::Rules(
+                RulesOp::AddConditionalFormat { rule, .. }
+                | RulesOp::SetConditionalFormat { rule, .. },
+            ) => {
+                let formula = match rule {
+                    ConditionalFormatRuleSpec::CellIs { formula, .. }
+                    | ConditionalFormatRuleSpec::Expression { formula } => formula,
+                };
+                if formula.trim().is_empty() {
+                    return Err(invalid("conditional format formula must not be empty"));
+                }
+            }
             WriteOp::Formula(FormulaWriteOp::FormulaPattern { base_formula, .. }) => {
                 crate::model::validate_formula(base_formula)
-                    .map_err(|error| invalid(&format!("invalid formula: {error}")))?;
+                    .map_err(|error| invalid(&format!("invalid formula: {error}")))?
             }
             _ => {}
+        }
+        if cells > MAX_WRITE_CELLS {
+            return Err(invalid(&format!("request exceeds {MAX_WRITE_CELLS} cells")));
         }
     }
     Ok(())
@@ -772,6 +1236,23 @@ fn diff_paths(before: &Path, after: &Path) -> Result<WriteDiff> {
         change_count: values.len(),
         changes: values,
     })
+}
+
+fn add_effect_manifest(diff: &mut WriteDiff, results: &[WriteOpResult]) {
+    for result in results {
+        if result.kind == "set_cells" {
+            continue;
+        }
+        if let Some(effect) = &result.detail {
+            diff.changes.push(json!({
+                "kind": "operation_effect",
+                "op_index": result.index,
+                "op_kind": result.kind,
+                "effect": effect,
+            }));
+        }
+    }
+    diff.change_count = diff.changes.len();
 }
 
 fn summary_detail(summary: &ChangeSummary) -> Result<Value> {
@@ -974,14 +1455,37 @@ fn apply_grid(
         )?;
     }
     if !grid.merges.is_empty() {
+        let (source_col, source_row) = parse_cell_ref(&grid.anchor)?;
         let ops = grid
             .merges
             .iter()
-            .map(|range| StructureOp::MergeCells {
-                sheet_name: sheet_name.to_string(),
-                target_range: range.clone(),
+            .map(|range| {
+                let (start, end) = range.split_once(':').unwrap_or((range, range));
+                let (start_col, start_row) = parse_cell_ref(start)?;
+                let (end_col, end_row) = parse_cell_ref(end)?;
+                if start_col < source_col || start_row < source_row {
+                    bail!(
+                        "grid merge '{range}' begins before source anchor '{}'; cannot translate",
+                        grid.anchor
+                    );
+                }
+                let translated = format!(
+                    "{}:{}",
+                    crate::utils::cell_address(
+                        anchor_col + start_col - source_col,
+                        anchor_row + start_row - source_row
+                    ),
+                    crate::utils::cell_address(
+                        anchor_col + end_col - source_col,
+                        anchor_row + end_row - source_row
+                    ),
+                );
+                Ok(StructureOp::MergeCells {
+                    sheet_name: sheet_name.to_string(),
+                    target_range: translated,
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         apply_structure_ops_to_file(path, &ops, FormulaParsePolicy::Off)?;
     }
     for column in &grid.columns {
@@ -1228,12 +1732,12 @@ pub(crate) fn apply_write_op_to_file(
             table_name,
             rows,
             footer_policy,
-        }) => crate::cli::commands::write::apply_canonical_append_rows_to_file(
+        }) => crate::core::write_planner::apply_append_rows(
             path,
             sheet_name,
             *region_id,
             table_name.as_deref(),
-            (*footer_policy).into(),
+            *footer_policy,
             rows.clone(),
         ),
         WriteOp::ImportAndHelper(ImportAndHelperOp::CloneRow {
@@ -1244,15 +1748,15 @@ pub(crate) fn apply_write_op_to_file(
             expand_adjacent_sums,
             patch_targets,
             merge_policy,
-        }) => crate::cli::commands::write::apply_canonical_clone_row_to_file(
+        }) => crate::core::write_planner::apply_clone_row(
             path,
             sheet_name,
             *source_row,
             *insert_at,
             *count,
             *expand_adjacent_sums,
-            (*patch_targets).into(),
-            (*merge_policy).into(),
+            *patch_targets,
+            *merge_policy,
         ),
         WriteOp::ImportAndHelper(ImportAndHelperOp::CloneRowBand {
             sheet_name,
@@ -1262,15 +1766,15 @@ pub(crate) fn apply_write_op_to_file(
             expand_adjacent_sums,
             patch_targets,
             merge_policy,
-        }) => crate::cli::commands::write::apply_canonical_clone_row_band_to_file(
+        }) => crate::core::write_planner::apply_clone_row_band(
             path,
             sheet_name,
             source_rows,
             *insert_at,
             *repeat,
             *expand_adjacent_sums,
-            (*patch_targets).into(),
-            (*merge_policy).into(),
+            *patch_targets,
+            *merge_policy,
         ),
     }
 }
@@ -1296,7 +1800,12 @@ fn run_ops(
                     kind: op.kind().to_string(),
                     status: WriteOpStatus::Failed,
                     detail: None,
-                    error: Some(error.to_string()),
+                    error: Some(WriteOpError {
+                        code: "OPERATION_FAILED".to_string(),
+                        message: error.to_string(),
+                        path: format!("$.ops[{index}]"),
+                        retryable: false,
+                    }),
                 });
                 for (skip, later) in ops.iter().enumerate().skip(index + 1) {
                     results.push(WriteOpResult {
@@ -1318,10 +1827,15 @@ pub(crate) fn apply_bundle_atomically_to_path(
     path: &Path,
     bundle: &CanonicalStagedBundle,
 ) -> Result<usize> {
+    if !bundle.atomic {
+        return Err(invalid_request(
+            "canonical staged bundles must preserve atomic semantics",
+        ));
+    }
     let current = hash_file_sha256_hex(path)?;
     if current != bundle.base_revision {
         bail!(
-            "staged write base revision conflict: expected {}, current {}",
+            "revision conflict: staged write expected {}, current {}",
             bundle.base_revision,
             current
         );
@@ -1334,7 +1848,11 @@ pub(crate) fn apply_bundle_atomically_to_path(
     if let Some(index) = failure {
         bail!(
             "staged write op {index} failed: {}",
-            results[index].error.as_deref().unwrap_or("unknown failure")
+            results[index]
+                .error
+                .as_ref()
+                .map(|error| error.message.as_str())
+                .unwrap_or("unknown failure")
         );
     }
     swap_temp(temp, path)?;
@@ -1349,7 +1867,9 @@ pub async fn execute_write(
     if !request.resource_id.as_str().starts_with("fork:")
         && !request.resource_id.as_str().starts_with("session:")
     {
-        bail!("write requires a fork: or session: mutable resource_id");
+        return Err(invalid_request(
+            "write requires a fork: or session: mutable resource_id",
+        ));
     }
     if request.resource_id.as_str().starts_with("session:") {
         bail!("session resources are not backed by the native canonical dispatcher yet");
@@ -1358,49 +1878,59 @@ pub async fn execute_write(
     let registry = state
         .fork_registry()
         .ok_or_else(|| anyhow!("fork registry not available"))?;
-    let fork = registry.get_fork(&fork_id)?;
-    let path = fork.work_path.clone();
-    let revision_before = hash_file_sha256_hex(&path)?;
-    if revision_before != request.expected_revision {
-        bail!(
-            "revision conflict: expected {}, current {}",
-            request.expected_revision,
-            revision_before
-        );
-    }
-    let policy = request
-        .formula_parse_policy
-        .unwrap_or(FormulaParsePolicy::Warn);
-    let impact = WriteImpact {
-        op_kinds: request.ops.iter().map(|op| op.kind().to_string()).collect(),
-        risk: worst_risk(&request.ops),
-    };
+    let response = registry.with_fork_mut(&fork_id, |fork| {
+        let path = fork.work_path.clone();
+        let file_revision_before = hash_file_sha256_hex(&path)?;
+        if file_revision_before != fork.canonical_file_revision {
+            fork.canonical_file_revision = file_revision_before.clone();
+            fork.canonical_revision = file_revision_before.clone();
+        }
+        let revision_before = fork.canonical_revision.clone();
+        if revision_before != request.expected_revision {
+            bail!(
+                "revision conflict: expected {}, current {}",
+                request.expected_revision,
+                revision_before
+            );
+        }
+        let policy = request
+            .formula_parse_policy
+            .unwrap_or(FormulaParsePolicy::Warn);
+        let impact = WriteImpact {
+            op_kinds: request.ops.iter().map(|op| op.kind().to_string()).collect(),
+            risk: worst_risk(&request.ops),
+        };
 
-    match request.mode {
-        WriteMode::Preview | WriteMode::Stage => {
+        if matches!(request.mode, WriteMode::Preview | WriteMode::Stage) {
             let temp = temp_copy(&path)?;
             let (mut results, failure) = run_ops(temp.path(), &request.ops, policy);
+            let mut diff = diff_paths(&path, temp.path())?;
+            add_effect_manifest(&mut diff, &results);
             if let Some(index) = failure {
-                bail!(
-                    "write preview op {index} failed: {}",
-                    results[index].error.as_deref().unwrap_or("unknown failure")
-                );
-            }
-            let diff = diff_paths(&path, temp.path())?;
-            if request.mode == WriteMode::Preview {
-                for result in &mut results {
-                    result.status = WriteOpStatus::Previewed;
+                for result in &mut results[..index] {
+                    result.status = WriteOpStatus::RolledBack;
                 }
-                return Ok(WriteResponseData {
+                return Ok(WriteResponseData::Failed {
                     mode: request.mode,
                     atomic: request.atomic,
                     revision_before: revision_before.clone(),
                     revision_after: revision_before,
-                    ops_previewed: Some(request.ops.len()),
-                    ops_applied: None,
-                    ops_staged: None,
-                    rolled_back: false,
-                    change_id: None,
+                    ops_applied: 0,
+                    diff,
+                    impact,
+                    results,
+                });
+            }
+            if request.mode == WriteMode::Preview {
+                for result in &mut results {
+                    result.status = WriteOpStatus::Previewed;
+                }
+                return Ok(WriteResponseData::Previewed {
+                    mode: request.mode,
+                    atomic: request.atomic,
+                    revision_before: revision_before.clone(),
+                    revision_after: revision_before,
+                    ops_previewed: request.ops.len(),
                     diff,
                     impact,
                     results,
@@ -1408,11 +1938,13 @@ pub async fn execute_write(
             }
             for result in &mut results {
                 result.status = WriteOpStatus::Staged;
-                result.detail = None;
             }
             let change_id = make_short_random_id("chg", 12);
+            let stage_revision = format!("stage:{change_id}");
             let bundle = CanonicalStagedBundle {
-                base_revision: revision_before.clone(),
+                base_revision: file_revision_before.clone(),
+                expected_revision: stage_revision.clone(),
+                atomic: true,
                 ops: request.ops.clone(),
                 formula_parse_policy: request.formula_parse_policy,
             };
@@ -1426,87 +1958,72 @@ pub async fn execute_write(
             summary
                 .counts
                 .insert("preview_change_items".to_string(), diff.change_count as u64);
-            registry.add_staged_change(
-                &fork_id,
-                StagedChange {
-                    change_id: change_id.clone(),
-                    created_at: Utc::now(),
-                    label: request.label,
-                    ops: vec![StagedOp {
-                        kind: "canonical_write_bundle".to_string(),
-                        payload: serde_json::to_value(bundle)?,
-                    }],
-                    summary,
-                    fork_path_snapshot: None,
-                },
-            )?;
-            return Ok(WriteResponseData {
-                mode: request.mode,
-                atomic: request.atomic,
-                revision_before: revision_before.clone(),
-                revision_after: revision_before,
-                ops_previewed: None,
-                ops_applied: None,
-                ops_staged: Some(request.ops.len()),
-                rolled_back: false,
-                change_id: Some(change_id),
-                diff,
-                impact,
-                results,
+            fork.push_staged_change(StagedChange {
+                change_id: change_id.clone(),
+                created_at: Utc::now(),
+                label: request.label.clone(),
+                ops: vec![StagedOp {
+                    kind: "canonical_write_bundle".to_string(),
+                    payload: serde_json::to_value(bundle)?,
+                }],
+                summary,
+                fork_path_snapshot: None,
             });
-        }
-        WriteMode::Apply => {}
-    }
-
-    if request.atomic {
-        let temp = temp_copy(&path)?;
-        let (mut results, failure) = run_ops(temp.path(), &request.ops, policy);
-        if let Some(index) = failure {
-            for result in &mut results[..index] {
-                result.status = WriteOpStatus::RolledBack;
-            }
-            let diff = WriteDiff {
-                change_count: 0,
-                changes: Vec::new(),
-            };
-            return Ok(WriteResponseData {
+            fork.canonical_revision = stage_revision.clone();
+            return Ok(WriteResponseData::Staged {
                 mode: request.mode,
                 atomic: true,
-                revision_before: revision_before.clone(),
-                revision_after: revision_before,
-                ops_previewed: None,
-                ops_applied: Some(0),
-                ops_staged: None,
-                rolled_back: true,
-                change_id: None,
+                revision_before,
+                revision_after: stage_revision,
+                ops_staged: request.ops.len(),
+                change_id,
                 diff,
                 impact,
                 results,
             });
         }
-        let diff = diff_paths(&path, temp.path())?;
-        swap_temp(temp, &path)?;
-        registry.with_fork_mut(&fork_id, |fork| {
+
+        if request.atomic {
+            let temp = temp_copy(&path)?;
+            let (mut results, failure) = run_ops(temp.path(), &request.ops, policy);
+            if let Some(index) = failure {
+                for result in &mut results[..index] {
+                    result.status = WriteOpStatus::RolledBack;
+                }
+                return Ok(WriteResponseData::RolledBack {
+                    mode: request.mode,
+                    atomic: true,
+                    revision_before: revision_before.clone(),
+                    revision_after: revision_before,
+                    ops_applied: 0,
+                    rolled_back: true,
+                    diff: WriteDiff {
+                        change_count: 0,
+                        changes: Vec::new(),
+                    },
+                    impact,
+                    results,
+                });
+            }
+            let mut diff = diff_paths(&path, temp.path())?;
+            add_effect_manifest(&mut diff, &results);
+            swap_temp(temp, &path)?;
             fork.recalc_needed = true;
-            Ok(())
-        })?;
-        let _ = state.close_workbook(&WorkbookId(fork_id));
-        let revision_after = hash_file_sha256_hex(&path)?;
-        Ok(WriteResponseData {
-            mode: request.mode,
-            atomic: true,
-            revision_before,
-            revision_after,
-            ops_previewed: None,
-            ops_applied: Some(request.ops.len()),
-            ops_staged: None,
-            rolled_back: false,
-            change_id: None,
-            diff,
-            impact,
-            results,
-        })
-    } else {
+            let revision_after = hash_file_sha256_hex(&path)?;
+            fork.canonical_file_revision = revision_after.clone();
+            fork.canonical_revision = revision_after.clone();
+            return Ok(WriteResponseData::Applied {
+                mode: request.mode,
+                atomic: true,
+                revision_before,
+                revision_after,
+                ops_applied: request.ops.len(),
+                diff,
+                impact,
+                results,
+            });
+        }
+
         let before_snapshot = temp_copy(&path)?;
         let mut results = Vec::with_capacity(request.ops.len());
         let mut failed = false;
@@ -1546,33 +2063,58 @@ pub async fn execute_write(
                         kind: op.kind().to_string(),
                         status: WriteOpStatus::Failed,
                         detail: None,
-                        error: Some(error.to_string()),
+                        error: Some(WriteOpError {
+                            code: "OPERATION_FAILED".to_string(),
+                            message: error.to_string(),
+                            path: format!("$.ops[{index}]"),
+                            retryable: false,
+                        }),
                     });
                 }
             }
         }
         if applied > 0 {
-            registry.with_fork_mut(&fork_id, |fork| {
-                fork.recalc_needed = true;
-                Ok(())
-            })?;
-            let _ = state.close_workbook(&WorkbookId(fork_id));
+            fork.recalc_needed = true;
         }
-        let diff = diff_paths(before_snapshot.path(), &path)?;
-        let revision_after = hash_file_sha256_hex(&path)?;
-        Ok(WriteResponseData {
-            mode: request.mode,
-            atomic: false,
-            revision_before,
-            revision_after,
-            ops_previewed: None,
-            ops_applied: Some(applied),
-            ops_staged: None,
-            rolled_back: false,
-            change_id: None,
-            diff,
-            impact,
-            results,
-        })
+        let mut diff = diff_paths(before_snapshot.path(), &path)?;
+        add_effect_manifest(&mut diff, &results);
+        let file_revision_after = hash_file_sha256_hex(&path)?;
+        let revision_after = if applied > 0 {
+            fork.canonical_file_revision = file_revision_after.clone();
+            fork.canonical_revision = file_revision_after.clone();
+            file_revision_after
+        } else {
+            fork.canonical_revision.clone()
+        };
+        if failed {
+            Ok(WriteResponseData::Partial {
+                mode: request.mode,
+                atomic: false,
+                revision_before,
+                revision_after,
+                ops_applied: applied,
+                diff,
+                impact,
+                results,
+            })
+        } else {
+            Ok(WriteResponseData::Applied {
+                mode: request.mode,
+                atomic: false,
+                revision_before,
+                revision_after,
+                ops_applied: applied,
+                diff,
+                impact,
+                results,
+            })
+        }
+    })?;
+    if matches!(
+        response,
+        WriteResponseData::Applied { .. } | WriteResponseData::Partial { .. }
+    ) {
+        let _ = state.close_workbook(&WorkbookId(fork_id));
     }
+    Ok(response)
 }

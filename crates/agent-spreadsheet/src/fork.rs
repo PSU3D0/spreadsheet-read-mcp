@@ -82,6 +82,8 @@ pub struct ForkContext {
     pub staged_changes: Vec<StagedChange>,
     pub checkpoints: Vec<Checkpoint>,
     pub recalc_needed: bool,
+    pub(crate) canonical_revision: String,
+    pub(crate) canonical_file_revision: String,
     base_hash: String,
     base_modified: std::time::SystemTime,
 }
@@ -91,6 +93,7 @@ impl ForkContext {
         let metadata = fs::metadata(&base_path)?;
         let base_modified = metadata.modified()?;
         let base_hash = hash_file(&base_path)?;
+        let canonical_revision = hash_file(&work_path)?;
 
         Ok(Self {
             fork_id,
@@ -102,6 +105,8 @@ impl ForkContext {
             staged_changes: Vec::new(),
             checkpoints: Vec::new(),
             recalc_needed: false,
+            canonical_file_revision: canonical_revision.clone(),
+            canonical_revision,
             base_hash,
             base_modified,
         })
@@ -116,6 +121,11 @@ impl ForkContext {
 
     pub fn touch(&mut self) {
         self.last_accessed = Instant::now();
+    }
+
+    pub(crate) fn push_staged_change(&mut self, staged: StagedChange) {
+        self.staged_changes.push(staged);
+        enforce_staged_limits(self);
     }
 
     pub fn validate_base_unchanged(&self) -> Result<()> {
@@ -470,8 +480,7 @@ impl ForkRegistry {
 
     pub fn add_staged_change(&self, fork_id: &str, staged: StagedChange) -> Result<()> {
         self.with_fork_mut(fork_id, |ctx| {
-            ctx.staged_changes.push(staged);
-            enforce_staged_limits(ctx);
+            ctx.push_staged_change(staged);
             Ok(())
         })
     }
@@ -566,6 +575,8 @@ impl Clone for ForkContext {
             staged_changes: self.staged_changes.clone(),
             checkpoints: self.checkpoints.clone(),
             recalc_needed: self.recalc_needed,
+            canonical_revision: self.canonical_revision.clone(),
+            canonical_file_revision: self.canonical_file_revision.clone(),
             base_hash: self.base_hash.clone(),
             base_modified: self.base_modified,
         }

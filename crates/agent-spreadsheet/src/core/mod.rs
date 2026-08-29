@@ -8,3 +8,5 @@ pub mod session;
 pub mod session_store;
 pub mod types;
 pub mod write;
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+pub mod write_planner;

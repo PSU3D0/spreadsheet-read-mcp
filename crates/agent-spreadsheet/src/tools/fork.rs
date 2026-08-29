@@ -5929,14 +5929,27 @@ pub async fn apply_staged_change(
                 let bundle: crate::canonical_write::CanonicalStagedBundle =
                     serde_json::from_value(op.payload.clone())
                         .map_err(|error| anyhow!("invalid canonical write bundle: {error}"))?;
-                let applied = tokio::task::spawn_blocking({
-                    let work_path = work_path.clone();
-                    move || {
-                        crate::canonical_write::apply_bundle_atomically_to_path(&work_path, &bundle)
+                let applied = registry.with_fork_mut(&params.fork_id, |fork| {
+                    if fork.canonical_revision != bundle.expected_revision {
+                        bail!(
+                            "revision conflict: staged write expected {}, current {}",
+                            bundle.expected_revision,
+                            fork.canonical_revision
+                        );
                     }
-                })
-                .await??;
-                recalc_triggered = applied > 0;
+                    let applied = crate::canonical_write::apply_bundle_atomically_to_path(
+                        &fork.work_path,
+                        &bundle,
+                    )?;
+                    if applied > 0 {
+                        let revision = crate::utils::hash_file_sha256_hex(&fork.work_path)?;
+                        fork.canonical_file_revision = revision.clone();
+                        fork.canonical_revision = revision;
+                        fork.recalc_needed = true;
+                    }
+                    Ok(applied)
+                })?;
+                recalc_triggered = false;
                 ops_applied += applied;
             }
             "edit_batch" => {
