@@ -1522,10 +1522,14 @@ pub async fn execute_write(
                 });
                 continue;
             }
-            let temp = temp_copy(&path)?;
-            match apply_write_op_to_file(temp.path(), op, policy) {
+            let outcome = (|| {
+                let temp = temp_copy(&path)?;
+                let detail = apply_write_op_to_file(temp.path(), op, policy)?;
+                swap_temp(temp, &path)?;
+                Ok::<_, anyhow::Error>(detail)
+            })();
+            match outcome {
                 Ok(detail) => {
-                    swap_temp(temp, &path)?;
                     applied += 1;
                     results.push(WriteOpResult {
                         index,
