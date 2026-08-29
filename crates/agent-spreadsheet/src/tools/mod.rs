@@ -190,6 +190,7 @@ pub struct DescribeWorkbookParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ListSheetsParams {
     /// Workbook ID or fork ID
     #[serde(alias = "workbook_id")]
@@ -206,6 +207,19 @@ pub struct ListSheetsParams {
 }
 
 pub async fn list_sheets(
+    state: Arc<AppState>,
+    params: ListSheetsParams,
+) -> Result<SheetListResponse> {
+    let request = crate::operations::ListSheetsRequest::try_from(params)
+        .map_err(|error| anyhow::anyhow!(error))?;
+    crate::operations::project_legacy(
+        state,
+        crate::operations::SpreadsheetOperation::ListSheets(request),
+    )
+    .await
+}
+
+pub(crate) async fn list_sheets_semantic(
     state: Arc<AppState>,
     params: ListSheetsParams,
 ) -> Result<SheetListResponse> {
@@ -242,6 +256,7 @@ pub async fn list_sheets(
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SheetOverviewParams {
     /// Workbook ID or fork ID
     #[serde(alias = "workbook_id")]
@@ -433,6 +448,19 @@ fn priority_from_rationale(rationale: &str) -> u32 {
 }
 
 pub async fn sheet_overview(
+    state: Arc<AppState>,
+    params: SheetOverviewParams,
+) -> Result<SheetOverviewResponse> {
+    let request = crate::operations::SheetOverviewRequest::try_from(params)
+        .map_err(|error| anyhow::anyhow!(error))?;
+    crate::operations::project_legacy(
+        state,
+        crate::operations::SpreadsheetOperation::SheetOverview(request),
+    )
+    .await
+}
+
+pub(crate) async fn sheet_overview_semantic(
     state: Arc<AppState>,
     params: SheetOverviewParams,
 ) -> Result<SheetOverviewResponse> {
@@ -650,6 +678,7 @@ impl Default for FindValueParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ReadTableParams {
     /// Workbook ID or fork ID
     #[serde(alias = "workbook_id")]
@@ -4721,6 +4750,19 @@ pub async fn find_value(
 }
 
 pub async fn read_table(
+    state: Arc<AppState>,
+    params: ReadTableParams,
+) -> Result<ReadTableResponse> {
+    let request = crate::operations::ReadTableRequest::try_from(params)
+        .map_err(|error| anyhow::anyhow!(error))?;
+    crate::operations::project_legacy(
+        state,
+        crate::operations::SpreadsheetOperation::ReadTable(request),
+    )
+    .await
+}
+
+pub(crate) async fn read_table_semantic(
     state: Arc<AppState>,
     params: ReadTableParams,
 ) -> Result<ReadTableResponse> {

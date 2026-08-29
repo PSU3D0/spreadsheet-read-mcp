@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "OPERATION_FAILED",
+    "message": "sheet Missing not found",
+    "operation": "read_table"
+  },
+  "schema_version": "1"
+}

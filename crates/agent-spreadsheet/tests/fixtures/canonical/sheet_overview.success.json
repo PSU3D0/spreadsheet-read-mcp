@@ -1,0 +1,44 @@
+{
+  "data": {
+    "detected_region_count": 1,
+    "detected_regions": [
+      {
+        "bounds": "A1:C1",
+        "classification": "likely_data",
+        "confidence": 0.6000000238418579,
+        "header_count": 3,
+        "header_row": null,
+        "headers": [
+          "A",
+          "B",
+          "C"
+        ],
+        "headers_truncated": false,
+        "id": 0,
+        "region_kind": "likely_data",
+        "row_count": 1
+      }
+    ],
+    "detected_regions_truncated": false,
+    "formula_ratio": 0.0,
+    "key_ranges": [
+      "Header band likely in row 1"
+    ],
+    "narrative": "Metadata sheet with 1 rows, 3 columns, 0% formulas, 0 style clusters",
+    "notable_features": [],
+    "notes": [],
+    "regions": [
+      {
+        "address": "A1:C1",
+        "description": "Primary region covering 100% of sheet cells",
+        "kind": "likely_metadata"
+      }
+    ],
+    "sheet_name": "Sheet1",
+    "workbook_id": "{{WORKBOOK_ID}}"
+  },
+  "operation": "sheet_overview",
+  "resource_id": "{{RESOURCE_ID}}",
+  "revision_id": "{{REVISION_ID}}",
+  "schema_version": "1"
+}

@@ -115,6 +115,10 @@ def discover_cli_commands(cli_source: str) -> set[str]:
     for name in write_batch:
         commands.add(f"write batch {camel_to_kebab(name)}")
 
+    if "Operations" in top_level:
+        commands.add("operations")
+    if "Op" in top_level:
+        commands.add("op")
     if "Schema" in top_level:
         commands.add("schema")
     if "Example" in top_level:

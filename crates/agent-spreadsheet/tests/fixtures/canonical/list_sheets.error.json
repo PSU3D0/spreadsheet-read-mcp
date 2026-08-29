@@ -1,0 +1,9 @@
+{
+  "error": {
+    "code": "INVALID_REQUEST",
+    "message": "unknown field `unexpected`, expected one of `resource_id`, `limit`, `offset`, `include_bounds`",
+    "operation": "list_sheets",
+    "path": "$ (line 0, column 0)"
+  },
+  "schema_version": "1"
+}

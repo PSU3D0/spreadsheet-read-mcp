@@ -212,7 +212,7 @@ pub struct SheetSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cached_values: Option<u32>,
     pub classification: SheetClassification,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub style_tags: Vec<String>,
 }
 
@@ -1009,11 +1009,11 @@ pub struct ReadTableResponse {
     pub calculation: CalculationMetadata,
     pub sheet_name: String,
     pub table_name: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<Warning>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub headers: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rows: Vec<TableRow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub values: Option<Vec<Vec<Option<CellValuePrimitive>>>>,

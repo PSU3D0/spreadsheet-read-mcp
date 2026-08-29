@@ -1,0 +1,21 @@
+{
+  "data": {
+    "sheets": [
+      {
+        "cached_values": 0,
+        "classification": "metadata",
+        "column_count": 3,
+        "formula_cells": 0,
+        "name": "Sheet1",
+        "non_empty_cells": 3,
+        "row_count": 1,
+        "visible": true
+      }
+    ],
+    "workbook_id": "{{WORKBOOK_ID}}"
+  },
+  "operation": "list_sheets",
+  "resource_id": "{{RESOURCE_ID}}",
+  "revision_id": "{{REVISION_ID}}",
+  "schema_version": "1"
+}
