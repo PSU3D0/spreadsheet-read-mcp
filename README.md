@@ -134,6 +134,9 @@ This builds the CLI from source. Formualizer (the native Rust recalc engine) is 
 
 ```bash
 mise use -g "ubi:PSU3D0/agent-spreadsheet[exe=asp]"
+
+# Homebrew
+brew install psu3d0/tap/agent-spreadsheet
 ```
 
 ### MCP server

@@ -25,3 +25,9 @@ Set and document an explicit workbook-size ceiling before loading bytes into WAS
 - Native CLI JSON goldens contract-test the TypeScript shim.
 - Oversized workbooks fail before WASM allocation according to a documented ceiling.
 - Registry automation consumes published archives and checksums rather than reconstructing release artifacts.
+
+## Status updates (2026-08-29)
+
+- aqua-registry: PR opened — https://github.com/aquaproj/aqua-registry/pull/59654 (argd-scaffolded, container tests pass, dual-command files entry). Once merged, plain `mise use -g PSU3D0/agent-spreadsheet` works via the aqua backend; `ubi:` form already works and is documented.
+- Homebrew tap: LIVE — PSU3D0/homebrew-tap with agent-spreadsheet + agent-spreadsheet-mcp formulas at 0.13.0, install/test verified on linuxbrew. Remaining: automate formula bumps from release.yml (needs a tap-scoped PAT or GitHub App secret).
+- winget/scoop: still open.
