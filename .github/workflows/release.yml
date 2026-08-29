@@ -4,6 +4,13 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and upload artifacts without releasing or publishing
+        type: boolean
+        default: true
+
 
 env:
   CARGO_TERM_COLOR: always
@@ -20,18 +27,27 @@ jobs:
             target: x86_64-unknown-linux-gnu
             asset_suffix: linux-x86_64
             binary_extension: ""
+            archive_extension: .tar.gz
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset_suffix: linux-aarch64
+            binary_extension: ""
+            archive_extension: .tar.gz
           - os: macos-latest
             target: x86_64-apple-darwin
             asset_suffix: macos-x86_64
             binary_extension: ""
+            archive_extension: .tar.gz
           - os: macos-latest
             target: aarch64-apple-darwin
             asset_suffix: macos-aarch64
             binary_extension: ""
+            archive_extension: .tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             asset_suffix: windows-x86_64
             binary_extension: .exe
+            archive_extension: .zip
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -45,22 +61,32 @@ jobs:
       - name: Build release binaries
         run: cargo build --release --locked --target ${{ matrix.target }} -p agent-spreadsheet-mcp -p agent-spreadsheet
 
-      - name: Upload agent-spreadsheet-mcp artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: agent-spreadsheet-mcp-${{ matrix.asset_suffix }}${{ matrix.binary_extension }}
-          path: target/${{ matrix.target }}/release/agent-spreadsheet-mcp${{ matrix.binary_extension }}
-          if-no-files-found: error
+      - name: Prepare raw binaries and archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          release_dir="target/${{ matrix.target }}/release"
+          for binary in agent-spreadsheet agent-spreadsheet-mcp; do
+            source_name="${binary}${{ matrix.binary_extension }}"
+            asset_name="${binary}-${{ matrix.asset_suffix }}${{ matrix.binary_extension }}"
+            cp "${release_dir}/${source_name}" "dist/${asset_name}"
+            if [[ "${{ matrix.archive_extension }}" == ".zip" ]]; then
+              (cd "$release_dir" && 7z a "$GITHUB_WORKSPACE/dist/${binary}-${{ matrix.asset_suffix }}.zip" "$source_name")
+            else
+              tar -czf "dist/${binary}-${{ matrix.asset_suffix }}.tar.gz" -C "$release_dir" "$source_name"
+            fi
+          done
 
-      - name: Upload agent-spreadsheet artifact
+      - name: Upload target release assets
         uses: actions/upload-artifact@v4
         with:
-          name: agent-spreadsheet-${{ matrix.asset_suffix }}${{ matrix.binary_extension }}
-          path: target/${{ matrix.target }}/release/agent-spreadsheet${{ matrix.binary_extension }}
+          name: release-assets-${{ matrix.asset_suffix }}
+          path: dist/*
           if-no-files-found: error
 
   release:
-    name: Create Release
+    name: Prepare Release
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -69,26 +95,28 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Download all artifacts
+      - name: Download all target artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          pattern: release-assets-*
+          path: release
+          merge-multiple: true
 
-      - name: Prepare release assets
+      - name: Generate checksums
+        working-directory: release
         run: |
-          mkdir -p release
-          for dir in artifacts/*/; do
-            name=$(basename "$dir")
-            if [[ "$name" == *.exe ]]; then
-              cp "$dir"/* "release/$name"
-            else
-              cp "$dir"/* "release/$name"
-              chmod +x "release/$name"
-            fi
-          done
-          ls -la release/
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload complete release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: release/*
+          if-no-files-found: error
 
       - name: Create GitHub Release
+        if: github.event_name == 'push' || !inputs.dry_run
         uses: softprops/action-gh-release@v2
         with:
           files: release/*
@@ -99,6 +127,7 @@ jobs:
   publish:
     name: Publish to crates.io
     needs: release
+    if: github.event_name == 'push' || !inputs.dry_run
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -165,4 +194,3 @@ jobs:
           publish_and_wait crates/agent-spreadsheet-mcp/Cargo.toml agent-spreadsheet-mcp
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
