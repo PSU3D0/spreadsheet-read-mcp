@@ -604,6 +604,27 @@ async fn row_header_projection_and_volatile_groups_preserve_canonical_capabiliti
         "B3"
     );
 
+    let grid = execute_operation_json(
+        state.clone(),
+        "export_grid",
+        json!({
+            "resource_id":resource_id.as_str(),
+            "sheet_name":"Sheet1",
+            "range":"A1:B2"
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(grid.data["returned_range"], "A1:B2");
+    assert_eq!(grid.data["grid"]["rows"].as_array().unwrap().len(), 2);
+    assert!(
+        grid.data["grid"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["cells"].as_array().unwrap().len() == 2)
+    );
+
     let formulas = execute_operation_json(
         state,
         "search_formulas",

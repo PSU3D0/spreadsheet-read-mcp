@@ -1897,7 +1897,7 @@ pub async fn execute_export_grid(
             .saturating_sub(1),
     );
     let returned_range = range_string(c1, start_row, c2, end_row);
-    let grid = tools::grid_export(
+    let mut grid = tools::grid_export(
         state,
         tools::GridExportParams {
             workbook_or_fork_id: request.resource_id.to_workbook_id(),
@@ -1914,6 +1914,29 @@ pub async fn execute_export_grid(
             None,
         )
     })?;
+    let mut populated = BTreeMap::new();
+    for row in std::mem::take(&mut grid.rows) {
+        for cell in row.cells {
+            populated.insert(cell.offset, cell);
+        }
+    }
+    grid.rows = (0..=end_row - start_row)
+        .map(|row_offset| GridRow {
+            cells: (0..=c2 - c1)
+                .map(|column_offset| {
+                    populated
+                        .remove(&[row_offset, column_offset])
+                        .unwrap_or(GridCell {
+                            offset: [row_offset, column_offset],
+                            v: None,
+                            f: None,
+                            fmt: None,
+                            style: None,
+                        })
+                })
+                .collect(),
+        })
+        .collect();
     let next_cursor = if end_row < r2 {
         Some(
             encode_cursor(&ReadCellsCursor {
