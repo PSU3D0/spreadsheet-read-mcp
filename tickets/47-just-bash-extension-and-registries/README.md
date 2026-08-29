@@ -4,11 +4,21 @@ Status: planned. The extension is opt-in; registry work follows the first releas
 
 ## `@agent-spreadsheet/just-bash`
 
-Build an opt-in extension package that registers `asp` as a custom command in [vercel-labs/just-bash](https://github.com/vercel-labs/just-bash). just-bash is a pure-TypeScript Bash interpreter for agents: commands cannot spawn processes and operate against a virtual filesystem. Its opt-in WASM runtimes, including CPython and sql.js, establish the precedent for embedding a substantial runtime without weakening that sandbox model.
+**Dependency:** complete [ticket 48](../48-canonical-operation-convergence/README.md) first. The adapter is a proof of the canonical operation boundary, not a place to design another spreadsheet surface.
 
-The package should provide a thin TypeScript argv shim over the agent-spreadsheet-sdk embedded WASM backend. The shim reads workbook bytes from the just-bash virtual filesystem, invokes the same SDK operations exposed by the native CLI, and writes resulting workbook bytes and command output back to the virtual filesystem. It must not shell out, access the host filesystem, or duplicate spreadsheet behavior in TypeScript.
+Build an opt-in extension package that registers one `asp` custom command in [vercel-labs/just-bash](https://github.com/vercel-labs/just-bash). just-bash is a pure-TypeScript Bash interpreter for agents: commands cannot spawn native processes and operate against a virtual filesystem.
 
-Contract-test the extension against the native CLI's JSON goldens so command names, arguments, output envelopes, errors, and workbook mutations cannot drift between native `asp` and the just-bash command. Keep the adapter narrow enough that SDK and CLI contract changes fail tests rather than creating a second compatibility surface.
+The command supports only the canonical machine protocol:
+
+```text
+asp op <operation> --json <payload>
+```
+
+It reads workbook bytes through `ctx.fs`, forwards the operation unchanged to `agent-spreadsheet-sdk`'s canonical `execute()` dispatch using the embedded WASM backend, and writes resulting bytes/output back through `ctx.fs`. It must not carry an operation list, operation-specific argument parser, response normalizer, or spreadsheet behavior in TypeScript. Schemas/help come from the canonical registry described in `docs/architecture/canonical-operation-surface.md`.
+
+Spreadsheet WASM executes in the trusted host-side adapter, not inside just-bash's QuickJS worker. If `js-exec` is enabled, agent-authored JavaScript can invoke the registered `asp` command through just-bash's `child_process.execSync`/`spawnSync` bridge; a second `tools.asp.*` projection is unnecessary for the MVP.
+
+Contract-test the extension against native `asp op` JSON goldens so operation names, payloads, output envelopes, errors, and workbook mutations cannot drift. Target fewer than approximately 150 production lines excluding tests and virtual-filesystem plumbing; exceeding that indicates semantic behavior is leaking out of the core.
 
 Set and document an explicit workbook-size ceiling before loading bytes into WASM. just-bash worker `resourceLimits` do not cap WASM linear memory, so worker limits alone are not a sufficient memory boundary. Reject oversized inputs predictably and cover the boundary in tests.
 
@@ -21,8 +31,9 @@ Set and document an explicit workbook-size ceiling before loading bytes into WAS
 ## Acceptance gate
 
 - `@agent-spreadsheet/just-bash` is explicitly installed and registered rather than bundled into just-bash core.
-- The command uses only the SDK embedded WASM backend and the just-bash virtual filesystem.
-- Native CLI JSON goldens contract-test the TypeScript shim.
+- The command uses only the SDK canonical dispatcher/embedded WASM backend and the just-bash virtual filesystem.
+- The adapter has no independent operation taxonomy or operation-specific argument parsing.
+- Native `asp op` JSON goldens contract-test the TypeScript shim.
 - Oversized workbooks fail before WASM allocation according to a documented ceiling.
 - Registry automation consumes published archives and checksums rather than reconstructing release artifacts.
 
