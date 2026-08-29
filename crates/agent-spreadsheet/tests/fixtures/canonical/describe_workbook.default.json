@@ -1,0 +1,33 @@
+{
+  "data": {
+    "capabilities": {
+      "backend": {
+        "backend": "xlsx_umya",
+        "supports_comments": true,
+        "supports_conditional_formatting": true,
+        "supports_defined_names": true,
+        "supports_formula_graph": true,
+        "supports_styles": true,
+        "supports_tables": true
+      }
+    },
+    "metadata": {
+      "bytes": 2070,
+      "defined_name_count": 0,
+      "last_modified": "2026-08-29T17:41:58Z",
+      "macros_present": false,
+      "sheet_count": 1,
+      "short_id": "usmfrzmcka",
+      "slug": "baseline",
+      "table_count": 0
+    },
+    "paths": {
+      "internal": "{{FIXTURE_PATH}}"
+    },
+    "warnings": []
+  },
+  "operation": "describe_workbook",
+  "resource_id": "{{RESOURCE_ID}}",
+  "revision_id": "{{REVISION_ID}}",
+  "schema_version": "1"
+}

@@ -1,0 +1,23 @@
+{
+  "data": {
+    "match_count": 1,
+    "matches": [
+      {
+        "address": "A1",
+        "label_hit": null,
+        "neighbors": null,
+        "row_context": null,
+        "sheet_name": "Sheet1",
+        "value": {
+          "kind": "Number",
+          "value": 1.0
+        }
+      }
+    ],
+    "workbook_id": "{{WORKBOOK_ID}}"
+  },
+  "operation": "search_values",
+  "resource_id": "{{RESOURCE_ID}}",
+  "revision_id": "{{REVISION_ID}}",
+  "schema_version": "1"
+}

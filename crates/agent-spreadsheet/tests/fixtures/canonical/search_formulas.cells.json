@@ -1,0 +1,20 @@
+{
+  "data": {
+    "formula_parse_diagnostics": null,
+    "groups": [],
+    "matches": [],
+    "next_offset": null,
+    "result_mode": "cells",
+    "summary": {
+      "formula_cells_scanned": 0,
+      "matched_cells": 0,
+      "matched_groups": 0,
+      "scan_complete": true
+    },
+    "warnings": []
+  },
+  "operation": "search_formulas",
+  "resource_id": "{{RESOURCE_ID}}",
+  "revision_id": "{{REVISION_ID}}",
+  "schema_version": "1"
+}

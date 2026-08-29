@@ -1,0 +1,53 @@
+{
+  "data": {
+    "layout": {
+      "columns": [
+        {
+          "col": "A",
+          "index": 1,
+          "is_default_width": true,
+          "width_chars": 8.43
+        },
+        {
+          "col": "B",
+          "index": 2,
+          "is_default_width": true,
+          "width_chars": 8.43
+        },
+        {
+          "col": "C",
+          "index": 3,
+          "is_default_width": true,
+          "width_chars": 8.43
+        }
+      ],
+      "range": "A1:C1",
+      "rows": [
+        {
+          "cells": [
+            {
+              "address": "A1",
+              "value": "1"
+            },
+            {
+              "address": "B1",
+              "value": "2"
+            },
+            {
+              "address": "C1",
+              "value": "3"
+            }
+          ],
+          "row": 1
+        }
+      ],
+      "sheet_name": "Sheet1",
+      "workbook_id": "{{WORKBOOK_ID}}"
+    },
+    "lossiness": "lossy"
+  },
+  "operation": "read_layout",
+  "resource_id": "{{RESOURCE_ID}}",
+  "revision_id": "{{REVISION_ID}}",
+  "schema_version": "1"
+}

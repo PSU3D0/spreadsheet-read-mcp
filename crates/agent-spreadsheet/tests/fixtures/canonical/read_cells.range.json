@@ -1,0 +1,66 @@
+{
+  "data": {
+    "blocks": [
+      {
+        "column_count": 3,
+        "payload": {
+          "dense": {
+            "col_count": 3,
+            "dictionary": [
+              null,
+              1.0,
+              2.0,
+              3.0
+            ],
+            "encoding": "dense_v1",
+            "row_runs": [
+              [
+                {
+                  "len": 1,
+                  "value_idx": 1
+                },
+                {
+                  "len": 1,
+                  "value_idx": 2
+                },
+                {
+                  "len": 1,
+                  "value_idx": 3
+                }
+              ]
+            ]
+          },
+          "encoding": "dense"
+        },
+        "requested_range": "A1:C1",
+        "returned_range": "A1:C1",
+        "row_count": 1,
+        "selection_index": 0
+      }
+    ],
+    "calculation": {
+      "revision_id": "{{REVISION_ID}}",
+      "state": "clean"
+    },
+    "encoding": "dense",
+    "header": null,
+    "page": {
+      "cells_returned": 3,
+      "complete": true,
+      "limits": {
+        "max_cells": 10000,
+        "max_payload_bytes": 65536,
+        "requested_rows": 50
+      },
+      "next_cursor": null,
+      "rows_returned": 1
+    },
+    "selection_kind": "range",
+    "sheet_name": "Sheet1",
+    "warnings": []
+  },
+  "operation": "read_cells",
+  "resource_id": "{{RESOURCE_ID}}",
+  "revision_id": "{{REVISION_ID}}",
+  "schema_version": "1"
+}

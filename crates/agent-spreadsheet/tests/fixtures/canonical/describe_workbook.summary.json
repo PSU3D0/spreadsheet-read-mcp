@@ -1,0 +1,69 @@
+{
+  "data": {
+    "capabilities": {
+      "backend": {
+        "backend": "xlsx_umya",
+        "supports_comments": true,
+        "supports_conditional_formatting": true,
+        "supports_defined_names": true,
+        "supports_formula_graph": true,
+        "supports_styles": true,
+        "supports_tables": true
+      }
+    },
+    "metadata": {
+      "bytes": 2070,
+      "defined_name_count": 0,
+      "last_modified": "2026-08-29T17:41:58Z",
+      "macros_present": false,
+      "sheet_count": 1,
+      "short_id": "usmfrzmcka",
+      "slug": "baseline",
+      "table_count": 0
+    },
+    "paths": {
+      "internal": "{{FIXTURE_PATH}}"
+    },
+    "summary": {
+      "breakdown": {
+        "calculator_sheets": 0,
+        "data_sheets": 0,
+        "metadata_sheets": 1,
+        "parameter_sheets": 0
+      },
+      "coverage": {
+        "bounded": false,
+        "sheets_scanned": 1,
+        "sheets_total": 1
+      },
+      "key_named_ranges": [],
+      "notes": [
+        "Region counts and entry points are inferred from sheet metrics; use sheet_overview for full region detection."
+      ],
+      "region_counts": {
+        "calculator": 0,
+        "data": 0,
+        "metadata": 1,
+        "other": 0,
+        "outputs": 0,
+        "parameters": 0
+      },
+      "status": "complete",
+      "suggested_entry_points": [
+        {
+          "bounds": "A1:C1",
+          "rationale": "Fast summary p4: Metadata sheet",
+          "region_id": null,
+          "sheet_name": "Sheet1"
+        }
+      ],
+      "total_cells": 3,
+      "total_formulas": 0
+    },
+    "warnings": []
+  },
+  "operation": "describe_workbook",
+  "resource_id": "{{RESOURCE_ID}}",
+  "revision_id": "{{REVISION_ID}}",
+  "schema_version": "1"
+}

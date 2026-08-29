@@ -1,0 +1,126 @@
+{
+  "data": {
+    "blocks": [
+      {
+        "column_count": 3,
+        "payload": {
+          "encoding": "full",
+          "snapshots": [
+            {
+              "cells": [
+                {
+                  "address": "A1",
+                  "cached_value": null,
+                  "formula": null,
+                  "notes": [],
+                  "number_format": null,
+                  "style_tags": [],
+                  "value": {
+                    "kind": "Number",
+                    "value": 1.0
+                  }
+                },
+                {
+                  "address": "B1",
+                  "cached_value": null,
+                  "formula": null,
+                  "notes": [],
+                  "number_format": null,
+                  "style_tags": [],
+                  "value": {
+                    "kind": "Number",
+                    "value": 2.0
+                  }
+                },
+                {
+                  "address": "C1",
+                  "cached_value": null,
+                  "formula": null,
+                  "notes": [],
+                  "number_format": null,
+                  "style_tags": [],
+                  "value": {
+                    "kind": "Number",
+                    "value": 3.0
+                  }
+                }
+              ],
+              "row_index": 1
+            }
+          ]
+        },
+        "requested_range": "rows:1+1",
+        "returned_range": "rows:1-1",
+        "row_count": 1,
+        "row_indices": [
+          1
+        ],
+        "selection_index": 0
+      }
+    ],
+    "calculation": {
+      "revision_id": "{{REVISION_ID}}",
+      "state": "clean"
+    },
+    "encoding": "full",
+    "header": {
+      "cells": [
+        {
+          "address": "A1",
+          "cached_value": null,
+          "formula": null,
+          "notes": [],
+          "number_format": null,
+          "style_tags": [],
+          "value": {
+            "kind": "Number",
+            "value": 1.0
+          }
+        },
+        {
+          "address": "B1",
+          "cached_value": null,
+          "formula": null,
+          "notes": [],
+          "number_format": null,
+          "style_tags": [],
+          "value": {
+            "kind": "Number",
+            "value": 2.0
+          }
+        },
+        {
+          "address": "C1",
+          "cached_value": null,
+          "formula": null,
+          "notes": [],
+          "number_format": null,
+          "style_tags": [],
+          "value": {
+            "kind": "Number",
+            "value": 3.0
+          }
+        }
+      ],
+      "row_index": 1
+    },
+    "page": {
+      "cells_returned": 3,
+      "complete": true,
+      "limits": {
+        "max_cells": 10000,
+        "max_payload_bytes": 65536,
+        "requested_rows": 50
+      },
+      "next_cursor": null,
+      "rows_returned": 1
+    },
+    "selection_kind": "rows",
+    "sheet_name": "Sheet1",
+    "warnings": []
+  },
+  "operation": "read_cells",
+  "resource_id": "{{RESOURCE_ID}}",
+  "revision_id": "{{REVISION_ID}}",
+  "schema_version": "1"
+}

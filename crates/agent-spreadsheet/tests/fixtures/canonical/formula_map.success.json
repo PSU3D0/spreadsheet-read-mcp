@@ -1,0 +1,11 @@
+{
+  "data": {
+    "groups": [],
+    "sheet_name": "Sheet1",
+    "workbook_id": "{{WORKBOOK_ID}}"
+  },
+  "operation": "formula_map",
+  "resource_id": "{{RESOURCE_ID}}",
+  "revision_id": "{{REVISION_ID}}",
+  "schema_version": "1"
+}

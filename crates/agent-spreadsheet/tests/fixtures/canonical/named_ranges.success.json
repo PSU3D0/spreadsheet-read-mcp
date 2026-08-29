@@ -1,0 +1,10 @@
+{
+  "data": {
+    "items": [],
+    "workbook_id": "{{WORKBOOK_ID}}"
+  },
+  "operation": "named_ranges",
+  "resource_id": "{{RESOURCE_ID}}",
+  "revision_id": "{{REVISION_ID}}",
+  "schema_version": "1"
+}

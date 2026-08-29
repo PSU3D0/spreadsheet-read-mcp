@@ -1,0 +1,44 @@
+{
+  "data": {
+    "complete": true,
+    "grid": {
+      "anchor": "A1",
+      "rows": [
+        {
+          "cells": [
+            {
+              "offset": [
+                0,
+                0
+              ],
+              "v": 1.0
+            },
+            {
+              "offset": [
+                0,
+                1
+              ],
+              "v": 2.0
+            },
+            {
+              "offset": [
+                0,
+                2
+              ],
+              "v": 3.0
+            }
+          ]
+        }
+      ],
+      "sheet": "Sheet1"
+    },
+    "losslessness": "lossless",
+    "next_cursor": null,
+    "requested_range": "A1:C1",
+    "returned_range": "A1:C1"
+  },
+  "operation": "export_grid",
+  "resource_id": "{{RESOURCE_ID}}",
+  "revision_id": "{{REVISION_ID}}",
+  "schema_version": "1"
+}

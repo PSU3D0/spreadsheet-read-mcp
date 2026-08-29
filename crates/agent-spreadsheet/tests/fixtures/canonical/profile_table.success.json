@@ -1,0 +1,49 @@
+{
+  "data": {
+    "column_types": [
+      {
+        "distinct": 0,
+        "inferred_type": "unknown",
+        "max": null,
+        "mean": null,
+        "min": null,
+        "name": "1",
+        "nulls": 0,
+        "top_values": []
+      },
+      {
+        "distinct": 0,
+        "inferred_type": "unknown",
+        "max": null,
+        "mean": null,
+        "min": null,
+        "name": "2",
+        "nulls": 0,
+        "top_values": []
+      },
+      {
+        "distinct": 0,
+        "inferred_type": "unknown",
+        "max": null,
+        "mean": null,
+        "min": null,
+        "name": "3",
+        "nulls": 0,
+        "top_values": []
+      }
+    ],
+    "headers": [
+      "1",
+      "2",
+      "3"
+    ],
+    "row_count": 0,
+    "sheet_name": "Sheet1",
+    "table_name": null,
+    "workbook_id": "{{WORKBOOK_ID}}"
+  },
+  "operation": "profile_table",
+  "resource_id": "{{RESOURCE_ID}}",
+  "revision_id": "{{REVISION_ID}}",
+  "schema_version": "1"
+}

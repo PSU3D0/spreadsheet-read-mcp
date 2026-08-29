@@ -73,16 +73,36 @@ fn golden(name: &str, response: &Value) -> Value {
     )
     .expect("read golden");
     let mut text = text;
-    if let Some(resource_id) = response.get("resource_id").and_then(Value::as_str) {
+    let resource_id = response
+        .get("resource_id")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            response
+                .pointer("/data/workbooks/0/resource_id")
+                .and_then(Value::as_str)
+        });
+    if let Some(resource_id) = resource_id {
         text = text.replace("{{RESOURCE_ID}}", resource_id);
         text = text.replace(
             "{{WORKBOOK_ID}}",
             resource_id.split_once(':').expect("typed resource").1,
         );
     }
-    if let Some(revision_id) = response.get("revision_id").and_then(Value::as_str) {
+    let revision_id = response
+        .get("revision_id")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            response
+                .pointer("/data/workbooks/0/metadata/revision_id")
+                .and_then(Value::as_str)
+        });
+    if let Some(revision_id) = revision_id {
         text = text.replace("{{REVISION_ID}}", revision_id);
     }
+    text = text.replace(
+        "{{FIXTURE_PATH}}",
+        fixture().to_str().expect("UTF-8 fixture"),
+    );
     serde_json::from_str(&text).expect("valid golden")
 }
 
@@ -114,7 +134,25 @@ fn registry_schemas_are_closed_typed_and_discriminated() {
         .collect::<HashSet<_>>();
     assert_eq!(
         names,
-        HashSet::from(["list_sheets", "sheet_overview", "read_table"])
+        HashSet::from([
+            "list_workbooks",
+            "describe_workbook",
+            "list_sheets",
+            "sheet_overview",
+            "read_cells",
+            "inspect_cells",
+            "read_table",
+            "read_layout",
+            "export_grid",
+            "named_ranges",
+            "analyze_styles",
+            "search_values",
+            "search_formulas",
+            "formula_trace",
+            "formula_map",
+            "profile_table",
+            "sheet_statistics",
+        ])
     );
 
     let capabilities = RuntimeCapabilities::native();
@@ -126,12 +164,18 @@ fn registry_schemas_are_closed_typed_and_discriminated() {
         let output = (descriptor.output_schema)();
         assert_object_schemas_closed(&input);
         assert_object_schemas_closed(&output);
-        assert_eq!(
-            input["$defs"]["ResourceId"]["pattern"],
-            "^(wb|fork|session):[A-Za-z0-9][A-Za-z0-9_-]{0,243}$"
-        );
-        assert_eq!(input["$defs"]["ResourceId"]["minLength"], 4);
-        assert_eq!(input["$defs"]["ResourceId"]["maxLength"], 256);
+        if descriptor.name == "list_workbooks" {
+            assert!(input["$defs"].get("ResourceId").is_none());
+            assert!(output["properties"].get("resource_id").is_none());
+            assert_eq!(descriptor.capability.name, "workbook_discovery");
+        } else {
+            assert_eq!(
+                input["$defs"]["ResourceId"]["pattern"],
+                "^(wb|fork|session):[A-Za-z0-9][A-Za-z0-9_-]{0,243}$"
+            );
+            assert_eq!(input["$defs"]["ResourceId"]["minLength"], 4);
+            assert_eq!(input["$defs"]["ResourceId"]["maxLength"], 256);
+        }
         assert_eq!(output["properties"]["schema_version"]["const"], "1");
         assert_eq!(output["properties"]["operation"]["const"], descriptor.name);
     }
@@ -216,6 +260,132 @@ async fn full_success_envelopes_match_dispatcher_cli_golden_and_schema() {
 }
 
 #[tokio::test]
+async fn canonical_read_branches_match_dispatcher_cli_goldens_and_schemas() {
+    let cases = [
+        ("describe_workbook", "describe_workbook.default", json!({})),
+        (
+            "describe_workbook",
+            "describe_workbook.summary",
+            json!({"include":["summary"]}),
+        ),
+        (
+            "read_cells",
+            "read_cells.range",
+            json!({"sheet_name":"Sheet1","selection":{"kind":"range","ranges":["A1:C1"]},"format":"dense"}),
+        ),
+        (
+            "read_cells",
+            "read_cells.rows",
+            json!({"sheet_name":"Sheet1","selection":{"kind":"rows","start_row":1,"row_count":1},"format":"full"}),
+        ),
+        (
+            "inspect_cells",
+            "inspect_cells.success",
+            json!({"sheet_name":"Sheet1","targets":["A1","C1"]}),
+        ),
+        (
+            "read_layout",
+            "read_layout.success",
+            json!({"sheet_name":"Sheet1","range":"A1:C1"}),
+        ),
+        (
+            "export_grid",
+            "export_grid.success",
+            json!({"sheet_name":"Sheet1","range":"A1:C1"}),
+        ),
+        ("named_ranges", "named_ranges.success", json!({})),
+        (
+            "analyze_styles",
+            "analyze_styles.sheet",
+            json!({"scope":{"kind":"sheet","sheet_name":"Sheet1","selection":{"kind":"all"}},"include":["descriptors","ranges","example_cells"]}),
+        ),
+        (
+            "analyze_styles",
+            "analyze_styles.workbook",
+            json!({"scope":{"kind":"workbook"},"include":["descriptors","example_cells","theme","conditional_formats"]}),
+        ),
+        (
+            "search_values",
+            "search_values.success",
+            json!({"query":"1","match_mode":"exact"}),
+        ),
+        (
+            "search_formulas",
+            "search_formulas.cells",
+            json!({"query":{"text":"SUM","match_mode":"contains"},"result_mode":"cells"}),
+        ),
+        (
+            "search_formulas",
+            "search_formulas.groups",
+            json!({"filter":{"volatile":true},"result_mode":"groups","group_by":"function"}),
+        ),
+        (
+            "formula_trace",
+            "formula_trace.success",
+            json!({"sheet_name":"Sheet1","cell_address":"A1","direction":"precedents"}),
+        ),
+        (
+            "formula_map",
+            "formula_map.success",
+            json!({"sheet_name":"Sheet1"}),
+        ),
+        (
+            "profile_table",
+            "profile_table.success",
+            json!({"sheet_name":"Sheet1"}),
+        ),
+        (
+            "sheet_statistics",
+            "sheet_statistics.success",
+            json!({"sheet_name":"Sheet1"}),
+        ),
+    ];
+
+    for (operation, golden_name, payload) in cases {
+        let (state, _, resource_id) = bound_state().await;
+        let dispatcher = execute_operation_json(
+            state,
+            operation,
+            with_resource(&resource_id, payload.clone()),
+        )
+        .await
+        .expect("dispatcher success");
+        let dispatcher = serde_json::to_value(dispatcher).unwrap();
+        let cli = asp_op(operation, payload).expect("CLI success");
+        assert_eq!(cli, dispatcher, "cross-surface mismatch for {golden_name}");
+        assert_eq!(
+            dispatcher,
+            golden(golden_name, &dispatcher),
+            "golden mismatch for {golden_name}"
+        );
+        let descriptor = operation_registry()
+            .iter()
+            .find(|descriptor| descriptor.name == operation)
+            .unwrap();
+        validate(&(descriptor.output_schema)(), &dispatcher);
+    }
+}
+
+#[tokio::test]
+async fn list_workbooks_has_no_request_or_response_resource_binding() {
+    let (state, _, _) = bound_state().await;
+    let dispatcher = execute_operation_json(state, "list_workbooks", json!({}))
+        .await
+        .unwrap();
+    let dispatcher = serde_json::to_value(dispatcher).unwrap();
+    let cli = asp_op("list_workbooks", json!({})).unwrap();
+    assert_eq!(dispatcher, cli);
+    assert!(dispatcher.get("resource_id").is_none());
+    assert!(dispatcher.get("revision_id").is_none());
+    assert_eq!(dispatcher, golden("list_workbooks.success", &dispatcher));
+    let descriptor = operation_registry()
+        .iter()
+        .find(|descriptor| descriptor.name == "list_workbooks")
+        .unwrap();
+    validate(&(descriptor.output_schema)(), &dispatcher);
+}
+
+#[tokio::test]
 async fn full_error_envelopes_match_dispatcher_cli_golden_and_schema() {
     let cases = [
         ("list_sheets", json!({"unexpected":true})),
@@ -245,6 +415,52 @@ async fn full_error_envelopes_match_dispatcher_cli_golden_and_schema() {
         );
         validate(&schema, &dispatcher);
     }
+}
+
+#[tokio::test]
+async fn read_cells_cursor_is_opaque_correlated_and_request_bound() {
+    let (state, _, resource_id) = bound_state().await;
+    let request = json!({
+        "resource_id": resource_id.as_str(),
+        "sheet_name": "Sheet1",
+        "selection": {"kind":"range","ranges":["A1:A1","C1:C1"]},
+        "format": "values",
+        "page_size": 1
+    });
+    let first = execute_operation_json(state.clone(), "read_cells", request.clone())
+        .await
+        .unwrap();
+    assert_eq!(first.data["blocks"][0]["selection_index"], 0);
+    assert_eq!(first.data["page"]["complete"], false);
+    let cursor = first.data["page"]["next_cursor"]
+        .as_str()
+        .expect("opaque cursor");
+    assert!(cursor.starts_with("rc1_"));
+
+    let mut continuation = request.clone();
+    continuation
+        .as_object_mut()
+        .unwrap()
+        .insert("cursor".to_string(), json!(cursor));
+    let second = execute_operation_json(state.clone(), "read_cells", continuation)
+        .await
+        .unwrap();
+    assert_eq!(second.data["blocks"][0]["selection_index"], 1);
+    assert_eq!(second.data["page"]["complete"], true);
+    assert!(second.data["page"]["next_cursor"].is_null());
+
+    let mismatch = execute_operation_json(
+        state,
+        "read_cells",
+        json!({
+            "resource_id":resource_id.as_str(), "sheet_name":"Sheet1",
+            "selection":{"kind":"range","ranges":["A1:B1"]},
+            "format":"values", "page_size":1, "cursor":cursor
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(mismatch.error.code, CanonicalErrorCode::CursorMismatch);
 }
 
 #[tokio::test]
