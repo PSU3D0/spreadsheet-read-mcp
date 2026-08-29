@@ -1,6 +1,9 @@
 {
   "data": {
+    "formula_parse_diagnostics": null,
     "groups": [],
+    "next_cursor": null,
+    "next_offset": null,
     "sheet_name": "Sheet1",
     "workbook_id": "{{WORKBOOK_ID}}"
   },

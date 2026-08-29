@@ -155,7 +155,7 @@ Wave 3A registers the complete canonical discovery/read/search/analysis surface 
 | `read_cells` | legacy `range_values` and `sheet_page` remain available | correlated range/row engine with revision/request-bound opaque cursor | `workbook_read` | low |
 | `inspect_cells`, `named_ranges` | legacy MCP wrappers project canonical `data` | shared semantic implementations | `workbook_read` | low |
 | `read_layout` | legacy `layout_page` stays separate | explicitly lossy layout projection | `workbook_read` | low |
-| `export_grid` | legacy `grid_export` stays separate | lossless coordinate-preserving paged grid export | `workbook_read` | low |
+| `export_grid` | legacy `grid_export` stays separate | coordinate-preserving paged grid export of cell content and explicit formatting; implicit presentation defaults excluded | `workbook_read` | low |
 | `analyze_styles` | legacy sheet/workbook style tools stay separate | closed `scope.kind` union with bounded-count coverage | `workbook_read` | low |
 | `search_values` | legacy `find_value` projects canonical `data` | preserves label, direction, scope, type, header, and context options | `workbook_read` | low |
 | `search_formulas` | legacy formula search/volatile tools stay separate | closed `result_mode` branches and actual function classifications | `workbook_read` | low |

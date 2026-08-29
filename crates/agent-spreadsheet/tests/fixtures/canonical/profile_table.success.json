@@ -32,13 +32,33 @@
         "top_values": []
       }
     ],
+    "confidence": {
+      "heuristic": false,
+      "reason": "all rows in scope were scanned",
+      "status": "observed_complete"
+    },
+    "coverage": {
+      "complete": true,
+      "rows_in_scope": 0,
+      "rows_scanned": 0,
+      "sample_mode": "distributed"
+    },
     "headers": [
       "1",
       "2",
       "3"
     ],
+    "notes": [],
     "row_count": 0,
+    "samples": [],
     "sheet_name": "Sheet1",
+    "source": {
+      "header_provenance": "inferred_first_row",
+      "header_row": 1,
+      "selector_kind": "sheet_inferred",
+      "selector_value": null,
+      "sheet_name": "Sheet1"
+    },
     "table_name": null,
     "workbook_id": "{{WORKBOOK_ID}}"
   },

@@ -76,6 +76,8 @@ pub enum DescribeInclude {
 pub struct DescribeWorkbookRequest {
     pub resource_id: ResourceId,
     #[serde(default)]
+    pub include_paths: Option<bool>,
+    #[serde(default)]
     pub include: Vec<DescribeInclude>,
     #[serde(default)]
     pub summary: Option<DescribeSummaryOptions>,
@@ -94,7 +96,8 @@ pub struct DescribeSummaryOptions {
 #[serde(deny_unknown_fields)]
 pub struct DescribeWorkbookData {
     pub metadata: WorkbookExactMetadata,
-    pub paths: WorkbookPaths,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paths: Option<WorkbookPaths>,
     pub capabilities: WorkbookCapabilities,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<WorkbookDerivedSummary>,
@@ -314,6 +317,32 @@ pub struct ReadCellsPayload {
     pub compact: Option<SheetPageCompact>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub values_only: Option<SheetPageValues>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projected: Option<Vec<Vec<CanonicalCellProjection>>>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CanonicalStoredKind {
+    Formula,
+    Text,
+    Number,
+    Bool,
+    Error,
+    Date,
+    Blank,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CanonicalCellProjection {
+    pub address: String,
+    pub value: Option<CellValue>,
+    pub formula: Option<String>,
+    pub cached_value: Option<CellValue>,
+    pub stored_kind: CanonicalStoredKind,
+    pub number_format: Option<String>,
+    pub style_tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -479,6 +508,8 @@ pub struct SearchFormulasRequest {
     pub limit: Option<u32>,
     #[serde(default)]
     pub offset: Option<u32>,
+    #[serde(default)]
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -490,6 +521,7 @@ pub struct SearchFormulasData {
     pub summary: FormulaSearchSummary,
     pub formula_parse_diagnostics: Option<FormulaParseDiagnostics>,
     pub next_offset: Option<u32>,
+    pub next_cursor: Option<String>,
     pub warnings: Vec<Warning>,
 }
 
@@ -548,9 +580,22 @@ pub struct FormulaTraceRequest {
     #[serde(default)]
     pub page_size: Option<usize>,
     #[serde(default)]
-    pub cursor: Option<TraceCursor>,
+    pub cursor: Option<String>,
     #[serde(default)]
     pub formula_parse_policy: Option<FormulaParsePolicy>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FormulaTraceData {
+    pub workbook_id: WorkbookId,
+    pub sheet_name: String,
+    pub origin: String,
+    pub direction: TraceDirection,
+    pub layers: Vec<TraceLayer>,
+    pub next_cursor: Option<String>,
+    pub formula_parse_diagnostics: Option<FormulaParseDiagnostics>,
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -574,6 +619,19 @@ pub struct FormulaMapRequest {
     pub addresses_limit: Option<u32>,
     #[serde(default)]
     pub formula_parse_policy: Option<FormulaParsePolicy>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FormulaMapData {
+    pub workbook_id: WorkbookId,
+    pub sheet_name: String,
+    pub groups: Vec<FormulaGroup>,
+    pub formula_parse_diagnostics: Option<FormulaParseDiagnostics>,
+    pub next_offset: Option<u32>,
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -592,6 +650,49 @@ pub struct ProfileTableRequest {
     pub sample_size: Option<u32>,
     #[serde(default)]
     pub summary_only: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileTableData {
+    pub workbook_id: WorkbookId,
+    pub sheet_name: String,
+    pub table_name: Option<String>,
+    pub headers: Vec<String>,
+    pub column_types: Vec<ColumnTypeSummary>,
+    pub row_count: u32,
+    pub samples: Vec<TableRow>,
+    pub notes: Vec<String>,
+    pub source: ProfileSource,
+    pub coverage: ProfileCoverage,
+    pub confidence: ProfileConfidence,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileSource {
+    pub sheet_name: String,
+    pub selector_kind: String,
+    pub selector_value: Option<String>,
+    pub header_row: u32,
+    pub header_provenance: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileCoverage {
+    pub rows_in_scope: u32,
+    pub rows_scanned: u32,
+    pub sample_mode: SampleMode,
+    pub complete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileConfidence {
+    pub status: String,
+    pub heuristic: bool,
+    pub reason: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -652,7 +753,7 @@ pub struct ExportGridRequest {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExportGridData {
-    pub losslessness: GridLosslessness,
+    pub fidelity: GridFidelity,
     pub requested_range: String,
     pub returned_range: String,
     pub grid: GridPayload,
@@ -662,8 +763,8 @@ pub struct ExportGridData {
 
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum GridLosslessness {
-    Lossless,
+pub enum GridFidelity {
+    CellContentAndExplicitFormatting,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -728,6 +829,7 @@ pub struct AnalyzeStylesData {
     pub styles: Vec<CanonicalStyleUsage>,
     pub theme: Option<ThemeSummary>,
     pub conditional_formats: Vec<ConditionalFormatSummary>,
+    pub conditional_formats_complete: bool,
     pub coverage: StyleCoverage,
     pub warnings: Vec<Warning>,
 }
@@ -859,6 +961,80 @@ fn decode_cursor(value: &str) -> Result<ReadCellsCursor, String> {
     serde_json::from_slice(&bytes).map_err(|_| "cursor payload is invalid".to_string())
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalOpaqueCursor {
+    revision_id: String,
+    fingerprint: String,
+    position: usize,
+    subposition: usize,
+}
+
+fn encode_opaque_cursor(
+    prefix: &str,
+    cursor: &CanonicalOpaqueCursor,
+) -> Result<String, serde_json::Error> {
+    serde_json::to_vec(cursor).map(|bytes| {
+        let mut encoded = format!("{prefix}_");
+        for byte in bytes {
+            encoded.push_str(&format!("{byte:02x}"));
+        }
+        encoded
+    })
+}
+
+fn decode_opaque_cursor(value: &str, prefix: &str) -> Result<CanonicalOpaqueCursor, String> {
+    let marker = format!("{prefix}_");
+    let hex = value
+        .strip_prefix(&marker)
+        .ok_or_else(|| format!("cursor is not a {prefix} cursor"))?;
+    if hex.len() % 2 != 0 {
+        return Err("cursor has invalid length".to_string());
+    }
+    let bytes = (0..hex.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&hex[index..index + 2], 16)
+                .map_err(|_| "cursor is not valid hexadecimal".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    serde_json::from_slice(&bytes).map_err(|_| "cursor payload is invalid".to_string())
+}
+
+fn validate_opaque_cursor(
+    value: &str,
+    prefix: &str,
+    revision_id: &str,
+    fingerprint: &str,
+    operation: &str,
+) -> Result<CanonicalOpaqueCursor, CanonicalErrorEnvelope> {
+    let cursor = decode_opaque_cursor(value, prefix).map_err(|message| {
+        canonical_error(
+            CanonicalErrorCode::InvalidRequest,
+            operation,
+            message,
+            Some("$.cursor"),
+        )
+    })?;
+    if cursor.revision_id != revision_id {
+        return Err(canonical_error(
+            CanonicalErrorCode::StaleCursor,
+            operation,
+            "cursor is bound to a different resource revision",
+            Some("$.cursor"),
+        ));
+    }
+    if cursor.fingerprint != fingerprint {
+        return Err(canonical_error(
+            CanonicalErrorCode::CursorMismatch,
+            operation,
+            "cursor does not match the invariant request",
+            Some("$.cursor"),
+        ));
+    }
+    Ok(cursor)
+}
+
 fn parse_range(range: &str) -> Result<(u32, u32, u32, u32), String> {
     let bare = range.rsplit_once('!').map_or(range, |(_, value)| value);
     let mut parts = bare.split(':');
@@ -943,6 +1119,36 @@ fn canonical_error(
     path: Option<&str>,
 ) -> CanonicalErrorEnvelope {
     CanonicalErrorEnvelope::new(code, message, Some(operation), path.map(str::to_string))
+}
+
+fn project_cell_snapshots(rows: &[RowSnapshot]) -> Vec<Vec<CanonicalCellProjection>> {
+    rows.iter()
+        .map(|row| {
+            row.cells
+                .iter()
+                .map(|cell| CanonicalCellProjection {
+                    address: cell.address.clone(),
+                    value: cell.value.clone(),
+                    formula: cell.formula.clone(),
+                    cached_value: cell.cached_value.clone(),
+                    stored_kind: if cell.formula.is_some() {
+                        CanonicalStoredKind::Formula
+                    } else {
+                        match cell.value.as_ref().or(cell.cached_value.as_ref()) {
+                            Some(CellValue::Text(_)) => CanonicalStoredKind::Text,
+                            Some(CellValue::Number(_)) => CanonicalStoredKind::Number,
+                            Some(CellValue::Bool(_)) => CanonicalStoredKind::Bool,
+                            Some(CellValue::Error(_)) => CanonicalStoredKind::Error,
+                            Some(CellValue::Date(_)) => CanonicalStoredKind::Date,
+                            None => CanonicalStoredKind::Blank,
+                        }
+                    },
+                    number_format: cell.number_format.clone(),
+                    style_tags: cell.style_tags.clone(),
+                })
+                .collect()
+        })
+        .collect()
 }
 
 pub async fn execute_read_cells(
@@ -1089,19 +1295,57 @@ pub async fn execute_read_cells(
                     .or_else(|| entry.rows_keyed.as_ref().map(Vec::len))
                     .or_else(|| entry.csv.as_ref().map(|csv| csv.lines().count()))
                     .unwrap_or(0);
-                let returned_end = if row_count == 0 {
-                    r1.saturating_sub(1)
-                } else {
-                    r1 + row_count as u32 - 1
-                };
-                let returned_range = if row_count == 0 {
-                    range_string(c1, r1, c2, r1)
-                } else {
-                    range_string(c1, r1, c2, returned_end)
-                };
+                if row_count == 0 {
+                    return Err(canonical_error(
+                        CanonicalErrorCode::RowExceedsBudget,
+                        operation,
+                        format!("row {r1} cannot fit within the configured read payload budget"),
+                        Some("$.selection.ranges"),
+                    ));
+                }
+                let returned_end = r1 + row_count as u32 - 1;
+                let returned_range = range_string(c1, r1, c2, returned_end);
                 let continuation_row = entry
                     .next_start_row
                     .or_else(|| (returned_end < r2).then_some(returned_end + 1));
+                if continuation_row.is_some_and(|next| next <= r1) {
+                    return Err(canonical_error(
+                        CanonicalErrorCode::RowExceedsBudget,
+                        operation,
+                        format!("row {r1} cannot fit within the configured read payload budget"),
+                        Some("$.selection.ranges"),
+                    ));
+                }
+                let projected = if request.fields.is_empty() {
+                    None
+                } else {
+                    let details = tools::sheet_page_with_header_row(
+                        state.clone(),
+                        tools::SheetPageParams {
+                            workbook_or_fork_id: workbook_id.clone(),
+                            sheet_name: request.sheet_name.clone(),
+                            start_row: r1,
+                            page_size: row_count as u32,
+                            columns: Some((c1..=c2).map(col_name).collect()),
+                            columns_by_header: None,
+                            include_formulas: true,
+                            include_styles: true,
+                            include_header: false,
+                            format: Some(SheetPageFormat::Full),
+                        },
+                        1,
+                    )
+                    .await
+                    .map_err(|error| {
+                        canonical_error(
+                            CanonicalErrorCode::OperationFailed,
+                            operation,
+                            error.to_string(),
+                            None,
+                        )
+                    })?;
+                    Some(project_cell_snapshots(&details.rows))
+                };
                 let payload = ReadCellsPayload {
                     encoding,
                     rows: entry.rows,
@@ -1113,6 +1357,7 @@ pub async fn execute_read_cells(
                     snapshots: None,
                     compact: None,
                     values_only: None,
+                    projected,
                 };
                 let column_count = (c2 - c1 + 1) as usize;
                 rows_returned += row_count;
@@ -1284,6 +1529,16 @@ pub async fn execute_read_cells(
                     .collect::<Vec<_>>()
             };
             let returned_row_count = row_indices.len();
+            if returned_row_count == 0 && remaining > 0 {
+                return Err(canonical_error(
+                    CanonicalErrorCode::RowExceedsBudget,
+                    operation,
+                    format!(
+                        "row {current_row} cannot fit within the configured read payload budget"
+                    ),
+                    Some("$.selection"),
+                ));
+            }
             let column_count = snapshots.first().map_or_else(
                 || {
                     response.compact.as_ref().map_or_else(
@@ -1306,6 +1561,16 @@ pub async fn execute_read_cells(
                 .next_start_row
                 .filter(|next| *next <= final_row)
                 .or_else(|| (returned_end < final_row).then_some(returned_end + 1));
+            if next_row.is_some_and(|next| next <= current_row) {
+                return Err(canonical_error(
+                    CanonicalErrorCode::RowExceedsBudget,
+                    operation,
+                    format!(
+                        "row {current_row} cannot fit within the configured read payload budget"
+                    ),
+                    Some("$.selection"),
+                ));
+            }
             if let Some(next_row) = next_row {
                 next_cursor = Some(
                     encode_cursor(&ReadCellsCursor {
@@ -1324,6 +1589,8 @@ pub async fn execute_read_cells(
                     })?,
                 );
             }
+            let projected =
+                (!request.fields.is_empty()).then(|| project_cell_snapshots(&snapshots));
             blocks.push(ReadCellsBlock {
                 selection_index: 0,
                 requested_range,
@@ -1342,6 +1609,7 @@ pub async fn execute_read_cells(
                     snapshots: (!snapshots.is_empty()).then_some(snapshots),
                     compact: response.compact,
                     values_only: response.values_only,
+                    projected,
                 },
             });
             rows_returned = returned_row_count;
@@ -1372,6 +1640,41 @@ pub async fn execute_read_cells(
         },
         warnings: Vec::new(),
     })
+}
+
+pub async fn execute_inspect_cells(
+    state: Arc<AppState>,
+    request: InspectCellsRequest,
+) -> Result<InspectCellsResponse, CanonicalErrorEnvelope> {
+    let operation = "inspect_cells";
+    let response = tools::inspect_cells_semantic(
+        state,
+        tools::InspectCellsParams {
+            workbook_or_fork_id: request.resource_id.to_workbook_id(),
+            sheet_name: request.sheet_name,
+            targets: request.targets,
+            include_empty: request.include_empty,
+            budget: request.budget,
+        },
+    )
+    .await
+    .map_err(|error| {
+        canonical_error(
+            CanonicalErrorCode::OperationFailed,
+            operation,
+            error.to_string(),
+            None,
+        )
+    })?;
+    if response.truncated {
+        return Err(canonical_error(
+            CanonicalErrorCode::RowExceedsBudget,
+            operation,
+            "requested cell details exceed the configured payload budget; no partial response was returned",
+            Some("$.targets"),
+        ));
+    }
+    Ok(response)
 }
 
 pub async fn execute_list_workbooks(
@@ -1476,10 +1779,13 @@ pub async fn execute_describe(
             table_count: description.tables,
             macros_present: description.macros_present,
         },
-        paths: WorkbookPaths {
-            internal: Some(description.path),
-            client: description.client_path,
-        },
+        paths: request
+            .include_paths
+            .unwrap_or(false)
+            .then_some(WorkbookPaths {
+                internal: Some(description.path),
+                client: description.client_path,
+            }),
         capabilities: WorkbookCapabilities {
             backend: description.caps,
         },
@@ -1491,7 +1797,9 @@ pub async fn execute_describe(
 pub async fn execute_search_formulas(
     state: Arc<AppState>,
     request: SearchFormulasRequest,
-) -> anyhow::Result<SearchFormulasData> {
+    revision_id: &str,
+) -> Result<SearchFormulasData, CanonicalErrorEnvelope> {
+    let operation = "search_formulas";
     if request.query.is_none()
         && request.filter.as_ref().is_none_or(|filter| {
             filter.volatile.is_none()
@@ -1499,31 +1807,134 @@ pub async fn execute_search_formulas(
                 && filter.has_external_references.is_none()
         })
     {
-        anyhow::bail!("at least one of query or a non-empty filter is required");
+        return Err(canonical_error(
+            CanonicalErrorCode::InvalidRequest,
+            operation,
+            "at least one of query or a non-empty filter is required",
+            None,
+        ));
     }
+    let fingerprint = format!(
+        "{:x}",
+        Sha256::digest(
+            format!(
+                "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+                request.scope,
+                request.query,
+                request.filter,
+                request.result_mode,
+                request.group_by,
+                request.include_addresses,
+                request.addresses_per_group,
+                request.include_context,
+                request.formula_parse_policy
+            )
+            .as_bytes()
+        )
+    );
+    let offset = if let Some(value) = request.cursor.as_deref() {
+        validate_opaque_cursor(value, "sf1", revision_id, &fingerprint, operation)?.position
+    } else {
+        request.offset.unwrap_or(0) as usize
+    };
     let workbook_id = request.resource_id.to_workbook_id();
     let sheet_name = match request.scope.as_ref() {
         Some(FormulaSearchScope::Sheet { sheet_name, .. }) => Some(sheet_name.clone()),
         _ => None,
     };
-    let find = tools::find_formula(
-        state,
-        tools::FindFormulaParams {
-            workbook_or_fork_id: workbook_id,
-            query: String::new(),
-            sheet_name,
-            case_sensitive: true,
-            include_context: request.include_context.is_some(),
-            limit: 500,
-            offset: 0,
-            context_rows: request.include_context.as_ref().map(|value| value.rows),
-            context_cols: request.include_context.as_ref().map(|value| value.columns),
-        },
-    )
-    .await?;
-    let scanned = find.matches.len();
+    let scoped_range = match request.scope.as_ref() {
+        Some(FormulaSearchScope::Sheet {
+            range: Some(range), ..
+        }) => Some(parse_range(range).map_err(|message| {
+            canonical_error(
+                CanonicalErrorCode::InvalidRequest,
+                operation,
+                message,
+                Some("$.scope.range"),
+            )
+        })?),
+        _ => None,
+    };
+    let policy = request
+        .formula_parse_policy
+        .unwrap_or(FormulaParsePolicy::Warn);
+    let mut diagnostics = FormulaParseDiagnosticsBuilder::new(policy);
+    let mut raw_matches = Vec::new();
+    let mut scan_offset = 0_u32;
+    loop {
+        let find = tools::find_formula(
+            state.clone(),
+            tools::FindFormulaParams {
+                workbook_or_fork_id: workbook_id.clone(),
+                query: String::new(),
+                sheet_name: sheet_name.clone(),
+                case_sensitive: true,
+                include_context: request.include_context.is_some(),
+                limit: 500,
+                offset: scan_offset,
+                context_rows: request.include_context.as_ref().map(|value| value.rows),
+                context_cols: request.include_context.as_ref().map(|value| value.columns),
+            },
+        )
+        .await
+        .map_err(|error| {
+            canonical_error(
+                CanonicalErrorCode::OperationFailed,
+                operation,
+                error.to_string(),
+                None,
+            )
+        })?;
+        raw_matches.extend(find.matches);
+        if let Some(next) = find.next_offset {
+            if next <= scan_offset {
+                return Err(canonical_error(
+                    CanonicalErrorCode::OperationFailed,
+                    operation,
+                    "formula scan returned a non-progressing continuation offset",
+                    None,
+                ));
+            }
+            scan_offset = next;
+        } else {
+            break;
+        }
+    }
+    let scanned = raw_matches.len();
     let mut cells = Vec::new();
-    for matched in find.matches {
+    for matched in raw_matches {
+        if let Some((c1, r1, c2, r2)) = scoped_range {
+            let Some((col, row)) = parse_range(&matched.address)
+                .ok()
+                .map(|(col, row, _, _)| (col, row))
+            else {
+                continue;
+            };
+            if col < c1 || col > c2 || row < r1 || row > r2 {
+                continue;
+            }
+        }
+        if policy != FormulaParsePolicy::Off {
+            if let Err(message) = validate_formula(&matched.formula) {
+                if policy == FormulaParsePolicy::Fail {
+                    return Err(canonical_error(
+                        CanonicalErrorCode::OperationFailed,
+                        operation,
+                        format!(
+                            "formula parse failed at {}!{}: {message}",
+                            matched.sheet_name, matched.address
+                        ),
+                        None,
+                    ));
+                }
+                diagnostics.record_error(
+                    &matched.sheet_name,
+                    &matched.address,
+                    &matched.formula,
+                    &message,
+                );
+            }
+        }
         let functions = formula_functions(&matched.formula);
         let volatile = functions.iter().any(|name| is_volatile_function(name));
         let external = matched.formula.contains('[') && matched.formula.contains(']');
@@ -1559,7 +1970,6 @@ pub async fn execute_search_formulas(
         }
     }
     let total_matches = cells.len();
-    let offset = request.offset.unwrap_or(0) as usize;
     let limit = request.limit.unwrap_or(50).clamp(1, 500) as usize;
     let mut groups = Vec::new();
     let mut total_groups = 0_usize;
@@ -1568,7 +1978,20 @@ pub async fn execute_search_formulas(
         for cell in &cells {
             let keys = match request.group_by.unwrap_or(FormulaGroupBy::Function) {
                 FormulaGroupBy::Function if !cell.classifications.functions.is_empty() => {
-                    cell.classifications.functions.clone()
+                    let volatile_only =
+                        request.filter.as_ref().and_then(|filter| filter.volatile) == Some(true);
+                    let keys = cell
+                        .classifications
+                        .functions
+                        .iter()
+                        .filter(|name| !volatile_only || is_volatile_function(name))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if keys.is_empty() {
+                        vec!["OTHER".to_string()]
+                    } else {
+                        keys
+                    }
                 }
                 FormulaGroupBy::NormalizedFormula => vec![cell.formula.to_ascii_uppercase()],
                 FormulaGroupBy::Fingerprint => {
@@ -1623,13 +2046,38 @@ pub async fn execute_search_formulas(
     } else {
         cells.len()
     };
-    let next_offset = (offset + returned
-        < if request.result_mode == FormulaResultMode::Groups {
-            total_groups
-        } else {
-            total_matches
+    let total = if request.result_mode == FormulaResultMode::Groups {
+        total_groups
+    } else {
+        total_matches
+    };
+    let next_position = (offset + returned < total).then_some(offset + returned);
+    let next_cursor = next_position
+        .map(|position| {
+            encode_opaque_cursor(
+                "sf1",
+                &CanonicalOpaqueCursor {
+                    revision_id: revision_id.to_string(),
+                    fingerprint: fingerprint.clone(),
+                    position,
+                    subposition: 0,
+                },
+            )
         })
-    .then_some((offset + returned) as u32);
+        .transpose()
+        .map_err(|error| {
+            canonical_error(
+                CanonicalErrorCode::OperationFailed,
+                operation,
+                error.to_string(),
+                None,
+            )
+        })?;
+    let formula_parse_diagnostics = if policy == FormulaParsePolicy::Off || diagnostics.is_empty() {
+        None
+    } else {
+        Some(diagnostics.build())
+    };
     Ok(SearchFormulasData {
         result_mode: request.result_mode,
         matches: cells,
@@ -1638,10 +2086,11 @@ pub async fn execute_search_formulas(
             formula_cells_scanned: scanned,
             matched_cells: total_matches,
             matched_groups: total_groups,
-            scan_complete: find.next_offset.is_none(),
+            scan_complete: true,
         },
-        formula_parse_diagnostics: None,
-        next_offset,
+        formula_parse_diagnostics,
+        next_offset: next_position.map(|value| value as u32),
+        next_cursor,
         warnings: Vec::new(),
     })
 }
@@ -1684,6 +2133,228 @@ fn is_volatile_function(name: &str) -> bool {
     )
 }
 
+pub async fn execute_formula_trace(
+    state: Arc<AppState>,
+    request: FormulaTraceRequest,
+    revision_id: &str,
+) -> Result<FormulaTraceData, CanonicalErrorEnvelope> {
+    let operation = "formula_trace";
+    let fingerprint = format!(
+        "{:x}",
+        Sha256::digest(
+            format!(
+                "{}|{}|{:?}|{:?}|{:?}|{:?}",
+                request.sheet_name,
+                request.cell_address,
+                request.direction,
+                request.depth,
+                request
+                    .page_size
+                    .or(request.limit.map(|value| value as usize)),
+                request.formula_parse_policy
+            )
+            .as_bytes()
+        )
+    );
+    let cursor = request
+        .cursor
+        .as_deref()
+        .map(|value| validate_opaque_cursor(value, "ft1", revision_id, &fingerprint, operation))
+        .transpose()?;
+    let response = tools::formula_trace_semantic(
+        state,
+        tools::FormulaTraceParams {
+            workbook_or_fork_id: request.resource_id.to_workbook_id(),
+            sheet_name: request.sheet_name,
+            cell_address: request.cell_address,
+            direction: request.direction,
+            depth: request.depth,
+            limit: request.limit,
+            page_size: request.page_size,
+            cursor: cursor.map(|value| TraceCursor {
+                depth: value.position as u32,
+                offset: value.subposition,
+            }),
+            formula_parse_policy: request.formula_parse_policy,
+        },
+    )
+    .await
+    .map_err(|error| {
+        canonical_error(
+            CanonicalErrorCode::OperationFailed,
+            operation,
+            error.to_string(),
+            None,
+        )
+    })?;
+    let next_cursor = response
+        .next_cursor
+        .map(|value| {
+            encode_opaque_cursor(
+                "ft1",
+                &CanonicalOpaqueCursor {
+                    revision_id: revision_id.to_string(),
+                    fingerprint,
+                    position: value.depth as usize,
+                    subposition: value.offset,
+                },
+            )
+        })
+        .transpose()
+        .map_err(|error| {
+            canonical_error(
+                CanonicalErrorCode::OperationFailed,
+                operation,
+                error.to_string(),
+                None,
+            )
+        })?;
+    Ok(FormulaTraceData {
+        workbook_id: response.workbook_id,
+        sheet_name: response.sheet_name,
+        origin: response.origin,
+        direction: response.direction,
+        layers: response.layers,
+        next_cursor,
+        formula_parse_diagnostics: response.formula_parse_diagnostics,
+        notes: response.notes,
+    })
+}
+
+pub async fn execute_formula_map(
+    state: Arc<AppState>,
+    request: FormulaMapRequest,
+    revision_id: &str,
+) -> Result<FormulaMapData, CanonicalErrorEnvelope> {
+    let operation = "formula_map";
+    let fingerprint = format!(
+        "{:x}",
+        Sha256::digest(
+            format!(
+                "{}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{:?}",
+                request.sheet_name,
+                request.range,
+                request.expand,
+                request.sort_by,
+                request.summary_only,
+                request.include_addresses,
+                request.addresses_limit,
+                request.formula_parse_policy
+            )
+            .as_bytes()
+        )
+    );
+    let offset = request
+        .cursor
+        .as_deref()
+        .map(|value| validate_opaque_cursor(value, "fm1", revision_id, &fingerprint, operation))
+        .transpose()?
+        .map_or(0, |value| value.position);
+    let page_size = request.limit.unwrap_or(50).clamp(1, 500) as usize;
+    let response = tools::sheet_formula_map_semantic(
+        state,
+        tools::SheetFormulaMapParams {
+            workbook_or_fork_id: request.resource_id.to_workbook_id(),
+            sheet_name: request.sheet_name,
+            range: request.range,
+            expand: request.expand,
+            limit: Some(page_size as u32),
+            offset: Some(offset as u32),
+            sort_by: request.sort_by,
+            summary_only: request.summary_only,
+            include_addresses: request.include_addresses,
+            addresses_limit: request.addresses_limit,
+            formula_parse_policy: request.formula_parse_policy,
+        },
+    )
+    .await
+    .map_err(|error| {
+        canonical_error(
+            CanonicalErrorCode::OperationFailed,
+            operation,
+            error.to_string(),
+            None,
+        )
+    })?;
+    let next_position = response.next_offset.map(|value| value as usize);
+    let groups = response.groups;
+    let next_cursor = next_position
+        .map(|position| {
+            encode_opaque_cursor(
+                "fm1",
+                &CanonicalOpaqueCursor {
+                    revision_id: revision_id.to_string(),
+                    fingerprint,
+                    position,
+                    subposition: 0,
+                },
+            )
+        })
+        .transpose()
+        .map_err(|error| {
+            canonical_error(
+                CanonicalErrorCode::OperationFailed,
+                operation,
+                error.to_string(),
+                None,
+            )
+        })?;
+    Ok(FormulaMapData {
+        workbook_id: response.workbook_id,
+        sheet_name: response.sheet_name,
+        groups,
+        formula_parse_diagnostics: response.formula_parse_diagnostics,
+        next_offset: next_position.map(|value| value as u32),
+        next_cursor,
+    })
+}
+
+fn apply_style_limits(
+    mut styles: Vec<CanonicalStyleUsage>,
+    limits: Option<&AnalyzeStylesLimits>,
+) -> (Vec<CanonicalStyleUsage>, u64, u64, bool) {
+    let cells_in_scope = styles
+        .iter()
+        .map(|style| u64::from(style.occurrences))
+        .sum::<u64>();
+    let scan_limit = limits
+        .and_then(|value| value.cells_scanned)
+        .map(u64::from)
+        .unwrap_or(u64::MAX);
+    let mut remaining = scan_limit;
+    let mut scan_bounded = false;
+    for style in &mut styles {
+        let retained = u64::from(style.occurrences).min(remaining) as u32;
+        if retained < style.occurrences {
+            style.occurrences = retained;
+            style.ranges_complete = false;
+            scan_bounded = true;
+        }
+        remaining = remaining.saturating_sub(u64::from(retained));
+    }
+    styles.retain(|style| style.occurrences > 0);
+    let examples_limit = limits
+        .and_then(|value| value.examples_per_style)
+        .unwrap_or(u32::MAX) as usize;
+    let ranges_limit = limits
+        .and_then(|value| value.ranges_per_style)
+        .unwrap_or(u32::MAX) as usize;
+    for style in &mut styles {
+        style.example_cells.truncate(examples_limit);
+        if style.ranges.len() > ranges_limit {
+            style.ranges.truncate(ranges_limit);
+            style.ranges_complete = false;
+        }
+    }
+    let styles_limit = limits.and_then(|value| value.styles).unwrap_or(u32::MAX) as usize;
+    if styles.len() > styles_limit {
+        styles.truncate(styles_limit);
+        scan_bounded = true;
+    }
+    let cells_scanned = cells_in_scope.min(scan_limit);
+    (styles, cells_scanned, cells_in_scope, scan_bounded)
+}
+
 pub async fn execute_analyze_styles(
     state: Arc<AppState>,
     request: AnalyzeStylesRequest,
@@ -1705,7 +2376,7 @@ pub async fn execute_analyze_styles(
                 state,
                 tools::WorkbookStyleSummaryParams {
                     workbook_or_fork_id: workbook_id,
-                    max_styles: request.limits.as_ref().and_then(|limits| limits.styles),
+                    max_styles: None,
                     max_conditional_formats: None,
                     max_cells_scan: max_scan,
                     summary_only: Some(false),
@@ -1718,33 +2389,34 @@ pub async fn execute_analyze_styles(
                 },
             )
             .await?;
-            let bounded = response.scan_truncated;
-            let cells_scanned = response
+            let scan_truncated = response.scan_truncated;
+            let conditional_formats_complete = !response.conditional_formats_truncated;
+            let styles = response
                 .styles
-                .iter()
-                .map(|style| u64::from(style.occurrences))
-                .sum();
+                .into_iter()
+                .map(|style| {
+                    let mut examples = style.example_cells;
+                    examples.sort();
+                    CanonicalStyleUsage {
+                        style_id: style.style_id,
+                        occurrences: style.occurrences,
+                        tags: style.tags,
+                        descriptor: style.descriptor,
+                        ranges: Vec::new(),
+                        ranges_complete: true,
+                        example_cells: examples,
+                    }
+                })
+                .collect();
+            let (styles, cells_scanned, cells_in_scope, locally_bounded) =
+                apply_style_limits(styles, request.limits.as_ref());
+            let bounded = scan_truncated || locally_bounded;
             Ok(AnalyzeStylesData {
                 scope: AnalyzeStylesScope::Workbook,
-                styles: response
-                    .styles
-                    .into_iter()
-                    .map(|style| {
-                        let mut examples = style.example_cells;
-                        examples.sort();
-                        CanonicalStyleUsage {
-                            style_id: style.style_id,
-                            occurrences: style.occurrences,
-                            tags: style.tags,
-                            descriptor: style.descriptor,
-                            ranges: Vec::new(),
-                            ranges_complete: true,
-                            example_cells: examples,
-                        }
-                    })
-                    .collect(),
+                styles,
                 theme: response.theme,
                 conditional_formats: response.conditional_formats,
+                conditional_formats_complete,
                 coverage: StyleCoverage {
                     status: if bounded {
                         CoverageStatus::Bounded
@@ -1752,7 +2424,7 @@ pub async fn execute_analyze_styles(
                         CoverageStatus::Complete
                     },
                     cells_scanned,
-                    cells_in_scope: (!bounded).then_some(cells_scanned),
+                    cells_in_scope: (!scan_truncated).then_some(cells_in_scope),
                     counts_exact: !bounded,
                 },
                 warnings: response
@@ -1792,11 +2464,7 @@ pub async fn execute_analyze_styles(
                     sheet_name: sheet_name.clone(),
                     scope,
                     granularity: request.group_by,
-                    max_items: request
-                        .limits
-                        .as_ref()
-                        .and_then(|limits| limits.styles)
-                        .map(|value| value as usize),
+                    max_items: None,
                     summary_only: Some(false),
                     include_descriptor: Some(include_descriptor),
                     include_ranges: Some(include_ranges),
@@ -1804,59 +2472,62 @@ pub async fn execute_analyze_styles(
                 },
             )
             .await?;
-            let conditional_formats = if request.include.contains(&StyleInclude::ConditionalFormats)
-            {
-                tools::workbook_style_summary(
-                    state,
-                    tools::WorkbookStyleSummaryParams {
-                        workbook_or_fork_id: workbook_id,
-                        max_styles: Some(0),
-                        max_conditional_formats: None,
-                        max_cells_scan: Some(0),
-                        summary_only: Some(false),
-                        include_descriptor: Some(false),
-                        include_example_cells: Some(false),
-                        include_theme: Some(false),
-                        include_conditional_formats: Some(true),
-                    },
-                )
-                .await?
-                .conditional_formats
-                .into_iter()
-                .filter(|format| format.sheet_name == sheet_name)
-                .collect()
-            } else {
-                Vec::new()
-            };
-            let bounded = response.styles_truncated;
-            let cells_scanned = response
+            let (conditional_formats, conditional_formats_complete) =
+                if request.include.contains(&StyleInclude::ConditionalFormats) {
+                    let summary = tools::workbook_style_summary(
+                        state,
+                        tools::WorkbookStyleSummaryParams {
+                            workbook_or_fork_id: workbook_id,
+                            max_styles: Some(0),
+                            max_conditional_formats: None,
+                            max_cells_scan: Some(0),
+                            summary_only: Some(false),
+                            include_descriptor: Some(false),
+                            include_example_cells: Some(false),
+                            include_theme: Some(false),
+                            include_conditional_formats: Some(true),
+                        },
+                    )
+                    .await?;
+                    let complete = !summary.conditional_formats_truncated;
+                    let formats = summary
+                        .conditional_formats
+                        .into_iter()
+                        .filter(|format| format.sheet_name == sheet_name)
+                        .collect();
+                    (formats, complete)
+                } else {
+                    (Vec::new(), true)
+                };
+            let semantic_bounded = response.styles_truncated;
+            let styles = response
                 .styles
-                .iter()
-                .map(|style| u64::from(style.occurrences))
-                .sum();
+                .into_iter()
+                .map(|style| {
+                    let mut examples = style.example_cells;
+                    examples.sort();
+                    let mut ranges = style.cell_ranges;
+                    ranges.sort();
+                    CanonicalStyleUsage {
+                        style_id: style.style_id,
+                        occurrences: style.occurrences,
+                        tags: style.tags,
+                        descriptor: style.descriptor,
+                        ranges,
+                        ranges_complete: !style.ranges_truncated,
+                        example_cells: examples,
+                    }
+                })
+                .collect();
+            let (styles, cells_scanned, cells_in_scope, locally_bounded) =
+                apply_style_limits(styles, request.limits.as_ref());
+            let bounded = semantic_bounded || locally_bounded;
             Ok(AnalyzeStylesData {
                 scope: response_scope,
-                styles: response
-                    .styles
-                    .into_iter()
-                    .map(|style| {
-                        let mut examples = style.example_cells;
-                        examples.sort();
-                        let mut ranges = style.cell_ranges;
-                        ranges.sort();
-                        CanonicalStyleUsage {
-                            style_id: style.style_id,
-                            occurrences: style.occurrences,
-                            tags: style.tags,
-                            descriptor: style.descriptor,
-                            ranges,
-                            ranges_complete: !style.ranges_truncated,
-                            example_cells: examples,
-                        }
-                    })
-                    .collect(),
+                styles,
                 theme: None,
                 conditional_formats,
+                conditional_formats_complete,
                 coverage: StyleCoverage {
                     status: if bounded {
                         CoverageStatus::Bounded
@@ -1864,13 +2535,103 @@ pub async fn execute_analyze_styles(
                         CoverageStatus::Complete
                     },
                     cells_scanned,
-                    cells_in_scope: (!bounded).then_some(cells_scanned),
+                    cells_in_scope: Some(cells_in_scope),
                     counts_exact: !bounded,
                 },
                 warnings: Vec::new(),
             })
         }
     }
+}
+
+pub async fn execute_profile_table(
+    state: Arc<AppState>,
+    request: ProfileTableRequest,
+) -> Result<ProfileTableData, CanonicalErrorEnvelope> {
+    let operation = "profile_table";
+    let sample_mode = request.sample_mode.unwrap_or(SampleMode::Distributed);
+    let sample_size = request.sample_size.unwrap_or(10);
+    let selector_kind = if request.table_name.is_some() {
+        "table"
+    } else if request.region_id.is_some() {
+        "region"
+    } else {
+        "sheet_inferred"
+    }
+    .to_string();
+    let selector_value = request
+        .table_name
+        .clone()
+        .or_else(|| request.region_id.map(|value| value.to_string()));
+    let header_provenance = if request.table_name.is_some() {
+        "table_definition"
+    } else if request.region_id.is_some() {
+        "detected_region"
+    } else {
+        "inferred_first_row"
+    }
+    .to_string();
+    let response = tools::table_profile_semantic(
+        state,
+        tools::TableProfileParams {
+            workbook_or_fork_id: request.resource_id.to_workbook_id(),
+            sheet_name: request.sheet_name,
+            region_id: request.region_id,
+            table_name: request.table_name,
+            sample_mode: request.sample_mode,
+            sample_size: request.sample_size,
+            summary_only: request.summary_only,
+        },
+    )
+    .await
+    .map_err(|error| {
+        canonical_error(
+            CanonicalErrorCode::OperationFailed,
+            operation,
+            error.to_string(),
+            None,
+        )
+    })?;
+    let rows_scanned = response.row_count.min(sample_size);
+    let complete = rows_scanned >= response.row_count;
+    Ok(ProfileTableData {
+        workbook_id: response.workbook_id,
+        sheet_name: response.sheet_name.clone(),
+        table_name: response.table_name,
+        headers: response.headers,
+        column_types: response.column_types,
+        row_count: response.row_count,
+        samples: response.samples,
+        notes: response.notes,
+        source: ProfileSource {
+            sheet_name: response.sheet_name,
+            selector_kind,
+            selector_value,
+            header_row: 1,
+            header_provenance,
+        },
+        coverage: ProfileCoverage {
+            rows_in_scope: response.row_count,
+            rows_scanned,
+            sample_mode,
+            complete,
+        },
+        confidence: ProfileConfidence {
+            status: if complete {
+                "observed_complete"
+            } else {
+                "sampled_heuristic"
+            }
+            .to_string(),
+            heuristic: !complete,
+            reason: if complete {
+                "all rows in scope were scanned"
+            } else {
+                "column statistics are inferred from a bounded sample"
+            }
+            .to_string(),
+        },
+    })
 }
 
 pub async fn execute_export_grid(
@@ -1987,7 +2748,7 @@ pub async fn execute_export_grid(
         None
     };
     Ok(ExportGridData {
-        losslessness: GridLosslessness::Lossless,
+        fidelity: GridFidelity::CellContentAndExplicitFormatting,
         requested_range: request.range,
         returned_range,
         grid,

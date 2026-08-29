@@ -21,9 +21,6 @@
       "slug": "baseline",
       "table_count": 0
     },
-    "paths": {
-      "internal": "{{FIXTURE_PATH}}"
-    },
     "warnings": []
   },
   "operation": "describe_workbook",

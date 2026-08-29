@@ -1,6 +1,7 @@
 {
   "data": {
     "conditional_formats": [],
+    "conditional_formats_complete": true,
     "coverage": {
       "cells_in_scope": 3,
       "cells_scanned": 3,

@@ -1,6 +1,7 @@
 {
   "data": {
     "direction": "precedents",
+    "formula_parse_diagnostics": null,
     "layers": [],
     "next_cursor": null,
     "notes": [],

@@ -1,6 +1,7 @@
 {
   "data": {
     "complete": true,
+    "fidelity": "cell_content_and_explicit_formatting",
     "grid": {
       "anchor": "A1",
       "rows": [
@@ -32,7 +33,6 @@
       ],
       "sheet": "Sheet1"
     },
-    "losslessness": "lossless",
     "next_cursor": null,
     "requested_range": "A1:C1",
     "returned_range": "A1:C1"

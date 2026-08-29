@@ -953,6 +953,9 @@ pub struct SheetFormulaMapParams {
     /// Maximum formula groups to return
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Zero-based formula group continuation offset.
+    #[serde(default)]
+    pub offset: Option<u32>,
     /// Sort by: "address" (default), "complexity" (longest formulas first), "count" (most repeated first)
     #[serde(default)]
     pub sort_by: Option<FormulaSortBy>,
@@ -1010,7 +1013,7 @@ pub enum FindContext {
 }
 
 /// Sampling mode for table reads
-#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SampleMode {
     /// First N rows (default)
@@ -1078,9 +1081,16 @@ pub async fn sheet_formula_map(
     let request = crate::operations::FormulaMapRequest {
         resource_id: crate::operations::ResourceId::bind_workbook(&params.workbook_or_fork_id)
             .map_err(anyhow::Error::msg)?,
-        sheet_name: params.sheet_name, range: params.range, expand: params.expand, limit: params.limit,
-        sort_by: params.sort_by, summary_only: params.summary_only, include_addresses: params.include_addresses,
-        addresses_limit: params.addresses_limit, formula_parse_policy: params.formula_parse_policy,
+        sheet_name: params.sheet_name,
+        range: params.range,
+        expand: params.expand,
+        limit: params.limit,
+        sort_by: params.sort_by,
+        summary_only: params.summary_only,
+        include_addresses: params.include_addresses,
+        addresses_limit: params.addresses_limit,
+        formula_parse_policy: params.formula_parse_policy,
+        cursor: None,
     };
     crate::operations::project_legacy(
         state,
@@ -1155,6 +1165,11 @@ pub(crate) async fn sheet_formula_map_semantic(
         }
     }
 
+    let offset = params.offset.unwrap_or(0) as usize;
+    if offset > 0 {
+        groups = groups.into_iter().skip(offset).collect();
+    }
+
     if let Some(limit) = params.limit
         && groups.len() > limit as usize
     {
@@ -1186,8 +1201,8 @@ pub(crate) async fn sheet_formula_map_semantic(
         }
     }
 
-    let next_offset = if groups.len() < total_groups {
-        Some(groups.len() as u32)
+    let next_offset = if offset + groups.len() < total_groups {
+        Some((offset + groups.len()) as u32)
     } else {
         None
     };
@@ -1224,23 +1239,7 @@ pub async fn formula_trace(
     state: Arc<AppState>,
     params: FormulaTraceParams,
 ) -> Result<FormulaTraceResponse> {
-    let request = crate::operations::FormulaTraceRequest {
-        resource_id: crate::operations::ResourceId::bind_workbook(&params.workbook_or_fork_id)
-            .map_err(anyhow::Error::msg)?,
-        sheet_name: params.sheet_name,
-        cell_address: params.cell_address,
-        direction: params.direction,
-        depth: params.depth,
-        limit: params.limit,
-        page_size: params.page_size,
-        cursor: params.cursor,
-        formula_parse_policy: params.formula_parse_policy,
-    };
-    crate::operations::project_legacy(
-        state,
-        crate::operations::SpreadsheetOperation::FormulaTrace(request),
-    )
-    .await
+    formula_trace_semantic(state, params).await
 }
 
 pub(crate) async fn formula_trace_semantic(
@@ -1893,14 +1892,13 @@ fn build_page(
 ) -> PageBuildResult {
     let max_col = sheet.get_highest_column();
     let end_row = (start_row + page_size - 1).min(sheet.get_highest_row().max(start_row));
-    let column_indices =
-        resolve_columns_with_headers(
-            sheet,
-            columns.as_ref(),
-            columns_by_header.as_ref(),
-            max_col,
-            header_row,
-        );
+    let column_indices = resolve_columns_with_headers(
+        sheet,
+        columns.as_ref(),
+        columns_by_header.as_ref(),
+        max_col,
+        header_row,
+    );
 
     let header = if include_header {
         Some(build_row_snapshot(
@@ -2655,7 +2653,9 @@ pub async fn sheet_statistics(
     let request = crate::operations::SheetStatisticsRequest {
         resource_id: crate::operations::ResourceId::bind_workbook(&params.workbook_or_fork_id)
             .map_err(anyhow::Error::msg)?,
-        sheet_name: params.sheet_name, sample_rows: params.sample_rows, summary_only: params.summary_only,
+        sheet_name: params.sheet_name,
+        sample_rows: params.sample_rows,
+        summary_only: params.summary_only,
     };
     crate::operations::project_legacy(
         state,
@@ -4612,19 +4612,7 @@ pub async fn inspect_cells(
     state: Arc<AppState>,
     params: InspectCellsParams,
 ) -> Result<InspectCellsResponse> {
-    let request = crate::operations::InspectCellsRequest {
-        resource_id: crate::operations::ResourceId::bind_workbook(&params.workbook_or_fork_id)
-            .map_err(anyhow::Error::msg)?,
-        sheet_name: params.sheet_name,
-        targets: params.targets,
-        include_empty: params.include_empty,
-        budget: params.budget,
-    };
-    crate::operations::project_legacy(
-        state,
-        crate::operations::SpreadsheetOperation::InspectCells(request),
-    )
-    .await
+    inspect_cells_semantic(state, params).await
 }
 
 pub(crate) async fn inspect_cells_semantic(
@@ -4790,10 +4778,21 @@ pub async fn find_value(
     let request = crate::operations::SearchValuesRequest {
         resource_id: crate::operations::ResourceId::bind_workbook(&params.workbook_or_fork_id)
             .map_err(anyhow::Error::msg)?,
-        query: params.query, label: params.label, mode: params.mode, match_mode: params.match_mode,
-        case_sensitive: params.case_sensitive, sheet_name: params.sheet_name, region_id: params.region_id,
-        table_name: params.table_name, value_types: params.value_types, search_headers_only: params.search_headers_only,
-        direction: params.direction, limit: params.limit, offset: params.offset, context: params.context, context_width: params.context_width,
+        query: params.query,
+        label: params.label,
+        mode: params.mode,
+        match_mode: params.match_mode,
+        case_sensitive: params.case_sensitive,
+        sheet_name: params.sheet_name,
+        region_id: params.region_id,
+        table_name: params.table_name,
+        value_types: params.value_types,
+        search_headers_only: params.search_headers_only,
+        direction: params.direction,
+        limit: params.limit,
+        offset: params.offset,
+        context: params.context,
+        context_width: params.context_width,
     };
     crate::operations::project_legacy(
         state,
@@ -5023,8 +5022,12 @@ pub async fn table_profile(
     let request = crate::operations::ProfileTableRequest {
         resource_id: crate::operations::ResourceId::bind_workbook(&params.workbook_or_fork_id)
             .map_err(anyhow::Error::msg)?,
-        sheet_name: params.sheet_name, region_id: params.region_id, table_name: params.table_name,
-        sample_mode: params.sample_mode, sample_size: params.sample_size, summary_only: params.summary_only,
+        sheet_name: params.sheet_name,
+        region_id: params.region_id,
+        table_name: params.table_name,
+        sample_mode: params.sample_mode,
+        sample_size: params.sample_size,
+        summary_only: params.summary_only,
     };
     crate::operations::project_legacy(
         state,

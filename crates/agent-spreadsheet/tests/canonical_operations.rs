@@ -663,3 +663,294 @@ async fn row_header_projection_and_volatile_groups_preserve_canonical_capabiliti
     assert_eq!(keys, HashSet::from(["NOW", "OFFSET"]));
     assert!(!keys.contains("volatile"));
 }
+
+async fn bound_path(
+    path: &Path,
+) -> (
+    std::sync::Arc<agent_spreadsheet::state::AppState>,
+    ResourceId,
+) {
+    let (state, workbook_id) = StatelessRuntime
+        .open_state_for_file(path)
+        .await
+        .expect("bind temporary fixture");
+    let resource_id = ResourceId::bind_workbook(&workbook_id).unwrap();
+    (state, resource_id)
+}
+
+#[tokio::test]
+async fn canonical_reads_reject_nonprogress_and_project_every_declared_cell_field() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("read-fields.xlsx");
+    let mut book = umya_spreadsheet::new_file();
+    let sheet = book.get_sheet_by_name_mut("Sheet1").unwrap();
+    sheet.get_cell_mut("A1").set_value_number(42_f64);
+    sheet.get_cell_mut("B1").set_formula("SUM(A1,1)");
+    sheet.get_cell_mut("C1").set_value("x".repeat(90_000));
+    umya_spreadsheet::writer::xlsx::write(&book, &path).unwrap();
+    let (state, resource_id) = bound_path(&path).await;
+
+    let projected = execute_operation_json(
+        state.clone(),
+        "read_cells",
+        json!({
+            "resource_id":resource_id.as_str(), "sheet_name":"Sheet1",
+            "selection":{"kind":"range","ranges":["A1:B1"]}, "format":"values",
+            "fields":["value","formula","cached_value","stored_kind","number_format","style_tags"]
+        }),
+    )
+    .await
+    .unwrap();
+    let cells = projected.data["blocks"][0]["payload"]["projected"][0]
+        .as_array()
+        .unwrap();
+    for cell in cells {
+        for field in [
+            "value",
+            "formula",
+            "cached_value",
+            "stored_kind",
+            "number_format",
+            "style_tags",
+        ] {
+            assert!(cell.get(field).is_some(), "missing {field}: {cell}");
+        }
+    }
+
+    let error = execute_operation_json(
+        state.clone(),
+        "read_cells",
+        json!({
+            "resource_id":resource_id.as_str(), "sheet_name":"Sheet1",
+            "selection":{"kind":"range","ranges":["C1:C1"]}, "format":"values"
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.error.code, CanonicalErrorCode::RowExceedsBudget);
+
+    let inspect_error = execute_operation_json(
+        state.clone(),
+        "inspect_cells",
+        json!({
+            "resource_id":resource_id.as_str(), "sheet_name":"Sheet1", "targets":["C1"]
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        inspect_error.error.code,
+        CanonicalErrorCode::RowExceedsBudget
+    );
+}
+
+#[tokio::test]
+async fn formula_search_scans_all_pages_honors_range_and_uses_bound_cursor() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("formula-search.xlsx");
+    let mut book = umya_spreadsheet::new_file();
+    let sheet = book.get_sheet_by_name_mut("Sheet1").unwrap();
+    for row in 1..=520 {
+        sheet
+            .get_cell_mut(format!("A{row}"))
+            .set_formula(format!("SUM({row},1)"));
+    }
+    sheet.get_cell_mut("C1").set_formula("SUM(OFFSET(A1,0,0))");
+    umya_spreadsheet::writer::xlsx::write(&book, &path).unwrap();
+    let (state, resource_id) = bound_path(&path).await;
+
+    let last = execute_operation_json(
+        state.clone(),
+        "search_formulas",
+        json!({
+            "resource_id":resource_id.as_str(),
+            "scope":{"kind":"sheet","sheet_name":"Sheet1","range":"A520:A520"},
+            "query":{"text":"520","match_mode":"contains"}, "result_mode":"cells"
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(last.data["matches"][0]["address"], "A520");
+    assert_eq!(last.data["summary"]["formula_cells_scanned"], 521);
+    assert_eq!(last.data["summary"]["scan_complete"], true);
+
+    let grouped = execute_operation_json(
+        state.clone(),
+        "search_formulas",
+        json!({
+            "resource_id":resource_id.as_str(), "scope":{"kind":"sheet","sheet_name":"Sheet1","range":"C1:C1"},
+            "filter":{"volatile":true}, "result_mode":"groups", "group_by":"function"
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(grouped.data["groups"].as_array().unwrap().len(), 1);
+    assert_eq!(grouped.data["groups"][0]["group_key"], "OFFSET");
+
+    let first = execute_operation_json(
+        state.clone(),
+        "search_formulas",
+        json!({
+            "resource_id":resource_id.as_str(), "query":{"text":"SUM"},
+            "result_mode":"cells", "limit":1
+        }),
+    )
+    .await
+    .unwrap();
+    let cursor = first.data["next_cursor"].as_str().unwrap();
+    assert!(cursor.starts_with("sf1_"));
+    let second = execute_operation_json(
+        state.clone(),
+        "search_formulas",
+        json!({
+            "resource_id":resource_id.as_str(), "query":{"text":"SUM"},
+            "result_mode":"cells", "limit":1, "cursor":cursor
+        }),
+    )
+    .await
+    .unwrap();
+    assert_ne!(
+        first.data["matches"][0]["address"],
+        second.data["matches"][0]["address"]
+    );
+    let mismatch = execute_operation_json(
+        state,
+        "search_formulas",
+        json!({
+            "resource_id":resource_id.as_str(), "query":{"text":"OFFSET"},
+            "result_mode":"cells", "limit":1, "cursor":cursor
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(mismatch.error.code, CanonicalErrorCode::CursorMismatch);
+}
+
+#[tokio::test]
+async fn canonical_analysis_bounds_paths_paging_and_profile_provenance_are_explicit() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("analysis-contracts.xlsx");
+    let mut book = umya_spreadsheet::new_file();
+    let sheet = book.get_sheet_by_name_mut("Sheet1").unwrap();
+    sheet.get_cell_mut("A1").set_value("Header");
+    for row in 2..=22 {
+        sheet
+            .get_cell_mut(format!("A{row}"))
+            .set_value_number(row as f64);
+    }
+    sheet.get_cell_mut("B1").set_formula("SUM(A2:A22)");
+    sheet.get_cell_mut("C1").set_formula("AVERAGE(A2:A22)");
+    for row in 2..=22 {
+        sheet
+            .get_cell_mut(format!("B{row}"))
+            .set_formula(format!("A2+{row}"));
+    }
+    umya_spreadsheet::writer::xlsx::write(&book, &path).unwrap();
+    let (state, resource_id) = bound_path(&path).await;
+
+    let hidden = execute_operation_json(
+        state.clone(),
+        "describe_workbook",
+        json!({"resource_id":resource_id.as_str()}),
+    )
+    .await
+    .unwrap();
+    assert!(hidden.data.get("paths").is_none());
+    let visible = execute_operation_json(
+        state.clone(),
+        "describe_workbook",
+        json!({"resource_id":resource_id.as_str(),"include_paths":true}),
+    )
+    .await
+    .unwrap();
+    assert!(visible.data["paths"]["internal"].is_string());
+
+    let styles = execute_operation_json(
+        state.clone(),
+        "analyze_styles",
+        json!({
+            "resource_id":resource_id.as_str(),
+            "scope":{"kind":"sheet","sheet_name":"Sheet1","selection":{"kind":"all"}},
+            "include":["ranges","example_cells"],
+            "limits":{"cells_scanned":1,"examples_per_style":0,"ranges_per_style":0}
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(styles.data["coverage"]["status"], "bounded");
+    assert_eq!(styles.data["coverage"]["cells_scanned"], 1);
+    assert_eq!(styles.data["coverage"]["counts_exact"], false);
+    assert!(
+        styles.data["styles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|style| {
+                style["ranges"].as_array().unwrap().is_empty()
+                    && style["example_cells"].as_array().unwrap().is_empty()
+            })
+    );
+    assert!(styles.data["conditional_formats_complete"].is_boolean());
+
+    let map = execute_operation_json(
+        state.clone(),
+        "formula_map",
+        json!({"resource_id":resource_id.as_str(),"sheet_name":"Sheet1","limit":1}),
+    )
+    .await
+    .unwrap();
+    let map_cursor = map.data["next_cursor"].as_str().unwrap();
+    assert!(map_cursor.starts_with("fm1_"));
+    let resumed = execute_operation_json(
+        state.clone(),
+        "formula_map",
+        json!({"resource_id":resource_id.as_str(),"sheet_name":"Sheet1","limit":1,"cursor":map_cursor}),
+    )
+    .await
+    .unwrap();
+    assert_ne!(
+        map.data["groups"][0]["fingerprint"],
+        resumed.data["groups"][0]["fingerprint"]
+    );
+
+    let trace = execute_operation_json(
+        state.clone(),
+        "formula_trace",
+        json!({
+            "resource_id":resource_id.as_str(), "sheet_name":"Sheet1", "cell_address":"A2",
+            "direction":"dependents", "page_size":10
+        }),
+    )
+    .await
+    .unwrap();
+    let trace_cursor = trace.data["next_cursor"].as_str().unwrap();
+    assert!(trace_cursor.starts_with("ft1_"));
+    let trace_resumed = execute_operation_json(
+        state.clone(),
+        "formula_trace",
+        json!({
+            "resource_id":resource_id.as_str(), "sheet_name":"Sheet1", "cell_address":"A2",
+            "direction":"dependents", "page_size":10, "cursor":trace_cursor
+        }),
+    )
+    .await
+    .unwrap();
+    assert_ne!(
+        trace.data["layers"][0]["edges"],
+        trace_resumed.data["layers"][0]["edges"]
+    );
+
+    let profile = execute_operation_json(
+        state,
+        "profile_table",
+        json!({"resource_id":resource_id.as_str(),"sheet_name":"Sheet1","sample_size":2}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        profile.data["source"]["header_provenance"],
+        "inferred_first_row"
+    );
+    assert_eq!(profile.data["coverage"]["rows_scanned"], 2);
+    assert_eq!(profile.data["confidence"]["heuristic"], true);
+}

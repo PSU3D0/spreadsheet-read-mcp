@@ -1,8 +1,7 @@
 pub use crate::canonical_reads::*;
 use crate::model::{
-    FindValueResponse, FormulaTraceResponse, InspectCellsResponse, NamedRangesResponse,
-    ReadTableResponse, SheetFormulaMapResponse, SheetListResponse, SheetOverviewResponse,
-    SheetStatisticsResponse, TableProfileResponse, WorkbookId,
+    FindValueResponse, InspectCellsResponse, NamedRangesResponse, ReadTableResponse,
+    SheetListResponse, SheetOverviewResponse, SheetStatisticsResponse, WorkbookId,
 };
 use crate::state::AppState;
 use crate::tools;
@@ -262,6 +261,7 @@ pub enum CanonicalErrorCode {
     OperationFailed,
     StaleCursor,
     CursorMismatch,
+    RowExceedsBudget,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -516,21 +516,21 @@ schemas!(
     formula_trace_input_schema,
     formula_trace_output_schema,
     FormulaTraceRequest,
-    FormulaTraceResponse,
+    FormulaTraceData,
     "formula_trace"
 );
 schemas!(
     formula_map_input_schema,
     formula_map_output_schema,
     FormulaMapRequest,
-    SheetFormulaMapResponse,
+    FormulaMapData,
     "formula_map"
 );
 schemas!(
     profile_table_input_schema,
     profile_table_output_schema,
     ProfileTableRequest,
-    TableProfileResponse,
+    ProfileTableData,
     "profile_table"
 );
 schemas!(
@@ -654,7 +654,7 @@ static REGISTRY: [OperationDescriptor; 17] = [
     ),
     descriptor!(
         "export_grid",
-        "Export a lossless rich grid that preserves coordinates, merges, formats, and styles.",
+        "Export cell content and explicit formatting with coordinates, merges, formats, and styles; implicit presentation defaults are excluded.",
         WORKBOOK_READ,
         workbook_read,
         BOUNDED_READ,
@@ -990,20 +990,9 @@ pub async fn execute_operation(
             )
             .await?,
         ),
-        SpreadsheetOperation::InspectCells(request) => serde_json::to_value(
-            tools::inspect_cells_semantic(
-                state,
-                tools::InspectCellsParams {
-                    workbook_or_fork_id: request.resource_id.to_workbook_id(),
-                    sheet_name: request.sheet_name,
-                    targets: request.targets,
-                    include_empty: request.include_empty,
-                    budget: request.budget,
-                },
-            )
-            .await
-            .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?,
-        ),
+        SpreadsheetOperation::InspectCells(request) => {
+            serde_json::to_value(execute_inspect_cells(state, request).await?)
+        }
         SpreadsheetOperation::ReadTable(request) => serde_json::to_value(
             tools::read_table_semantic(
                 state,
@@ -1103,64 +1092,33 @@ pub async fn execute_operation(
             .await
             .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?,
         ),
-        SpreadsheetOperation::SearchFormulas(request) => {
-            serde_json::to_value(execute_search_formulas(state, request).await.map_err(
-                |error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()),
-            )?)
-        }
-        SpreadsheetOperation::FormulaTrace(request) => serde_json::to_value(
-            tools::formula_trace_semantic(
+        SpreadsheetOperation::SearchFormulas(request) => serde_json::to_value(
+            execute_search_formulas(
                 state,
-                tools::FormulaTraceParams {
-                    workbook_or_fork_id: request.resource_id.to_workbook_id(),
-                    sheet_name: request.sheet_name,
-                    cell_address: request.cell_address,
-                    direction: request.direction,
-                    depth: request.depth,
-                    limit: request.limit,
-                    page_size: request.page_size,
-                    cursor: request.cursor,
-                    formula_parse_policy: request.formula_parse_policy,
-                },
+                request,
+                revision_id.as_deref().expect("read resource revision"),
             )
-            .await
-            .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?,
+            .await?,
+        ),
+        SpreadsheetOperation::FormulaTrace(request) => serde_json::to_value(
+            execute_formula_trace(
+                state,
+                request,
+                revision_id.as_deref().expect("read resource revision"),
+            )
+            .await?,
         ),
         SpreadsheetOperation::FormulaMap(request) => serde_json::to_value(
-            tools::sheet_formula_map_semantic(
+            execute_formula_map(
                 state,
-                tools::SheetFormulaMapParams {
-                    workbook_or_fork_id: request.resource_id.to_workbook_id(),
-                    sheet_name: request.sheet_name,
-                    range: request.range,
-                    expand: request.expand,
-                    limit: request.limit,
-                    sort_by: request.sort_by,
-                    summary_only: request.summary_only,
-                    include_addresses: request.include_addresses,
-                    addresses_limit: request.addresses_limit,
-                    formula_parse_policy: request.formula_parse_policy,
-                },
+                request,
+                revision_id.as_deref().expect("read resource revision"),
             )
-            .await
-            .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?,
+            .await?,
         ),
-        SpreadsheetOperation::ProfileTable(request) => serde_json::to_value(
-            tools::table_profile_semantic(
-                state,
-                tools::TableProfileParams {
-                    workbook_or_fork_id: request.resource_id.to_workbook_id(),
-                    sheet_name: request.sheet_name,
-                    region_id: request.region_id,
-                    table_name: request.table_name,
-                    sample_mode: request.sample_mode,
-                    sample_size: request.sample_size,
-                    summary_only: request.summary_only,
-                },
-            )
-            .await
-            .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?,
-        ),
+        SpreadsheetOperation::ProfileTable(request) => {
+            serde_json::to_value(execute_profile_table(state, request).await?)
+        }
         SpreadsheetOperation::SheetStatistics(request) => serde_json::to_value(
             tools::sheet_statistics_semantic(
                 state,

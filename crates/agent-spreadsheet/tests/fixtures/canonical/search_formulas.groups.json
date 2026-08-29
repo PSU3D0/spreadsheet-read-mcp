@@ -3,6 +3,7 @@
     "formula_parse_diagnostics": null,
     "groups": [],
     "matches": [],
+    "next_cursor": null,
     "next_offset": null,
     "result_mode": "groups",
     "summary": {

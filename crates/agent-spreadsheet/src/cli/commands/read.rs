@@ -521,6 +521,7 @@ pub async fn formula_map(
             range: None,
             expand: false,
             limit,
+            offset: None,
             sort_by: sort_by.map(map_formula_sort),
             summary_only: None,
             include_addresses: None,
