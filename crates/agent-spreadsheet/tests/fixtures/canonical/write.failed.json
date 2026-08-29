@@ -1,0 +1,37 @@
+{
+  "schema_version": "1",
+  "operation": "write",
+  "resource_id": "fork:fork-golden",
+  "revision_id": "rev-before",
+  "data": {
+    "atomic": true,
+    "revision_before": "rev-before",
+    "diff": {
+      "change_count": 0,
+      "changes": []
+    },
+    "impact": {
+      "op_kinds": [
+        "set_cells"
+      ],
+      "risk": "moderate"
+    },
+    "status": "failed",
+    "mode": "preview",
+    "revision_after": "rev-before",
+    "ops_applied": 0,
+    "results": [
+      {
+        "index": 0,
+        "kind": "set_cells",
+        "status": "failed",
+        "error": {
+          "code": "OPERATION_FAILED",
+          "message": "representative failure",
+          "path": "$.ops[0]",
+          "retryable": false
+        }
+      }
+    ]
+  }
+}

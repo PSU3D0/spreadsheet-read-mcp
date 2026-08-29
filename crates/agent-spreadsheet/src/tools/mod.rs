@@ -24,7 +24,9 @@ use crate::verification::{
     evaluate_workbook_pair_for_verification, failed_verification_response,
 };
 use crate::workbook::{WorkbookContext, cell_to_value};
-use anyhow::{Context, Result, anyhow};
+#[cfg(feature = "recalc")]
+use anyhow::Context;
+use anyhow::{Result, anyhow};
 use regex::Regex;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -957,9 +959,7 @@ pub(crate) async fn range_rows_unbudgeted(
     let columns = (start_col..=end_col).collect::<Vec<_>>();
     workbook.with_sheet(sheet_name, |sheet| {
         (start_row..=end_row)
-            .map(|row| {
-                build_row_snapshot(sheet, row, &columns, include_formulas, include_styles)
-            })
+            .map(|row| build_row_snapshot(sheet, row, &columns, include_formulas, include_styles))
             .collect()
     })
 }
@@ -1579,6 +1579,7 @@ pub fn parse_scope_kind_optional(scope: Option<&str>) -> Result<Option<NamedRang
     }
 }
 
+#[cfg(feature = "recalc")]
 fn resolve_sheet_index_on_book(
     book: &umya_spreadsheet::Spreadsheet,
     sheet_name: &str,
@@ -1592,6 +1593,7 @@ fn resolve_sheet_index_on_book(
 }
 
 /// Apply define_name to an on-disk workbook file.
+#[cfg(feature = "recalc")]
 pub(crate) fn define_name_in_file(
     path: &std::path::Path,
     name: &str,
@@ -1653,6 +1655,7 @@ pub(crate) fn define_name_in_file(
 }
 
 /// Apply update_name to an on-disk workbook file.
+#[cfg(feature = "recalc")]
 pub(crate) fn update_name_in_file(
     path: &std::path::Path,
     name: &str,
@@ -1722,11 +1725,56 @@ pub(crate) fn update_name_in_file(
         return Err(anyhow!("named range '{}' not found", name));
     }
 
+    // umya's DefinedName::set_address appends address objects. Recreate the
+    // matching definition so update is replacement, never a union.
+    if let Some(new_addr) = new_refers_to {
+        match effective_scope {
+            NamedRangeScope::Workbook => {
+                book.get_defined_names_mut()
+                    .retain(|defined| defined.get_name() != name);
+                let first_sheet = book
+                    .get_sheet_collection()
+                    .first()
+                    .map(|sheet| sheet.get_name().to_string())
+                    .ok_or_else(|| anyhow!("workbook has no sheets"))?;
+                let sheet = book
+                    .get_sheet_by_name_mut(&first_sheet)
+                    .ok_or_else(|| anyhow!("sheet disappeared"))?;
+                sheet
+                    .add_defined_name(name.to_string(), new_addr.to_string())
+                    .map_err(|error| anyhow!("failed to replace defined name: {error}"))?;
+                let replacement = sheet.get_defined_names_mut().pop();
+                if let Some(replacement) = replacement {
+                    book.add_defined_names(replacement);
+                }
+            }
+            NamedRangeScope::Sheet => {
+                let sheet_name = effective_sheet
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("sheet-scoped name has no sheet"))?;
+                let sheet_index = resolve_sheet_index_on_book(&book, sheet_name)?;
+                let sheet = book
+                    .get_sheet_by_name_mut(sheet_name)
+                    .ok_or_else(|| anyhow!("sheet '{}' not found", sheet_name))?;
+                sheet
+                    .get_defined_names_mut()
+                    .retain(|defined| defined.get_name() != name);
+                sheet
+                    .add_defined_name(name.to_string(), new_addr.to_string())
+                    .map_err(|error| anyhow!("failed to replace defined name: {error}"))?;
+                if let Some(replacement) = sheet.get_defined_names_mut().last_mut() {
+                    replacement.set_local_sheet_id(sheet_index);
+                }
+            }
+        }
+    }
+
     umya_spreadsheet::writer::xlsx::write(&book, path)?;
     Ok((previous_refers_to, effective_scope, effective_sheet))
 }
 
 /// Apply delete_name to an on-disk workbook file.
+#[cfg(feature = "recalc")]
 pub(crate) fn delete_name_in_file(
     path: &std::path::Path,
     name: &str,

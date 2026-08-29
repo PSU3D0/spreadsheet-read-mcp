@@ -1,4 +1,6 @@
 pub use crate::canonical_reads::*;
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+use crate::canonical_write::{WriteRequest, WriteResponseData};
 use crate::model::{
     FindValueResponse, InspectCellsResponse, NamedRangesResponse, ReadTableResponse,
     SheetListResponse, SheetOverviewResponse, SheetStatisticsResponse, WorkbookId,
@@ -81,7 +83,7 @@ impl<'de> Deserialize<'de> for ResourceId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationRisk {
     Low,
@@ -114,6 +116,7 @@ pub struct CapabilityMetadata {
 pub struct RuntimeCapabilities {
     pub workbook_discovery: bool,
     pub workbook_read: bool,
+    pub workbook_write: bool,
 }
 
 impl RuntimeCapabilities {
@@ -121,6 +124,7 @@ impl RuntimeCapabilities {
         Self {
             workbook_discovery: true,
             workbook_read: true,
+            workbook_write: cfg!(all(not(target_arch = "wasm32"), feature = "recalc")),
         }
     }
 }
@@ -191,6 +195,8 @@ pub enum SpreadsheetOperation {
     FormulaMap(FormulaMapRequest),
     ProfileTable(ProfileTableRequest),
     SheetStatistics(SheetStatisticsRequest),
+    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    Write(WriteRequest),
 }
 
 impl SpreadsheetOperation {
@@ -213,6 +219,8 @@ impl SpreadsheetOperation {
             Self::FormulaMap(_) => "formula_map",
             Self::ProfileTable(_) => "profile_table",
             Self::SheetStatistics(_) => "sheet_statistics",
+            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            Self::Write(_) => "write",
         }
     }
 
@@ -235,6 +243,8 @@ impl SpreadsheetOperation {
             Self::FormulaMap(value) => Some(&value.resource_id),
             Self::ProfileTable(value) => Some(&value.resource_id),
             Self::SheetStatistics(value) => Some(&value.resource_id),
+            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            Self::Write(value) => Some(&value.resource_id),
         }
     }
 }
@@ -262,6 +272,7 @@ pub enum CanonicalErrorCode {
     StaleCursor,
     CursorMismatch,
     RowExceedsBudget,
+    RevisionConflict,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -357,14 +368,124 @@ fn workbook_read(capabilities: &RuntimeCapabilities) -> bool {
 fn workbook_discovery(capabilities: &RuntimeCapabilities) -> bool {
     capabilities.workbook_discovery
 }
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+fn workbook_write(capabilities: &RuntimeCapabilities) -> bool {
+    capabilities.workbook_write
+}
 fn read_risk(_: &SpreadsheetOperation) -> OperationRisk {
     OperationRisk::Low
+}
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+fn write_risk(operation: &SpreadsheetOperation) -> OperationRisk {
+    match operation {
+        SpreadsheetOperation::Write(request) => request
+            .ops
+            .iter()
+            .map(crate::canonical_write::WriteOp::risk)
+            .max_by_key(|risk| match risk {
+                OperationRisk::Low => 0,
+                OperationRisk::Moderate => 1,
+                OperationRisk::High => 2,
+                OperationRisk::Destructive => 3,
+            })
+            .unwrap_or(OperationRisk::Moderate),
+        _ => OperationRisk::Low,
+    }
 }
 
 fn closed_schema<T: JsonSchema>() -> Value {
     let mut schema = serde_json::to_value(schema_for!(T)).expect("schema serializes");
+    let definitions = schema
+        .get("$defs")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    inline_composed_object_refs(&mut schema, &definitions);
     close_object_schemas(&mut schema);
     schema
+}
+// Inline compatible local object refs so closing the branch sees both the tagged
+// sibling fields and the referenced fields as one evaluated property set.
+fn inline_composed_object_refs(value: &mut Value, definitions: &serde_json::Map<String, Value>) {
+    match value {
+        Value::Object(object) => {
+            let referenced = object
+                .get("$ref")
+                .and_then(Value::as_str)
+                .and_then(|reference| reference.strip_prefix("#/$defs/"))
+                .and_then(|name| definitions.get(name))
+                .and_then(Value::as_object)
+                .filter(|_| object.contains_key("properties"))
+                .cloned();
+            if let Some(mut referenced) = referenced {
+                let compatible_properties = referenced
+                    .get("properties")
+                    .and_then(Value::as_object)
+                    .is_none_or(|referenced_properties| {
+                        object
+                            .get("properties")
+                            .and_then(Value::as_object)
+                            .is_none_or(|local_properties| {
+                                referenced_properties.iter().all(|(name, schema)| {
+                                    local_properties
+                                        .get(name)
+                                        .is_none_or(|local_schema| local_schema == schema)
+                                })
+                            })
+                    });
+                let compatible = compatible_properties
+                    && referenced.iter().all(|(key, referenced_value)| {
+                        matches!(key.as_str(), "properties" | "required")
+                            || object
+                                .get(key)
+                                .is_none_or(|local_value| local_value == referenced_value)
+                    });
+                if compatible {
+                    object.remove("$ref");
+                    if let Some(referenced_properties) = referenced
+                        .remove("properties")
+                        .and_then(|properties| properties.as_object().cloned())
+                    {
+                        let local_properties = object
+                            .entry("properties")
+                            .or_insert_with(|| Value::Object(serde_json::Map::new()))
+                            .as_object_mut()
+                            .expect("composed object properties");
+                        for (name, schema) in referenced_properties {
+                            local_properties.entry(name).or_insert(schema);
+                        }
+                    }
+                    if let Some(referenced_required) = referenced
+                        .remove("required")
+                        .and_then(|required| required.as_array().cloned())
+                    {
+                        let local_required = object
+                            .entry("required")
+                            .or_insert_with(|| Value::Array(Vec::new()))
+                            .as_array_mut()
+                            .expect("composed object required properties");
+                        for required in referenced_required {
+                            if !local_required.contains(&required) {
+                                local_required.push(required);
+                            }
+                        }
+                    }
+                    for (key, referenced_value) in referenced {
+                        object.entry(key).or_insert(referenced_value);
+                    }
+                }
+            }
+            for child in object.values_mut() {
+                inline_composed_object_refs(child, definitions);
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                inline_composed_object_refs(child, definitions);
+            }
+        }
+        _ => {}
+    }
 }
 fn close_object_schemas(value: &mut Value) {
     match value {
@@ -372,9 +493,13 @@ fn close_object_schemas(value: &mut Value) {
             if object.get("type").and_then(Value::as_str) == Some("object")
                 || object.contains_key("properties")
             {
-                object
-                    .entry("additionalProperties")
-                    .or_insert(Value::Bool(false));
+                let closure_keyword = if object.contains_key("$ref") || object.contains_key("allOf")
+                {
+                    "unevaluatedProperties"
+                } else {
+                    "additionalProperties"
+                };
+                object.entry(closure_keyword).or_insert(Value::Bool(false));
             }
             for child in object.values_mut() {
                 close_object_schemas(child);
@@ -540,6 +665,121 @@ schemas!(
     SheetStatisticsResponse,
     "sheet_statistics"
 );
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+fn write_input_schema() -> Value {
+    fn apply_write_bounds(value: &mut Value, property: Option<&str>) {
+        if let Some(object) = value.as_object_mut() {
+            if matches!(property, Some("ops")) {
+                object.insert("maxItems".to_string(), json!(128));
+            }
+            if matches!(property, Some("cells")) {
+                if object.get("type") == Some(&Value::String("object".to_string())) {
+                    object.insert("maxProperties".to_string(), json!(100_000));
+                } else {
+                    object.insert("maxItems".to_string(), json!(100_000));
+                }
+            }
+            if matches!(
+                property,
+                Some("rows" | "merges" | "columns" | "row_breaks" | "col_breaks")
+            ) {
+                object.insert("maxItems".to_string(), json!(100_000));
+            }
+            if matches!(property, Some("items"))
+                && object.get("type") == Some(&Value::String("array".to_string()))
+            {
+                object.insert("maxItems".to_string(), json!(100_000));
+            }
+            if matches!(property, Some("csv")) {
+                object.insert("maxLength".to_string(), json!(1_048_576));
+            }
+            let keys = object.keys().cloned().collect::<Vec<_>>();
+            for key in keys {
+                if let Some(child) = object.get_mut(&key) {
+                    apply_write_bounds(child, Some(&key));
+                }
+            }
+        } else if let Some(array) = value.as_array_mut() {
+            for child in array {
+                apply_write_bounds(child, property);
+            }
+        }
+    }
+
+    let mut schema = closed_schema::<WriteRequest>();
+    let defs = schema
+        .get_mut("$defs")
+        .and_then(Value::as_object_mut)
+        .expect("write schema definitions");
+    let family_names = [
+        "CanonicalStructureOp",
+        "StyleWriteOp",
+        "ColumnWriteOp",
+        "FormulaWriteOp",
+        "NameWriteOp",
+        "ImportAndHelperOp",
+        "TransformOp",
+        "SheetLayoutOp",
+        "RulesOp",
+    ];
+    let mut variants = vec![json!({"$ref":"#/$defs/SetCellsOp"})];
+    for family in family_names {
+        let family_variants = defs
+            .get(family)
+            .and_then(|value| value.get("oneOf"))
+            .and_then(Value::as_array)
+            .expect("tagged write family")
+            .clone();
+        variants.extend(family_variants);
+    }
+    defs.insert("WriteOp".to_string(), json!({"oneOf": variants}));
+    for family in family_names {
+        defs.remove(family);
+    }
+    apply_write_bounds(&mut schema, None);
+    schema
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+fn write_output_schema() -> Value {
+    let mut schema = resource_output_schema::<WriteResponseData>("write");
+    if let Some(variants) = schema
+        .pointer_mut("/$defs/WriteResponseData/oneOf")
+        .and_then(Value::as_array_mut)
+    {
+        for variant in variants {
+            let Some(properties) = variant.get_mut("properties").and_then(Value::as_object_mut)
+            else {
+                continue;
+            };
+            let status = properties
+                .get("status")
+                .and_then(|value| value.get("const"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let mode = match status.as_deref() {
+                Some("previewed") => Some("preview"),
+                Some("staged") => Some("stage"),
+                Some("applied" | "partial" | "rolled_back") => Some("apply"),
+                _ => None,
+            };
+            if let Some(mode) = mode {
+                properties.insert("mode".to_string(), json!({"type":"string","const":mode}));
+            }
+            if let Some(atomic) = match status.as_deref() {
+                Some("staged" | "rolled_back") => Some(true),
+                Some("partial") => Some(false),
+                _ => None,
+            } {
+                properties.insert(
+                    "atomic".to_string(),
+                    json!({"type":"boolean","const":atomic}),
+                );
+            }
+        }
+    }
+    schema
+}
 
 const WORKBOOK_DISCOVERY: CapabilityMetadata = CapabilityMetadata {
     name: "workbook_discovery",
@@ -548,6 +788,11 @@ const WORKBOOK_DISCOVERY: CapabilityMetadata = CapabilityMetadata {
 const WORKBOOK_READ: CapabilityMetadata = CapabilityMetadata {
     name: "workbook_read",
     description: "Read an already-bound workbook resource",
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+const WORKBOOK_WRITE: CapabilityMetadata = CapabilityMetadata {
+    name: "workbook_write",
+    description: "Mutate an isolated fork or session resource with revision CAS",
 };
 const CHEAP_READ: OperationCost = OperationCost {
     class: OperationCostClass::Cheap,
@@ -579,7 +824,7 @@ macro_rules! descriptor {
     };
 }
 
-static REGISTRY: [OperationDescriptor; 17] = [
+static REGISTRY: &[OperationDescriptor] = &[
     descriptor!(
         "list_workbooks",
         "Discover workbook resources available to this runtime.",
@@ -733,10 +978,26 @@ static REGISTRY: [OperationDescriptor; 17] = [
         sheet_statistics_input_schema,
         sheet_statistics_output_schema
     ),
+    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    OperationDescriptor {
+        name: "write",
+        schema_version: CANONICAL_SCHEMA_VERSION,
+        description: "Preview, stage, or apply an ordered batch of canonical mutations with revision CAS and atomic rollback by default.",
+        capability: WORKBOOK_WRITE,
+        capability_predicate: workbook_write,
+        cost: OperationCost {
+            class: OperationCostClass::Expensive,
+            bounded_by: &["ops", "cells", "payload_bytes"],
+        },
+        risk_ceiling: OperationRisk::Destructive,
+        risk_for: write_risk,
+        input_schema: write_input_schema,
+        output_schema: write_output_schema,
+    },
 ];
 
 pub fn operation_registry() -> &'static [OperationDescriptor] {
-    &REGISTRY
+    REGISTRY
 }
 pub fn operation_descriptor(name: &str) -> Option<&'static OperationDescriptor> {
     REGISTRY.iter().find(|descriptor| descriptor.name == name)
@@ -882,6 +1143,27 @@ pub fn decode_operation(
             SheetStatisticsRequest,
             SpreadsheetOperation::SheetStatistics
         ),
+        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        "write" => {
+            let schema = write_input_schema();
+            let validator = jsonschema::validator_for(&schema).map_err(|error| {
+                CanonicalErrorEnvelope::new(
+                    CanonicalErrorCode::OperationFailed,
+                    format!("invalid generated write schema: {error}"),
+                    Some(name),
+                    None,
+                )
+            })?;
+            if let Err(error) = validator.validate(&payload) {
+                return Err(CanonicalErrorEnvelope::new(
+                    CanonicalErrorCode::InvalidRequest,
+                    error.to_string(),
+                    Some(name),
+                    Some(error.instance_path.to_string()),
+                ));
+            }
+            decode!(payload, name, WriteRequest, SpreadsheetOperation::Write)
+        }
         _ => Err(CanonicalErrorEnvelope::new(
             CanonicalErrorCode::UnknownOperation,
             format!("unknown operation '{name}'"),
@@ -914,7 +1196,8 @@ pub async fn execute_operation(
         ));
     }
 
-    let (resource_id, revision_id) = if let Some(requested) = operation.resource_id() {
+    #[allow(unused_mut)]
+    let (resource_id, mut revision_id) = if let Some(requested) = operation.resource_id() {
         let workbook = state
             .open_workbook(&requested.to_workbook_id())
             .await
@@ -1132,6 +1415,24 @@ pub async fn execute_operation(
             .await
             .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?,
         ),
+        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        SpreadsheetOperation::Write(request) => {
+            let result = crate::canonical_write::execute_write(state, request)
+                .await
+                .map_err(|error| {
+                    let message = error.to_string();
+                    let code = if message.starts_with("revision conflict:") {
+                        CanonicalErrorCode::RevisionConflict
+                    } else if message.starts_with("invalid request:") {
+                        CanonicalErrorCode::InvalidRequest
+                    } else {
+                        CanonicalErrorCode::OperationFailed
+                    };
+                    CanonicalErrorEnvelope::new(code, message, Some(name), None)
+                })?;
+            revision_id = Some(result.revision_after().to_string());
+            serde_json::to_value(result)
+        }
     }
     .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?;
     let _ = workbook_id;

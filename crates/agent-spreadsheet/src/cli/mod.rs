@@ -451,7 +451,10 @@ enum SurfaceWorkbookCommands {
 
 #[derive(Debug, Subcommand)]
 enum SurfaceVerifyCommands {
-    #[command(about = "Compare two workbook states and verify target deltas plus error provenance", after_help = "Also available:\n  asp verify diff <BASELINE> <CURRENT>    Diff two workbook versions with summary-first, paged details\n\nRun `asp verify diff --help` for the full diff contract.")]
+    #[command(
+        about = "Compare two workbook states and verify target deltas plus error provenance",
+        after_help = "Also available:\n  asp verify diff <BASELINE> <CURRENT>    Diff two workbook versions with summary-first, paged details\n\nRun `asp verify diff --help` for the full diff contract."
+    )]
     Proof(SurfaceLeafArgs),
     #[command(about = "Diff two workbook versions with summary-first, paged details")]
     Diff(SurfaceLeafArgs),
@@ -523,6 +526,19 @@ enum SurfaceCommands {
             help = "Canonical JSON payload (reads stdin when omitted)"
         )]
         json: Option<String>,
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Atomically export an applied mutation to this path"
+        )]
+        output: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Atomically replace the bound path after a successful apply"
+        )]
+        in_place: bool,
+        #[arg(long, help = "Allow replacing an existing --output path")]
+        force: bool,
     },
     #[command(subcommand, about = "Read workbook data and structure")]
     Read(SurfaceReadCommands),
@@ -3327,6 +3343,9 @@ enum ResolvedSurfaceCommand {
         operation: String,
         bind: PathBuf,
         json: Option<String>,
+        output: Option<PathBuf>,
+        in_place: bool,
+        force: bool,
     },
     Schema(ResolvedDiscoverabilityCommand),
     Example(ResolvedDiscoverabilityCommand),
@@ -3780,10 +3799,16 @@ fn resolve_surface_command(
             operation,
             bind,
             json,
+            output,
+            in_place,
+            force,
         } => Ok(ResolvedSurfaceCommand::Operation {
             operation,
             bind,
             json,
+            output,
+            in_place,
+            force,
         }),
         SurfaceCommands::Read(command) => match command {
             SurfaceReadCommands::Sheets(args) => {
@@ -3990,10 +4015,23 @@ fn emit_canonical_error_and_exit(error: crate::operations::CanonicalErrorEnvelop
     std::process::exit(1)
 }
 
+fn normalize_canonical_discoverability_argv(mut argv: Vec<OsString>) -> Vec<OsString> {
+    if argv.len() == 3
+        && matches!(argv[1].to_str(), Some("schema" | "example"))
+        && argv[2] == "write"
+    {
+        argv.insert(2, OsString::from("--"));
+    }
+    argv
+}
+
 async fn run_machine_operation(
     operation: &str,
     bind: PathBuf,
     json_payload: Option<String>,
+    output: Option<PathBuf>,
+    in_place: bool,
+    force: bool,
 ) -> Result<crate::operations::CanonicalResponse, crate::operations::CanonicalErrorEnvelope> {
     use crate::operations::{CanonicalErrorCode, CanonicalErrorEnvelope, ResourceId};
     use std::io::Read;
@@ -4046,14 +4084,72 @@ async fn run_machine_operation(
     })?;
 
     let runtime = crate::runtime::stateless::StatelessRuntime;
-    let (state, workbook_id) = runtime.open_state_for_file(&bind).await.map_err(|error| {
-        CanonicalErrorEnvelope::new(
-            CanonicalErrorCode::ResourceNotFound,
-            error.to_string(),
+    let is_write = operation == "write";
+    if !is_write && (output.is_some() || in_place || force) {
+        return Err(CanonicalErrorEnvelope::new(
+            CanonicalErrorCode::InvalidRequest,
+            "--output, --in-place, and --force are valid only for the canonical write operation",
             Some(operation),
-            Some("--bind".to_string()),
-        )
-    })?;
+            Some("adapter_flags".to_string()),
+        ));
+    }
+    let write_mode = object
+        .get("mode")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if is_write {
+        match write_mode.as_deref() {
+            Some("apply") if (output.is_some() as u8 + in_place as u8) != 1 => {
+                return Err(CanonicalErrorEnvelope::new(
+                    CanonicalErrorCode::InvalidRequest,
+                    "canonical write mode=apply requires exactly one of --output <PATH> or --in-place",
+                    Some(operation),
+                    Some("adapter_flags".to_string()),
+                ));
+            }
+            Some("preview" | "stage") if output.is_some() || in_place || force => {
+                return Err(CanonicalErrorEnvelope::new(
+                    CanonicalErrorCode::InvalidRequest,
+                    "preview and stage do not accept file export flags",
+                    Some(operation),
+                    Some("adapter_flags".to_string()),
+                ));
+            }
+            _ => {}
+        }
+        if force && output.is_none() {
+            return Err(CanonicalErrorEnvelope::new(
+                CanonicalErrorCode::InvalidRequest,
+                "--force requires --output <PATH>",
+                Some(operation),
+                Some("--force".to_string()),
+            ));
+        }
+    }
+    let (state, workbook_id, fork_path) = if is_write {
+        let (state, id, path) = runtime
+            .open_fork_state_for_file(&bind)
+            .await
+            .map_err(|error| {
+                CanonicalErrorEnvelope::new(
+                    CanonicalErrorCode::ResourceNotFound,
+                    error.to_string(),
+                    Some(operation),
+                    Some("--bind".to_string()),
+                )
+            })?;
+        (state, id, Some(path))
+    } else {
+        let (state, id) = runtime.open_state_for_file(&bind).await.map_err(|error| {
+            CanonicalErrorEnvelope::new(
+                CanonicalErrorCode::ResourceNotFound,
+                error.to_string(),
+                Some(operation),
+                Some("--bind".to_string()),
+            )
+        })?;
+        (state, id, None)
+    };
     let resource_id = ResourceId::bind_workbook(&workbook_id).map_err(|message| {
         CanonicalErrorEnvelope::new(
             CanonicalErrorCode::InvalidRequest,
@@ -4087,12 +4183,102 @@ async fn run_machine_operation(
             Value::String(resource_id.as_str().to_string()),
         );
     }
-    crate::operations::execute_operation_json(state, operation, payload).await
+    let response = crate::operations::execute_operation_json(state, operation, payload).await?;
+    if is_write
+        && write_mode.as_deref() == Some("apply")
+        && matches!(
+            response.data["status"].as_str(),
+            Some("applied" | "partial")
+        )
+    {
+        let source = fork_path.expect("write binds an ephemeral fork");
+        let target = if in_place {
+            runtime.normalize_existing_file(&bind)
+        } else {
+            runtime.normalize_destination_path(output.as_ref().expect("validated write output"))
+        }
+        .map_err(|error| {
+            CanonicalErrorEnvelope::new(
+                CanonicalErrorCode::InvalidRequest,
+                error.to_string(),
+                Some(operation),
+                Some("adapter_flags".to_string()),
+            )
+        })?;
+        if !in_place {
+            let bound = runtime.normalize_existing_file(&bind).map_err(|error| {
+                CanonicalErrorEnvelope::new(
+                    CanonicalErrorCode::InvalidRequest,
+                    error.to_string(),
+                    Some(operation),
+                    Some("--bind".to_string()),
+                )
+            })?;
+            if target == bound {
+                return Err(CanonicalErrorEnvelope::new(
+                    CanonicalErrorCode::InvalidRequest,
+                    "--output must differ from --bind; use --in-place to replace the bound path",
+                    Some(operation),
+                    Some("--output".to_string()),
+                ));
+            }
+            if target.exists() && !force {
+                return Err(CanonicalErrorEnvelope::new(
+                    CanonicalErrorCode::InvalidRequest,
+                    format!(
+                        "output path '{}' already exists; pass --force to replace it",
+                        target.display()
+                    ),
+                    Some(operation),
+                    Some("--output".to_string()),
+                ));
+            }
+        }
+        let parent = target.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let temp = tempfile::Builder::new()
+            .prefix(".asp-op-export-")
+            .suffix(".xlsx")
+            .tempfile_in(parent)
+            .and_then(|file| {
+                std::fs::copy(&source, file.path())?;
+                Ok(file)
+            })
+            .map_err(|error| {
+                CanonicalErrorEnvelope::new(
+                    CanonicalErrorCode::OperationFailed,
+                    format!("failed to prepare atomic export: {error}"),
+                    Some(operation),
+                    Some("adapter_export".to_string()),
+                )
+            })?;
+        let (_handle, temp_path) = temp.keep().map_err(|error| {
+            CanonicalErrorEnvelope::new(
+                CanonicalErrorCode::OperationFailed,
+                format!("failed to retain atomic export: {error}"),
+                Some(operation),
+                Some("adapter_export".to_string()),
+            )
+        })?;
+        if let Err(error) = std::fs::rename(&temp_path, &target) {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(CanonicalErrorEnvelope::new(
+                CanonicalErrorCode::OperationFailed,
+                format!(
+                    "failed to atomically export '{}': {error}",
+                    target.display()
+                ),
+                Some(operation),
+                Some("adapter_export".to_string()),
+            ));
+        }
+    }
+    Ok(response)
 }
 
 pub async fn run() -> Result<()> {
     let argv = normalize_legacy_global_format_argv(std::env::args_os().collect());
     let (argv, warnings) = normalize_legacy_command_argv(argv);
+    let argv = normalize_canonical_discoverability_argv(argv);
     maybe_emit_forwarded_leaf_help(&argv);
 
     let surface = match SurfaceCli::try_parse_from(argv) {
@@ -4100,72 +4286,97 @@ pub async fn run() -> Result<()> {
         Err(error) => error.exit(),
     };
 
-    let result =
-        match resolve_surface_command(surface.command) {
-            Ok(ResolvedSurfaceCommand::Command(command)) => {
-                run_with_options(
-                    command,
-                    surface.output_format,
-                    surface.shape,
-                    surface.compact,
-                    surface.quiet,
-                )
-                .await
+    let result = match resolve_surface_command(surface.command) {
+        Ok(ResolvedSurfaceCommand::Command(command)) => {
+            run_with_options(
+                command,
+                surface.output_format,
+                surface.shape,
+                surface.compact,
+                surface.quiet,
+            )
+            .await
+        }
+        Ok(ResolvedSurfaceCommand::Operations) => {
+            let payload = crate::operations::operations_discovery(
+                &crate::operations::RuntimeCapabilities::native(),
+            );
+            if let Err(error) = emit_exact_json(&payload, false) {
+                emit_error_and_exit(error.into());
             }
-            Ok(ResolvedSurfaceCommand::Operations) => {
-                let payload = crate::operations::operations_discovery(
-                    &crate::operations::RuntimeCapabilities::native(),
-                );
-                if let Err(error) = emit_exact_json(&payload, false) {
+            Ok(())
+        }
+        Ok(ResolvedSurfaceCommand::Operation {
+            operation,
+            bind,
+            json,
+            output,
+            in_place,
+            force,
+        }) => match run_machine_operation(&operation, bind, json, output, in_place, force).await {
+            Ok(response) => {
+                if let Err(error) = emit_exact_json(&response, false) {
                     emit_error_and_exit(error.into());
                 }
-                Ok(())
-            }
-            Ok(ResolvedSurfaceCommand::Operation {
-                operation,
-                bind,
-                json,
-            }) => match run_machine_operation(&operation, bind, json).await {
-                Ok(response) => {
-                    if let Err(error) = emit_exact_json(&response, false) {
-                        emit_error_and_exit(error.into());
-                    }
-                    Ok(())
+                // Automation policy: complete apply/preview/stage exits 0,
+                // failed or rolled-back work exits 1, and an exported
+                // non-atomic partial result exits 2.
+                match response.data["status"].as_str() {
+                    Some("failed" | "rolled_back") => std::process::exit(1),
+                    Some("partial") => std::process::exit(2),
+                    _ => Ok(()),
                 }
-                Err(error) => emit_canonical_error_and_exit(error),
-            },
-            Ok(ResolvedSurfaceCommand::Schema(command)) => {
-                let payload = match command {
-                    ResolvedDiscoverabilityCommand::Legacy(command) => run_schema_command(command)
-                        .unwrap_or_else(|error| emit_error_and_exit(error)),
-                    ResolvedDiscoverabilityCommand::Canonical(operation) => {
-                        crate::operations::operation_schema(&operation)
-                            .unwrap_or_else(|error| emit_canonical_error_and_exit(error))
-                    }
-                };
-                if let Err(error) = emit_exact_json(&payload, false) {
-                    emit_error_and_exit(error.into());
-                }
-                Ok(())
             }
-            Ok(ResolvedSurfaceCommand::Example(command)) => {
-                let payload = match command {
-                    ResolvedDiscoverabilityCommand::Legacy(command) => run_example_command(command)
-                        .unwrap_or_else(|error| emit_error_and_exit(error)),
-                    ResolvedDiscoverabilityCommand::Canonical(operation) => {
+            Err(error) => emit_canonical_error_and_exit(error),
+        },
+        Ok(ResolvedSurfaceCommand::Schema(command)) => {
+            let payload = match command {
+                ResolvedDiscoverabilityCommand::Legacy(command) => {
+                    run_schema_command(command).unwrap_or_else(|error| emit_error_and_exit(error))
+                }
+                ResolvedDiscoverabilityCommand::Canonical(operation) => {
+                    crate::operations::operation_schema(&operation)
+                        .unwrap_or_else(|error| emit_canonical_error_and_exit(error))
+                }
+            };
+            if let Err(error) = emit_exact_json(&payload, false) {
+                emit_error_and_exit(error.into());
+            }
+            Ok(())
+        }
+        Ok(ResolvedSurfaceCommand::Example(command)) => {
+            let payload = match command {
+                ResolvedDiscoverabilityCommand::Legacy(command) => {
+                    run_example_command(command).unwrap_or_else(|error| emit_error_and_exit(error))
+                }
+                ResolvedDiscoverabilityCommand::Canonical(operation) => {
+                    if operation == "write" {
+                        serde_json::json!({
+                            "resource_id": "fork:fork-example",
+                            "expected_revision": "sha256-revision",
+                            "mode": "preview",
+                            "atomic": true,
+                            "ops": [{
+                                "kind": "set_cells",
+                                "sheet_name": "Sheet1",
+                                "cells": {"A1": {"kind": "value", "value": 42}}
+                            }]
+                        })
+                    } else {
                         emit_error_and_exit(anyhow::anyhow!(
                             "canonical operation '{}' has schemas but no example fixture",
                             operation
                         ))
                     }
-                };
-                if let Err(error) = emit_exact_json(&payload, false) {
-                    emit_error_and_exit(error.into());
                 }
-                Ok(())
+            };
+            if let Err(error) = emit_exact_json(&payload, false) {
+                emit_error_and_exit(error.into());
             }
-            Err(error) => emit_rewritten_clap_error_and_exit(error),
-        };
+            Ok(())
+        }
+        Err(error) => emit_rewritten_clap_error_and_exit(error),
+    };
 
     if result.is_ok() && !surface.quiet {
         for warning in &warnings {

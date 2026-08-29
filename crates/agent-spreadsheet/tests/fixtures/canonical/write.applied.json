@@ -1,0 +1,31 @@
+{
+  "schema_version": "1",
+  "operation": "write",
+  "resource_id": "fork:fork-golden",
+  "revision_id": "rev-after",
+  "data": {
+    "atomic": true,
+    "revision_before": "rev-before",
+    "diff": {
+      "change_count": 0,
+      "changes": []
+    },
+    "impact": {
+      "op_kinds": [
+        "set_cells"
+      ],
+      "risk": "moderate"
+    },
+    "status": "applied",
+    "mode": "apply",
+    "revision_after": "rev-after",
+    "ops_applied": 1,
+    "results": [
+      {
+        "index": 0,
+        "kind": "set_cells",
+        "status": "applied"
+      }
+    ]
+  }
+}

@@ -1,6 +1,6 @@
 # Surface Capability Matrix (CLI / MCP / WASM / SDK)
 
-Status: active migration baseline (canonical registry Wave 3A additive read surface)
+Status: active migration baseline (canonical registry Wave 3B additive write surface)
 Owner: Tranche 35 (tickets/35-js-surface-migration)
 
 This matrix is the planning baseline for cross-surface migration.
@@ -67,9 +67,9 @@ Boundary contract: `docs/architecture/surface-boundary-rules.md`
 | `sheetport run` | `execute_manifest` | ALL | `core.sheetport.execute_manifest` | later | Shared core semantics expected | `crates/agent-spreadsheet/src/cli/commands/read.rs::sheetport_run` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
 | `workbook recalculate` | `recalculate` | SHARED_PARTIAL | `core.recalc.recalculate` | later | Backend constraints in WASM | `crates/agent-spreadsheet/src/cli/commands/recalc.rs::recalculate` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
 | `verify proof` | `verify_workbook` | SHARED_PARTIAL | `core.verify.compare_workbooks` | later | Shared proof contract across CLI + MCP; current inputs are file paths in CLI vs workbook/fork ids in MCP; SDK exposes MCP helpers while WASM parity is later | `crates/agent-spreadsheet/src/cli/commands/verify.rs::verify` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
-| `write append` | _(none today)_ | CLI_ONLY | `adapter-cli.append_region` | n/a | Region/table append helper that resolves a detected region or sheet table, accepts JSON rows or CSV rows, supports explicit footer policies, and compiles to `insert_rows` + `write_matrix` | `crates/agent-spreadsheet/src/cli/commands/write.rs::append_region` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
-| `write clone-template-row` | _(none today)_ | CLI_ONLY | `adapter-cli.clone_template_row` | n/a | Preview-first single-row clone helper that compiles to `clone_row`, returns formula/patch targets, and warns on merge-boundary conflicts | `crates/agent-spreadsheet/src/cli/commands/write.rs::clone_template_row` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
-| `write clone-row-band` | _(none today)_ | CLI_ONLY | `adapter-cli.clone_row_band` | n/a | Preview-first contiguous row-band clone helper that inserts repeated blocks, reports formula/patch targets, and warns on merge-boundary conflicts | `crates/agent-spreadsheet/src/cli/commands/write.rs::clone_row_band` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
+| `write append` | `write` (`append_rows`) | ALL | `core.write_planner.apply_append_rows` | later | Core owns region/footer append policy and canonical enums; CLI parses file/row inputs and projects plans | `crates/agent-spreadsheet/src/core/write_planner.rs` | `crates/agent-spreadsheet/tests/canonical_write.rs` |
+| `write clone-template-row` | `write` (`clone_row`) | ALL | `core.write_planner.apply_clone_row` | later | Core owns row clone semantics and canonical patch/merge policies; CLI remains an adapter | `crates/agent-spreadsheet/src/core/write_planner.rs` | `crates/agent-spreadsheet/tests/canonical_write.rs` |
+| `write clone-row-band` | `write` (`clone_row_band`) | ALL | `core.write_planner.apply_clone_row_band` | later | Core owns contiguous band insertion/copy semantics and canonical enums; CLI remains an adapter | `crates/agent-spreadsheet/src/core/write_planner.rs` | `crates/agent-spreadsheet/tests/canonical_write.rs` |
 | `verify diff` | `get_changeset` (partial overlap) | SHARED_PARTIAL | `core.diff.diff_workbooks` | later | CLI is file-vs-file; MCP is fork-oriented; CLI now projects grouped summary buckets and can suppress `recalc_result` noise | `crates/agent-spreadsheet/src/cli/commands/diff.rs::diff` | `crates/agent-spreadsheet/tests/diff_engine.rs` |
 | `analyze ref-impact` | _(none today)_ | CLI_ONLY | `core.analysis.structure_impact` | n/a | Read-only structural impact preflight; uses same engine as `structure-batch --dry-run --impact-report` | `crates/agent-spreadsheet/src/cli/commands/write.rs::check_ref_impact` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
 | `operations` | _(registry discovery)_ | ALL | `operations.operation_registry` | mvp | Lists canonical operation policy/capability metadata; additive discovery/read/search/analysis set is registry-derived | `crates/agent-spreadsheet/src/operations.rs::operation_registry` | `crates/agent-spreadsheet/tests/canonical_operations.rs` |
@@ -145,7 +145,7 @@ Boundary contract: `docs/architecture/surface-boundary-rules.md`
 
 ## C) Canonical registry migration status
 
-Wave 3A registers the complete canonical discovery/read/search/analysis surface without changing the default MCP router. `asp operations`, `asp schema <operation>`, and `asp op <operation>` derive lookup and schemas from the registry.
+Wave 3A registers the complete canonical discovery/read/search/analysis surface. Wave 3B additively registers canonical `write` without changing the default MCP router. `asp operations`, `asp schema <operation>`, and `asp op <operation>` derive lookup and schemas from the registry.
 
 | Canonical operation | Existing compatibility projection | Dispatcher implementation | Capability | Risk |
 |---|---|---|---|---|
@@ -163,10 +163,11 @@ Wave 3A registers the complete canonical discovery/read/search/analysis surface 
 | `formula_trace` | legacy structured-cursor wrapper stays separate; canonical uses a revision/request-bound opaque cursor | shared formula analysis |
 | `formula_map` | legacy MCP wrapper projects canonical `data` | shared formula analysis with opaque canonical continuation | `workbook_read` | low |
 | `profile_table`, `sheet_statistics` | legacy MCP wrappers project canonical `data` | shared bounded analysis | `workbook_read` | low |
+| `write` | `edit_batch`, `mutate_batch`, and family tools remain compatibility surfaces | one ordered dispatcher over the existing family implementations; pure preview, CAS, atomic apply, explicit partial apply, and one-bundle stage | `workbook_write` | destructive ceiling; request-aware moderate/high/destructive |
 
 Canonical responses use the versioned operation envelope and state reads carry `revision_id`. Value-bearing reads expose calculation state. Merged responses echo branch discriminants. Checked-in full JSON fixtures cover both branches of `describe_workbook`, `read_cells`, `analyze_styles`, and `search_formulas`, plus every unbranched operation.
 
-Compatibility projections are only routed through the dispatcher when the legacy response can be reconstructed without loss. `range_values`/`sheet_page`, workbook summaries, layout/grid, style summaries, and formula-search variants remain separate compatibility implementations rather than claiming false response parity. No default MCP router switch is authorized in Wave 3A.
+Compatibility projections are only routed through the dispatcher when the legacy response can be reconstructed without loss. `range_values`/`sheet_page`, workbook summaries, layout/grid, style summaries, and formula-search variants remain separate compatibility implementations rather than claiming false response parity. Existing write tools retain their response/error projections while sharing the same low-level family implementations as canonical `write`. No default MCP router switch is authorized in Wave 3A or Wave 3B.
 
 ---
 
