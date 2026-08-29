@@ -99,6 +99,20 @@ fn golden(name: &str, response: &Value) -> Value {
     if let Some(revision_id) = revision_id {
         text = text.replace("{{REVISION_ID}}", revision_id);
     }
+    let short_id = response
+        .pointer("/data/metadata/short_id")
+        .or_else(|| response.pointer("/data/workbooks/0/metadata/short_id"))
+        .and_then(Value::as_str);
+    if let Some(short_id) = short_id {
+        text = text.replace("{{SHORT_ID}}", short_id);
+    }
+    let last_modified = response
+        .pointer("/data/metadata/last_modified")
+        .or_else(|| response.pointer("/data/workbooks/0/metadata/last_modified"))
+        .and_then(Value::as_str);
+    if let Some(last_modified) = last_modified {
+        text = text.replace("{{LAST_MODIFIED}}", last_modified);
+    }
     text = text.replace(
         "{{FIXTURE_PATH}}",
         fixture().to_str().expect("UTF-8 fixture"),

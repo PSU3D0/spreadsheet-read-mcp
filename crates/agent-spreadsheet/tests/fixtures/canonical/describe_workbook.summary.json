@@ -14,10 +14,10 @@
     "metadata": {
       "bytes": 2070,
       "defined_name_count": 0,
-      "last_modified": "2026-08-29T17:41:58Z",
+      "last_modified": "{{LAST_MODIFIED}}",
       "macros_present": false,
       "sheet_count": 1,
-      "short_id": "usmfrzmcka",
+      "short_id": "{{SHORT_ID}}",
       "slug": "baseline",
       "table_count": 0
     },

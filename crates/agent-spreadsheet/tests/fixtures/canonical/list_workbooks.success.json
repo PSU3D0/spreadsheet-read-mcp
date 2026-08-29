@@ -14,9 +14,9 @@
         },
         "metadata": {
           "bytes": 2070,
-          "last_modified": "2026-08-29T17:41:58Z",
+          "last_modified": "{{LAST_MODIFIED}}",
           "revision_id": "{{REVISION_ID}}",
-          "short_id": "usmfrzmcka",
+          "short_id": "{{SHORT_ID}}",
           "slug": "baseline"
         },
         "paths": {
