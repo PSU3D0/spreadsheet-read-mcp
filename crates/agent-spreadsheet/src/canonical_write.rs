@@ -2012,6 +2012,12 @@ pub async fn execute_write(
             let revision_after = hash_file_sha256_hex(&path)?;
             fork.canonical_file_revision = revision_after.clone();
             fork.canonical_revision = revision_after.clone();
+            fork.push_canonical_operation(
+                "write",
+                request.ops.iter().map(|op| op.kind().to_string()).collect(),
+                revision_before.clone(),
+                revision_after.clone(),
+            );
             return Ok(WriteResponseData::Applied {
                 mode: request.mode,
                 atomic: true,
@@ -2086,6 +2092,17 @@ pub async fn execute_write(
         } else {
             fork.canonical_revision.clone()
         };
+        if applied > 0 {
+            fork.push_canonical_operation(
+                "write",
+                request.ops[..applied]
+                    .iter()
+                    .map(|op| op.kind().to_string())
+                    .collect(),
+                revision_before.clone(),
+                revision_after.clone(),
+            );
+        }
         if failed {
             Ok(WriteResponseData::Partial {
                 mode: request.mode,

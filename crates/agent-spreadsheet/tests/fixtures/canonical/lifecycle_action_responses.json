@@ -1,0 +1,17 @@
+{
+  "get_changes": [
+    {"schema_version":"1","operation":"get_changes","resource_id":"fork:fork-book","revision_id":"revision","data":{"kind":"operations","revision_id":"revision","operations":[],"total":0,"next_offset":null,"warnings":[]}},
+    {"schema_version":"1","operation":"get_changes","resource_id":"fork:fork-book","revision_id":"revision","data":{"kind":"net_diff","revision_id":"revision","baseline":"fork_base","baseline_revision_id":"base-revision","changes":[],"total":0,"next_offset":null,"warnings":[]}}
+  ],
+  "checkpoint": [
+    {"schema_version":"1","operation":"checkpoint","resource_id":"fork:fork-book","revision_id":"revision-2","data":{"action":"create","revision_before":"revision-1","revision_after":"revision-2","checkpoint":{"checkpoint_id":"cp-1","created_at":"2026-01-01T00:00:00Z","label":"safe","snapshot_revision":"revision-1","recalc_needed":true},"total_checkpoints":1,"warnings":[]}},
+    {"schema_version":"1","operation":"checkpoint","resource_id":"fork:fork-book","revision_id":"revision-1","data":{"action":"list","revision_id":"revision-1","checkpoints":[],"warnings":[]}},
+    {"schema_version":"1","operation":"checkpoint","resource_id":"fork:fork-book","revision_id":"revision-2","data":{"action":"restore","revision_before":"revision-1","revision_after":"revision-2","restored_checkpoint":{"checkpoint_id":"cp-1","created_at":"2026-01-01T00:00:00Z","label":null,"snapshot_revision":"revision-0","recalc_needed":false},"operations_removed":2,"staged_changes_discarded":1,"retained_checkpoint_ids":["cp-1"],"invalidated_checkpoint_ids":["cp-2"],"recalc_needed":false,"warnings":[]}},
+    {"schema_version":"1","operation":"checkpoint","resource_id":"fork:fork-book","revision_id":"revision-2","data":{"action":"delete","revision_before":"revision-1","revision_after":"revision-2","checkpoint_id":"cp-1","deleted":true,"warnings":[]}}
+  ],
+  "staged_change": [
+    {"schema_version":"1","operation":"staged_change","resource_id":"fork:fork-book","revision_id":"revision-1","data":{"action":"list","revision_id":"revision-1","staged_changes":[{"change_id":"chg-1","created_at":"2026-01-01T00:00:00Z","label":null,"base_revision":"revision-0","summary":{"op_kinds":["set_cells"],"affected_sheets":[],"affected_bounds":[],"counts":{"ops_staged":1},"warnings":[]}}],"warnings":[]}},
+    {"schema_version":"1","operation":"staged_change","resource_id":"fork:fork-book","revision_id":"revision-2","data":{"action":"apply","revision_before":"revision-1","revision_after":"revision-2","change_id":"chg-1","ops_applied":1,"op_kinds":["set_cells"],"recalc_needed":true,"warnings":[]}},
+    {"schema_version":"1","operation":"staged_change","resource_id":"fork:fork-book","revision_id":"revision-2","data":{"action":"discard","revision_before":"revision-1","revision_after":"revision-2","change_id":"chg-1","discarded":true,"warnings":[]}}
+  ]
+}

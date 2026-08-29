@@ -69,6 +69,18 @@ pub struct Checkpoint {
     pub label: Option<String>,
     pub snapshot_path: PathBuf,
     pub recalc_needed: bool,
+    pub(crate) canonical_revision: String,
+    pub(crate) canonical_operation_len: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CanonicalOperationRecord {
+    pub sequence: u64,
+    pub timestamp: String,
+    pub kind: String,
+    pub op_kinds: Vec<String>,
+    pub revision_before: String,
+    pub revision_after: String,
 }
 
 #[derive(Debug)]
@@ -81,6 +93,7 @@ pub struct ForkContext {
     pub edits: Vec<EditOp>,
     pub staged_changes: Vec<StagedChange>,
     pub checkpoints: Vec<Checkpoint>,
+    pub(crate) canonical_operations: Vec<CanonicalOperationRecord>,
     pub recalc_needed: bool,
     pub(crate) canonical_revision: String,
     pub(crate) canonical_file_revision: String,
@@ -104,6 +117,7 @@ impl ForkContext {
             edits: Vec::new(),
             staged_changes: Vec::new(),
             checkpoints: Vec::new(),
+            canonical_operations: Vec::new(),
             recalc_needed: false,
             canonical_file_revision: canonical_revision.clone(),
             canonical_revision,
@@ -128,6 +142,26 @@ impl ForkContext {
         enforce_staged_limits(self);
     }
 
+    pub(crate) fn push_canonical_operation(
+        &mut self,
+        kind: impl Into<String>,
+        op_kinds: Vec<String>,
+        revision_before: String,
+        revision_after: String,
+    ) {
+        self.canonical_operations.push(CanonicalOperationRecord {
+            sequence: self
+                .canonical_operations
+                .last()
+                .map_or(1, |operation| operation.sequence + 1),
+            timestamp: Utc::now().to_rfc3339(),
+            kind: kind.into(),
+            op_kinds,
+            revision_before,
+            revision_after,
+        });
+    }
+
     pub fn validate_base_unchanged(&self) -> Result<()> {
         let metadata = fs::metadata(&self.base_path)?;
         let current_modified = metadata.modified()?;
@@ -144,7 +178,7 @@ impl ForkContext {
         Ok(())
     }
 
-    fn checkpoint_dir(&self) -> PathBuf {
+    pub(crate) fn checkpoint_dir(&self) -> PathBuf {
         PathBuf::from(CHECKPOINT_DIR).join(&self.fork_id)
     }
 
@@ -323,6 +357,28 @@ impl ForkRegistry {
         Ok(())
     }
 
+    pub(crate) fn discard_fork_cas(
+        &self,
+        fork_id: &str,
+        expected_revision: &str,
+    ) -> Result<String> {
+        let mut forks = self.forks.lock();
+        let ctx = forks
+            .get(fork_id)
+            .ok_or_else(|| anyhow!("fork not found: {}", fork_id))?;
+        if ctx.canonical_revision != expected_revision {
+            return Err(anyhow!(
+                "revision conflict: expected {}, current {}",
+                expected_revision,
+                ctx.canonical_revision
+            ));
+        }
+        let revision_before = ctx.canonical_revision.clone();
+        let ctx = forks.remove(fork_id).expect("checked fork exists");
+        ctx.cleanup_files();
+        Ok(revision_before)
+    }
+
     pub fn save_fork(
         &self,
         fork_id: &str,
@@ -400,10 +456,8 @@ impl ForkRegistry {
         let snapshot_path = dir.join(format!("{}.xlsx", checkpoint_id));
         fs::copy(&work_path, &snapshot_path)?;
 
-        let recalc_needed = self
-            .get_fork(fork_id)
-            .map(|ctx| ctx.recalc_needed)
-            .unwrap_or(false);
+        let fork = self.get_fork(fork_id)?;
+        let recalc_needed = fork.recalc_needed;
 
         let checkpoint = Checkpoint {
             checkpoint_id: checkpoint_id.clone(),
@@ -411,6 +465,8 @@ impl ForkRegistry {
             label,
             snapshot_path,
             recalc_needed,
+            canonical_revision: fork.canonical_revision.clone(),
+            canonical_operation_len: fork.canonical_operations.len(),
         };
 
         self.with_fork_mut(fork_id, |ctx| {
@@ -527,7 +583,7 @@ impl ForkRegistry {
     }
 }
 
-fn remove_staged_snapshot(staged: &StagedChange) {
+pub(crate) fn remove_staged_snapshot(staged: &StagedChange) {
     if let Some(path) = staged.fork_path_snapshot.as_ref() {
         let _ = fs::remove_file(path);
     }
@@ -540,7 +596,7 @@ fn enforce_staged_limits(ctx: &mut ForkContext) {
     }
 }
 
-fn enforce_checkpoint_limits(ctx: &mut ForkContext) -> Result<()> {
+pub(crate) fn enforce_checkpoint_limits(ctx: &mut ForkContext) -> Result<()> {
     while ctx.checkpoints.len() > DEFAULT_MAX_CHECKPOINTS_PER_FORK {
         let removed = ctx.checkpoints.remove(0);
         let _ = fs::remove_file(&removed.snapshot_path);
@@ -574,6 +630,7 @@ impl Clone for ForkContext {
             edits: self.edits.clone(),
             staged_changes: self.staged_changes.clone(),
             checkpoints: self.checkpoints.clone(),
+            canonical_operations: self.canonical_operations.clone(),
             recalc_needed: self.recalc_needed,
             canonical_revision: self.canonical_revision.clone(),
             canonical_file_revision: self.canonical_file_revision.clone(),

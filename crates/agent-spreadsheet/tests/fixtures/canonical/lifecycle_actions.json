@@ -1,0 +1,36 @@
+{
+  "create_fork": [
+    {"resource_id":"wb:book","expected_revision":"revision"}
+  ],
+  "list_forks": [
+    {}
+  ],
+  "recalculate": [
+    {"resource_id":"fork:fork-book","expected_revision":"revision","timeout_ms":30000},
+    {"resource_id":"fork:fork-book","expected_revision":"revision","timeout_ms":0,"backend":"formualizer"}
+  ],
+  "verify_workbook": [
+    {"resource_id":"fork:fork-current","baseline_resource_id":"wb:baseline","targets":["Sheet1!A1"],"include_named_range_deltas":true}
+  ],
+  "export_fork": [
+    {"resource_id":"fork:fork-book","expected_revision":"revision","destination":{"kind":"workspace","name":"result.xlsx"}}
+  ],
+  "discard_fork": [
+    {"resource_id":"fork:fork-book","expected_revision":"revision"}
+  ],
+  "get_changes": [
+    {"resource_id":"fork:fork-book","view":{"kind":"operations","offset":0,"limit":200}},
+    {"resource_id":"fork:fork-book","view":{"kind":"net_diff","sheet_name":"Sheet1","offset":0,"limit":200}}
+  ],
+  "checkpoint": [
+    {"action":"create","resource_id":"fork:fork-book","expected_revision":"revision","label":"safe"},
+    {"action":"list","resource_id":"fork:fork-book"},
+    {"action":"restore","resource_id":"fork:fork-book","expected_revision":"revision","checkpoint_id":"cp-123"},
+    {"action":"delete","resource_id":"fork:fork-book","expected_revision":"revision","checkpoint_id":"cp-123"}
+  ],
+  "staged_change": [
+    {"action":"list","resource_id":"fork:fork-book"},
+    {"action":"apply","resource_id":"fork:fork-book","expected_revision":"revision","change_id":"chg-123"},
+    {"action":"discard","resource_id":"fork:fork-book","expected_revision":"revision","change_id":"chg-123"}
+  ]
+}
