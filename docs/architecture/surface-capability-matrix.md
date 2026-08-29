@@ -1,6 +1,6 @@
 # Surface Capability Matrix (CLI / MCP / WASM / SDK)
 
-Status: active migration baseline (canonical registry Wave 3A additive read surface)
+Status: active migration baseline (canonical registry Wave 3B additive write surface)
 Owner: Tranche 35 (tickets/35-js-surface-migration)
 
 This matrix is the planning baseline for cross-surface migration.
@@ -145,7 +145,7 @@ Boundary contract: `docs/architecture/surface-boundary-rules.md`
 
 ## C) Canonical registry migration status
 
-Wave 3A registers the complete canonical discovery/read/search/analysis surface without changing the default MCP router. `asp operations`, `asp schema <operation>`, and `asp op <operation>` derive lookup and schemas from the registry.
+Wave 3A registers the complete canonical discovery/read/search/analysis surface. Wave 3B additively registers canonical `write` without changing the default MCP router. `asp operations`, `asp schema <operation>`, and `asp op <operation>` derive lookup and schemas from the registry.
 
 | Canonical operation | Existing compatibility projection | Dispatcher implementation | Capability | Risk |
 |---|---|---|---|---|
@@ -163,10 +163,11 @@ Wave 3A registers the complete canonical discovery/read/search/analysis surface 
 | `formula_trace` | legacy structured-cursor wrapper stays separate; canonical uses a revision/request-bound opaque cursor | shared formula analysis |
 | `formula_map` | legacy MCP wrapper projects canonical `data` | shared formula analysis with opaque canonical continuation | `workbook_read` | low |
 | `profile_table`, `sheet_statistics` | legacy MCP wrappers project canonical `data` | shared bounded analysis | `workbook_read` | low |
+| `write` | `edit_batch`, `mutate_batch`, and family tools remain compatibility surfaces | one ordered dispatcher over the existing family implementations; pure preview, CAS, atomic apply, explicit partial apply, and one-bundle stage | `workbook_write` | destructive ceiling; request-aware moderate/high/destructive |
 
 Canonical responses use the versioned operation envelope and state reads carry `revision_id`. Value-bearing reads expose calculation state. Merged responses echo branch discriminants. Checked-in full JSON fixtures cover both branches of `describe_workbook`, `read_cells`, `analyze_styles`, and `search_formulas`, plus every unbranched operation.
 
-Compatibility projections are only routed through the dispatcher when the legacy response can be reconstructed without loss. `range_values`/`sheet_page`, workbook summaries, layout/grid, style summaries, and formula-search variants remain separate compatibility implementations rather than claiming false response parity. No default MCP router switch is authorized in Wave 3A.
+Compatibility projections are only routed through the dispatcher when the legacy response can be reconstructed without loss. `range_values`/`sheet_page`, workbook summaries, layout/grid, style summaries, and formula-search variants remain separate compatibility implementations rather than claiming false response parity. Existing write tools retain their response/error projections while sharing the same low-level family implementations as canonical `write`. No default MCP router switch is authorized in Wave 3A or Wave 3B.
 
 ---
 

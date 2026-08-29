@@ -161,15 +161,17 @@ This preserves the capability without assigning it a separate tool identity.
 
 ```json
 {
-  "fork_id": "...",
+  "resource_id": "fork:fork-...",
+  "expected_revision": "...",
   "mode": "preview",
+  "atomic": true,
   "ops": [
     {
       "kind": "set_cells",
       "sheet_name": "Revenue",
-      "values": {
-        "B4": 1500,
-        "C4": "=B4*1.2"
+      "cells": {
+        "B4": { "kind": "value", "value": 1500 },
+        "C4": { "kind": "formula", "formula": "=B4*1.2" }
       }
     },
     {

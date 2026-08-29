@@ -77,9 +77,9 @@ Primary adapter boundary:
 
 ## Additive registry status
 
-The additive dispatcher registers the complete discovery/read/search/analysis set in `crates/agent-spreadsheet/src/operations.rs`. Existing CLI/MCP names remain registered unchanged. Compatibility wrappers project dispatcher data only where reconstruction is lossless; incompatible legacy response families remain separate and documented rather than claiming parity. `asp op` owns path binding and never forwards `--bind` into a resource-bound canonical request. `list_workbooks` is the capability-gated exception: it accepts no `resource_id` and returns discovered typed resource ids inside `data.workbooks`.
+The additive dispatcher registers the complete discovery/read/search/analysis set plus canonical `write` in `crates/agent-spreadsheet/src/operations.rs`. Existing CLI/MCP names remain registered unchanged. Compatibility wrappers project dispatcher data only where reconstruction is lossless; incompatible legacy response families remain separate and documented rather than claiming parity. `asp op` owns path binding and never forwards `--bind` into a resource-bound canonical request. Read bindings use an ephemeral workbook resource; write bindings use an ephemeral fork and require explicit atomic `--output` or `--in-place` export for apply. `list_workbooks` is the capability-gated exception: it accepts no `resource_id` and returns discovered typed resource ids inside `data.workbooks`.
 
-No default MCP router change is authorized by this tranche. Every registered read has a closed request schema, versioned output schema, policy metadata, structured errors, and dispatcher/CLI golden coverage. The live MCP projection suite locks legacy data-only responses and errors while the router remains in compatibility mode.
+No default MCP router change is authorized by this tranche. Every registered operation has a closed request schema, versioned output schema, policy metadata, and structured errors. Canonical write provides pure preview, one-bundle stage, revision CAS, atomic rollback by default, and structured non-atomic partial results. The live MCP projection suite locks legacy data-only responses and errors while the router remains in compatibility mode.
 
 ## Enforcement hooks
 
