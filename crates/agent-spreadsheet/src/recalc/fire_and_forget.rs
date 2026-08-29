@@ -1,5 +1,7 @@
 use super::RecalcConfig;
 use super::executor::{RecalcExecutor, RecalcResult};
+use crate::utils::hash_file_sha256_hex;
+use crate::workbook::is_spreadsheet_error;
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
@@ -133,12 +135,36 @@ impl RecalcExecutor for FireAndForgetExecutor {
             }
         }
 
+        let book = umya_spreadsheet::reader::xlsx::read(workbook_path)?;
+        let mut formula_cells = 0u64;
+        let mut error_formula_cells = 0u64;
+        for sheet in book.get_sheet_collection() {
+            for cell in sheet.get_cell_collection() {
+                if cell.is_formula() {
+                    formula_cells += 1;
+                    if is_spreadsheet_error(&cell.get_value()) {
+                        error_formula_cells += 1;
+                    }
+                }
+            }
+        }
+
         Ok(RecalcResult {
             duration_ms: start.elapsed().as_millis() as u64,
             was_warm: false,
             backend_name: "libreoffice",
             cells_evaluated: None,
             eval_errors: None,
+            evaluation_coverage: crate::model::EvaluationCoverage {
+                formula_cells,
+                evaluated_formula_cells: formula_cells,
+                unsupported_formula_cells: 0,
+                error_formula_cells,
+                source: "trusted_cache".to_string(),
+                freshness: "current_revision".to_string(),
+                revision_id: hash_file_sha256_hex(workbook_path)?,
+            },
+            incomplete: false,
         })
     }
 

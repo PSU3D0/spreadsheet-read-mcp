@@ -470,6 +470,7 @@ impl WorkbookSession {
 
     /// Read a rectangular table snapshot from a sheet.
     pub fn read_table(&self, params: SessionReadTableParams) -> Result<ReadTableResponse> {
+        let calculation = self.as_workbook_context()?.calculation_metadata();
         let sheet_name = if let Some(name) = params.sheet_name.clone() {
             name
         } else {
@@ -583,6 +584,7 @@ impl WorkbookSession {
 
         Ok(ReadTableResponse {
             workbook_id: WorkbookId("session".to_string()),
+            calculation,
             sheet_name,
             table_name: None,
             warnings: Vec::<Warning>::new(),

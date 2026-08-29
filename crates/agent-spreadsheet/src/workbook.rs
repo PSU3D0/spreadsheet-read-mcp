@@ -235,6 +235,61 @@ impl WorkbookContext {
             .collect()
     }
 
+    pub fn save_copy(&self, path: &Path) -> Result<()> {
+        let book = self.spreadsheet.read();
+        umya_spreadsheet::writer::xlsx::write(&book, path)
+            .with_context(|| format!("failed to write workbook copy {:?}", path))
+    }
+
+    pub fn imported_evaluation_coverage(&self) -> crate::model::EvaluationCoverage {
+        let book = self.spreadsheet.read();
+        let mut formula_cells = 0u64;
+        let mut cached_formula_cells = 0u64;
+        let mut error_formula_cells = 0u64;
+
+        for sheet in book.get_sheet_collection() {
+            for cell in sheet.get_cell_collection() {
+                if !cell.is_formula() {
+                    continue;
+                }
+                formula_cells += 1;
+                let value = cell.get_value();
+                if !value.is_empty() {
+                    cached_formula_cells += 1;
+                }
+                if is_spreadsheet_error(&value) {
+                    error_formula_cells += 1;
+                }
+            }
+        }
+
+        crate::model::EvaluationCoverage {
+            formula_cells,
+            evaluated_formula_cells: cached_formula_cells,
+            unsupported_formula_cells: 0,
+            error_formula_cells,
+            source: if cached_formula_cells > 0 {
+                "trusted_cache".to_string()
+            } else {
+                "none".to_string()
+            },
+            freshness: if formula_cells == 0 {
+                "current_revision".to_string()
+            } else {
+                "unknown".to_string()
+            },
+            revision_id: self.revision_id.clone(),
+        }
+    }
+
+    pub fn calculation_metadata(&self) -> crate::model::CalculationMetadata {
+        let coverage = self.imported_evaluation_coverage();
+        crate::model::CalculationMetadata {
+            state: coverage.state(),
+            revision_id: self.revision_id.clone(),
+        }
+    }
+
     pub fn describe(&self) -> WorkbookDescription {
         let book = self.spreadsheet.read();
         let defined_names_count = book.get_defined_names().len();
@@ -492,7 +547,8 @@ impl WorkbookContext {
             formula_ratio: if entry.metrics.non_empty_cells == 0 {
                 0.0
             } else {
-                entry.metrics.formula_cells as f32 / entry.metrics.non_empty_cells as f32
+                (entry.metrics.formula_cells as f32 / entry.metrics.non_empty_cells as f32)
+                    .clamp(0.0, 1.0)
             },
             notable_features: entry.style_tags.clone(),
             notes: entry.region_notes(),
@@ -621,6 +677,9 @@ pub fn cell_to_value_with_date_system(
     if raw.is_empty() {
         return None;
     }
+    if cell.get_data_type() == "e" || is_spreadsheet_error(&raw) {
+        return Some(crate::model::CellValue::Error(raw.to_string()));
+    }
     if let Ok(number) = raw.parse::<f64>() {
         if is_date_formatted(cell) {
             return Some(crate::model::CellValue::Date(excel_serial_to_iso(
@@ -642,6 +701,28 @@ pub fn cell_to_value_with_date_system(
     Some(crate::model::CellValue::Text(raw.to_string()))
 }
 
+pub fn is_spreadsheet_error(raw: &str) -> bool {
+    matches!(
+        raw.trim().to_ascii_uppercase().as_str(),
+        "#DIV/0!"
+            | "#VALUE!"
+            | "#NAME?"
+            | "#REF!"
+            | "#N/A"
+            | "#NULL!"
+            | "#NUM!"
+            | "#SPILL!"
+            | "#CALC!"
+            | "#CIRC!"
+            | "#BUSY!"
+            | "#FIELD!"
+            | "#UNKNOWN!"
+            | "#CONNECT!"
+            | "#GETTING_DATA"
+            | "#DATA!"
+    )
+}
+
 pub fn compute_sheet_metrics(sheet: &Worksheet) -> (SheetMetrics, Vec<String>) {
     use std::collections::HashMap as StdHashMap;
     let mut non_empty = 0u32;
@@ -652,12 +733,13 @@ pub fn compute_sheet_metrics(sheet: &Worksheet) -> (SheetMetrics, Vec<String>) {
 
     for cell in sheet.get_cell_collection() {
         let value = cell.get_value();
-        if !value.is_empty() {
+        let is_formula = cell.is_formula();
+        if is_formula || !value.is_empty() {
             non_empty += 1;
         }
-        if cell.is_formula() {
+        if is_formula {
             formulas += 1;
-            if !cell.get_value().is_empty() {
+            if !value.is_empty() {
                 cached += 1;
             }
         }

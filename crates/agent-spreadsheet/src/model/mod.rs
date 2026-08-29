@@ -22,6 +22,63 @@ pub struct Warning {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EvaluationState {
+    Clean,
+    ErrorsFound,
+    Partial,
+    NotEvaluated,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EvaluationCoverage {
+    pub formula_cells: u64,
+    pub evaluated_formula_cells: u64,
+    pub unsupported_formula_cells: u64,
+    pub error_formula_cells: u64,
+    pub source: String,
+    pub freshness: String,
+    pub revision_id: String,
+}
+
+impl EvaluationCoverage {
+    pub fn state(&self) -> EvaluationState {
+        if self.error_formula_cells > 0 {
+            EvaluationState::ErrorsFound
+        } else if self.formula_cells == 0 {
+            EvaluationState::Clean
+        } else if self.freshness != "current_revision" {
+            if self.evaluated_formula_cells > 0 && self.evaluated_formula_cells < self.formula_cells
+            {
+                EvaluationState::Partial
+            } else {
+                EvaluationState::NotEvaluated
+            }
+        } else if self.evaluated_formula_cells == 0 {
+            EvaluationState::NotEvaluated
+        } else if self.evaluated_formula_cells < self.formula_cells
+            || self.unsupported_formula_cells > 0
+        {
+            EvaluationState::Partial
+        } else {
+            EvaluationState::Clean
+        }
+    }
+
+    pub fn is_complete_and_fresh(&self) -> bool {
+        self.freshness == "current_revision"
+            && self.evaluated_formula_cells == self.formula_cells
+            && self.unsupported_formula_cells == 0
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CalculationMetadata {
+    pub state: EvaluationState,
+    pub revision_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkbookDescriptor {
     pub workbook_id: WorkbookId,
@@ -920,6 +977,7 @@ pub type TableRow = BTreeMap<String, Option<CellValue>>;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReadTableResponse {
     pub workbook_id: WorkbookId,
+    pub calculation: CalculationMetadata,
     pub sheet_name: String,
     pub table_name: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -976,6 +1034,7 @@ pub struct TableProfileResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RangeValuesResponse {
     pub workbook_id: WorkbookId,
+    pub calculation: CalculationMetadata,
     pub sheet_name: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<Warning>,
@@ -1056,6 +1115,7 @@ pub struct RangeValuesDenseFormula {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct InspectCellsResponse {
     pub workbook_id: WorkbookId,
+    pub calculation: CalculationMetadata,
     pub sheet_name: String,
     /// Legacy single-range echo. For multi-target requests this is a comma-joined list.
     pub range: String,

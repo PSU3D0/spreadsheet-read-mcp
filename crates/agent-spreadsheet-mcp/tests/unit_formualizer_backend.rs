@@ -249,6 +249,21 @@ async fn recalculate_timeout_can_cancel_long_eval() -> Result<()> {
     )
     .await;
 
-    assert!(result.is_err(), "expected timeout cancellation error");
+    let response = result?;
+    assert_eq!(
+        response.state,
+        agent_spreadsheet_mcp::model::EvaluationState::Partial
+    );
+    assert!(
+        response.evaluation_coverage.evaluated_formula_cells
+            < response.evaluation_coverage.formula_cells
+    );
+    assert!(
+        response
+            .eval_errors
+            .unwrap_or_default()
+            .iter()
+            .any(|error| error.contains("interrupted"))
+    );
     Ok(())
 }

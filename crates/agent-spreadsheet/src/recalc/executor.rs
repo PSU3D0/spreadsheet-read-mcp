@@ -19,4 +19,6 @@ pub struct RecalcResult {
     pub backend_name: &'static str,
     pub cells_evaluated: Option<u64>,
     pub eval_errors: Option<Vec<String>>,
+    pub evaluation_coverage: crate::model::EvaluationCoverage,
+    pub incomplete: bool,
 }

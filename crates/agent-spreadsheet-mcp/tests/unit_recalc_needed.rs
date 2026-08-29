@@ -33,6 +33,16 @@ impl RecalcBackend for TestRecalcBackend {
             backend_name: "test",
             cells_evaluated: None,
             eval_errors: None,
+            evaluation_coverage: agent_spreadsheet_mcp::model::EvaluationCoverage {
+                formula_cells: 0,
+                evaluated_formula_cells: 0,
+                unsupported_formula_cells: 0,
+                error_formula_cells: 0,
+                source: "none".to_string(),
+                freshness: "current_revision".to_string(),
+                revision_id: "test-revision".to_string(),
+            },
+            incomplete: false,
         })
     }
 

@@ -5458,6 +5458,8 @@ pub struct RecalculateResponse {
     pub fork_id: String,
     pub duration_ms: u64,
     pub backend: String,
+    pub state: crate::model::EvaluationState,
+    pub evaluation_coverage: crate::model::EvaluationCoverage,
     /// "completed" or "completed_with_errors" — lets a skimming agent detect
     /// partial failure without inspecting eval_errors.
     pub status: String,
@@ -5509,25 +5511,29 @@ pub async fn recalculate_with_backend(
     let result =
         crate::core::recalc::execute_with_backend(&fork_ctx.work_path, timeout_ms, backend).await?;
 
+    let evaluation_complete = result.evaluation_coverage.is_complete_and_fresh();
     registry.with_fork_mut(&params.fork_id, |ctx| {
-        ctx.recalc_needed = false;
+        ctx.recalc_needed = !evaluation_complete;
         Ok(())
     })?;
 
     let fork_workbook_id = WorkbookId(params.fork_id.clone());
     let _ = state.close_workbook(&fork_workbook_id);
 
-    let status = if result.eval_errors.is_some() {
-        "completed_with_errors"
-    } else {
+    let status = if result.state == crate::model::EvaluationState::Clean {
         "completed"
+    } else {
+        "completed_with_errors"
     };
+    let error_count = result.evaluation_coverage.error_formula_cells as usize;
     Ok(RecalculateResponse {
         fork_id: params.fork_id,
         duration_ms: result.duration_ms,
         backend: result.backend,
+        state: result.state,
+        evaluation_coverage: result.evaluation_coverage,
         status: status.to_string(),
-        error_count: result.eval_errors.as_ref().map(|errors| errors.len()),
+        error_count: (error_count > 0).then_some(error_count),
         cells_evaluated: result.cells_evaluated,
         eval_errors: result.eval_errors,
     })
