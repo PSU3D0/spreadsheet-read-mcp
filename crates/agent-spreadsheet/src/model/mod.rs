@@ -163,11 +163,11 @@ pub struct WorkbookSummaryResponse {
     pub total_formulas: u64,
     pub breakdown: WorkbookBreakdown,
     pub region_counts: RegionCountSummary,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub key_named_ranges: Vec<NamedRangeDescriptor>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub suggested_entry_points: Vec<EntryPoint>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
 }
 
@@ -296,7 +296,7 @@ pub struct DetectedRegion {
 pub struct SheetPageResponse {
     pub workbook_id: WorkbookId,
     pub sheet_name: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rows: Vec<RowSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_start_row: Option<u32>,
@@ -426,9 +426,9 @@ pub struct SheetStatisticsResponse {
     pub row_count: u32,
     pub column_count: u32,
     pub density: f32,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub numeric_columns: Vec<ColumnSummary>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub text_columns: Vec<ColumnSummary>,
     pub null_counts: BTreeMap<String, u32>,
     pub duplicate_warnings: Vec<String>,
@@ -438,7 +438,7 @@ pub struct SheetStatisticsResponse {
 pub struct ColumnSummary {
     pub header: Option<String>,
     pub column: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub samples: Vec<CellValue>,
     pub min: Option<f64>,
     pub max: Option<f64>,
@@ -459,7 +459,7 @@ pub struct SheetFormulaMapResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FormulaGroup {
     pub fingerprint: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub addresses: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub count: Option<u32>,
@@ -856,7 +856,7 @@ pub struct SheetStylesResponse {
     pub workbook_id: WorkbookId,
     pub sheet_name: String,
     pub styles: Vec<StyleSummary>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditional_rules: Vec<String>,
     pub total_styles: u32,
     pub styles_truncated: bool,
@@ -867,10 +867,10 @@ pub struct StyleSummary {
     pub style_id: String,
     pub occurrences: u32,
     pub tags: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub example_cells: Vec<String>,
     pub descriptor: Option<StyleDescriptor>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cell_ranges: Vec<String>,
     pub ranges_truncated: bool,
 }
@@ -887,11 +887,11 @@ pub struct WorkbookStyleSummaryResponse {
     pub styles: Vec<WorkbookStyleUsage>,
     pub total_styles: u32,
     pub styles_truncated: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditional_formats: Vec<ConditionalFormatSummary>,
     pub conditional_formats_truncated: bool,
     pub scan_truncated: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
 }
 
@@ -900,7 +900,7 @@ pub struct WorkbookStyleUsage {
     pub style_id: String,
     pub occurrences: u32,
     pub tags: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub example_cells: Vec<String>,
     pub descriptor: Option<StyleDescriptor>,
 }
@@ -1046,9 +1046,9 @@ pub struct TableProfileResponse {
     pub headers: Vec<String>,
     pub column_types: Vec<ColumnTypeSummary>,
     pub row_count: u32,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub samples: Vec<TableRow>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
 }
 
@@ -1065,7 +1065,7 @@ pub struct RangeValuesResponse {
     pub workbook_id: WorkbookId,
     pub calculation: CalculationMetadata,
     pub sheet_name: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<Warning>,
     pub values: Vec<RangeValuesEntry>,
 }
@@ -1122,7 +1122,7 @@ pub struct RangeValuesDensePayload {
     /// Run-length encoded rows using dictionary indexes.
     pub row_runs: Vec<Vec<RangeValuesDenseRun>>,
     /// Sparse formulas by row/column, included only when requested.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub formulas: Vec<RangeValuesDenseFormula>,
 }
 
@@ -1149,7 +1149,7 @@ pub struct InspectCellsResponse {
     /// Legacy single-range echo. For multi-target requests this is a comma-joined list.
     pub range: String,
     /// Requested A1 targets when more than one was supplied.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub targets: Vec<String>,
     pub cells: Vec<CellSnapshot>,
     pub truncated: bool,
@@ -1234,7 +1234,7 @@ pub struct LayoutPageColumnInfo {
     /// Column width in Excel character units (capped at max_col_width)
     pub width_chars: f64,
     /// True when no explicit width was set (using the Excel default of 8.43)
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_default_width: bool,
 }
 
@@ -1289,16 +1289,16 @@ pub struct LayoutPageResponse {
     pub range: String,
     pub columns: Vec<LayoutPageColumnInfo>,
     /// Merged cell ranges that overlap the rendered region (e.g., ["B1:C1"])
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub merged_cells: Vec<String>,
     pub rows: Vec<LayoutRowInfo>,
     /// ASCII art render (present when render=ascii or render=both)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ascii_render: Option<String>,
     /// True when the requested range was capped to the row/column limits
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
 }
 
@@ -1306,11 +1306,9 @@ pub struct LayoutPageResponse {
 pub struct GridPayload {
     pub sheet: String,
     pub anchor: String,
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub columns: Vec<GridColumnHint>,
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub merges: Vec<String>,
     pub rows: Vec<GridRow>,
 }

@@ -77,9 +77,9 @@ Primary adapter boundary:
 
 ## Additive registry status
 
-The first dispatcher slice registers `list_sheets`, `sheet_overview`, and `read_table` in `crates/agent-spreadsheet/src/operations.rs`. Existing CLI/MCP names remain registered unchanged and project the dispatcher data payload to their legacy response types. `asp op` owns path binding and never forwards `--bind` into a canonical request.
+The additive dispatcher registers the complete discovery/read/search/analysis set in `crates/agent-spreadsheet/src/operations.rs`. Existing CLI/MCP names remain registered unchanged. Compatibility wrappers project dispatcher data only where reconstruction is lossless; incompatible legacy response families remain separate and documented rather than claiming parity. `asp op` owns path binding and never forwards `--bind` into a resource-bound canonical request. `list_workbooks` is the capability-gated exception: it accepts no `resource_id` and returns discovered typed resource ids inside `data.workbooks`.
 
-No default MCP router change is authorized by this foundation. Later operations must add descriptor, schema, policy, decode/error, and cross-surface parity coverage before a compatibility wrapper is rerouted.
+No default MCP router change is authorized by this tranche. Every registered read has a closed request schema, versioned output schema, policy metadata, structured errors, and dispatcher/CLI golden coverage. The live MCP projection suite locks legacy data-only responses and errors while the router remains in compatibility mode.
 
 ## Enforcement hooks
 

@@ -63,6 +63,31 @@ async fn live_json_rpc_tools_call_preserves_legacy_projection_and_decoding() -> 
                 "format":"values"
             }),
         ),
+        (
+            "inspect_cells",
+            json!({"workbook_or_fork_id":workbook_id,"sheet_name":"Sheet1","targets":["A1","B2"]}),
+        ),
+        ("named_ranges", json!({"workbook_or_fork_id":workbook_id})),
+        (
+            "find_value",
+            json!({"workbook_or_fork_id":workbook_id,"query":"Alpha"}),
+        ),
+        (
+            "formula_trace",
+            json!({"workbook_or_fork_id":workbook_id,"sheet_name":"Sheet1","cell_address":"B2","direction":"precedents"}),
+        ),
+        (
+            "sheet_formula_map",
+            json!({"workbook_or_fork_id":workbook_id,"sheet_name":"Sheet1"}),
+        ),
+        (
+            "table_profile",
+            json!({"workbook_or_fork_id":workbook_id,"sheet_name":"Sheet1"}),
+        ),
+        (
+            "sheet_statistics",
+            json!({"workbook_or_fork_id":workbook_id,"sheet_name":"Sheet1"}),
+        ),
     ];
     for (tool, arguments) in cases {
         let result = client.call_tool(call_tool(tool, arguments)).await?;

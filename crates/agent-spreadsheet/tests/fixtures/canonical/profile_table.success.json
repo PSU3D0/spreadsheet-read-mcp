@@ -1,0 +1,70 @@
+{
+  "data": {
+    "column_types": [
+      {
+        "distinct": 0,
+        "inferred_type": "unknown",
+        "max": null,
+        "mean": null,
+        "min": null,
+        "name": "1",
+        "nulls": 0,
+        "top_values": []
+      },
+      {
+        "distinct": 0,
+        "inferred_type": "unknown",
+        "max": null,
+        "mean": null,
+        "min": null,
+        "name": "2",
+        "nulls": 0,
+        "top_values": []
+      },
+      {
+        "distinct": 0,
+        "inferred_type": "unknown",
+        "max": null,
+        "mean": null,
+        "min": null,
+        "name": "3",
+        "nulls": 0,
+        "top_values": []
+      }
+    ],
+    "confidence": {
+      "heuristic": false,
+      "reason": "all rows in scope were scanned",
+      "status": "observed_complete"
+    },
+    "coverage": {
+      "complete": true,
+      "rows_in_scope": 0,
+      "rows_scanned": 0,
+      "sample_mode": "distributed"
+    },
+    "headers": [
+      "1",
+      "2",
+      "3"
+    ],
+    "notes": [],
+    "row_count": 0,
+    "samples": [],
+    "sheet_name": "Sheet1",
+    "source": {
+      "bounds": "A1:C1",
+      "header_provenance": "inferred_first_row",
+      "header_row": 1,
+      "selector_kind": "sheet_inferred",
+      "selector_value": null,
+      "sheet_name": "Sheet1"
+    },
+    "table_name": null,
+    "workbook_id": "{{WORKBOOK_ID}}"
+  },
+  "operation": "profile_table",
+  "resource_id": "{{RESOURCE_ID}}",
+  "revision_id": "{{REVISION_ID}}",
+  "schema_version": "1"
+}

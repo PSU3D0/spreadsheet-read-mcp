@@ -1,0 +1,48 @@
+{
+  "data": {
+    "conditional_formats": [],
+    "conditional_formats_complete": true,
+    "coverage": {
+      "cells_in_scope": 3,
+      "cells_scanned": 3,
+      "counts_exact": true,
+      "status": "complete"
+    },
+    "scope": {
+      "kind": "sheet",
+      "selection": {
+        "kind": "all"
+      },
+      "sheet_name": "Sheet1"
+    },
+    "styles": [
+      {
+        "descriptor": {
+          "alignment": null,
+          "borders": null,
+          "fill": null,
+          "font": null,
+          "number_format": null
+        },
+        "example_cells": [
+          "A1",
+          "B1",
+          "C1"
+        ],
+        "occurrences": 3,
+        "ranges": [
+          "A1:C1"
+        ],
+        "ranges_complete": true,
+        "style_id": "660176522e14",
+        "tags": []
+      }
+    ],
+    "theme": null,
+    "warnings": []
+  },
+  "operation": "analyze_styles",
+  "resource_id": "{{RESOURCE_ID}}",
+  "revision_id": "{{REVISION_ID}}",
+  "schema_version": "1"
+}

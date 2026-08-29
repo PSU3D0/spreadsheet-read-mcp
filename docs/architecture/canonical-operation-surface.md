@@ -88,7 +88,7 @@ The registry is the source for operation names, schemas, descriptions, capabilit
 | `inspect_cells` | Sparse deep diagnostics: value, formula, cache, type, format, style | unchanged |
 | `read_table` | Header-aware tabular/record extraction | unchanged |
 | `read_layout` | Lossy display/layout representation for human or agent orientation | renames `layout_page` |
-| `export_grid` | Lossless, round-trippable rich grid payload | renames `grid_export`; pairs with `write.import_grid` |
+| `export_grid` | Cell content and explicit-format grid payload; workbook/sheet presentation defaults are not preserved | renames `grid_export`; pairs with `write.import_grid` |
 | `named_ranges` | Read workbook- and sheet-scoped names | unchanged |
 | `analyze_styles` | Workbook- or sheet-scoped style patterns | merges `sheet_styles` + `workbook_style_summary` |
 
@@ -339,7 +339,7 @@ A merged operation is admitted only when:
 3. every branch offers compatible paging, truncation, and losslessness guarantees;
 4. registry input/output schemas and golden fixtures exist per branch.
 
-This is why `read_cells` remains merged but `read_layout` and `export_grid` are separate: display layout is intentionally lossy while grid export is lossless and round-trippable.
+This is why `read_cells` remains merged but `read_layout` and `export_grid` are separate: display layout is intentionally lossy while grid export preserves cell content and explicit formatting without claiming preservation of implicit presentation defaults.
 
 Required discriminants include:
 
@@ -356,7 +356,7 @@ Expensive fields are opt-in. Omitted, `null`, and empty have distinct meanings. 
 
 `read_cells` returns correlated blocks (`selection_index`, requested/returned ranges) and one revision-bound opaque continuation cursor. A single small exact range remains simple: one complete block and `next_cursor:null`. Row-window selection retains column projection by letters/headers, header inclusion, style tags, formulas, and current encodings.
 
-`export_grid` is lossless, never trims, preserves absolute coordinates and merge-repeat semantics, and paginates without weakening round-trip guarantees. `read_layout` may trim/cap/render for display and labels itself lossy.
+`export_grid` preserves cell content, explicit cell formatting, absolute coordinates, and merge-repeat semantics without trimming. It does not preserve workbook/sheet default presentation (including implicit default column widths), so it explicitly reports `fidelity: cell_content_and_explicit_formatting` and does not claim a lossless presentation round trip. `read_layout` may trim/cap/render for display and labels itself lossy.
 
 ### Risk and capability metadata
 

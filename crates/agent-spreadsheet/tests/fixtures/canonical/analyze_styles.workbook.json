@@ -1,0 +1,71 @@
+{
+  "data": {
+    "conditional_formats": [],
+    "conditional_formats_complete": true,
+    "coverage": {
+      "cells_in_scope": 3,
+      "cells_scanned": 3,
+      "counts_exact": true,
+      "status": "complete"
+    },
+    "scope": {
+      "kind": "workbook"
+    },
+    "styles": [
+      {
+        "descriptor": {
+          "alignment": null,
+          "borders": null,
+          "fill": null,
+          "font": null,
+          "number_format": null
+        },
+        "example_cells": [
+          "Sheet1!A1",
+          "Sheet1!B1",
+          "Sheet1!C1"
+        ],
+        "occurrences": 3,
+        "ranges": [],
+        "ranges_complete": true,
+        "style_id": "660176522e14",
+        "tags": []
+      }
+    ],
+    "theme": {
+      "colors": {
+        "accent1": "4472C4",
+        "accent2": "ED7D31",
+        "accent3": "A5A5A5",
+        "accent4": "FFC000",
+        "accent5": "5B9BD5",
+        "accent6": "70AD47",
+        "dk1": "000000",
+        "dk2": "44546A",
+        "fol_hlink": "954F72",
+        "hlink": "0563C1",
+        "lt1": "FFFFFF",
+        "lt2": "E7E6E6"
+      },
+      "font_scheme": {
+        "major_complex_script": null,
+        "major_east_asian": null,
+        "major_latin": "Calibri Light",
+        "minor_complex_script": null,
+        "minor_east_asian": null,
+        "minor_latin": "Calibri"
+      },
+      "name": "Office Theme"
+    },
+    "warnings": [
+      {
+        "code": "STYLE_ANALYSIS_NOTE",
+        "message": "Named styles are not directly exposed by umya-spreadsheet; styles here are inferred from cell formatting."
+      }
+    ]
+  },
+  "operation": "analyze_styles",
+  "resource_id": "{{RESOURCE_ID}}",
+  "revision_id": "{{REVISION_ID}}",
+  "schema_version": "1"
+}

@@ -4062,20 +4062,31 @@ async fn run_machine_operation(
             Some("--bind".to_string()),
         )
     })?;
-    if let Some(provided) = object.get("resource_id")
-        && provided.as_str() != Some(resource_id.as_str())
-    {
-        return Err(CanonicalErrorEnvelope::new(
-            CanonicalErrorCode::InvalidRequest,
-            "payload resource_id does not match the ephemeral --bind resource",
-            Some(operation),
-            Some("$.resource_id".to_string()),
-        ));
+    if operation == "list_workbooks" {
+        if object.contains_key("resource_id") {
+            return Err(CanonicalErrorEnvelope::new(
+                CanonicalErrorCode::InvalidRequest,
+                "list_workbooks does not accept a resource_id",
+                Some(operation),
+                Some("$.resource_id".to_string()),
+            ));
+        }
+    } else {
+        if let Some(provided) = object.get("resource_id")
+            && provided.as_str() != Some(resource_id.as_str())
+        {
+            return Err(CanonicalErrorEnvelope::new(
+                CanonicalErrorCode::InvalidRequest,
+                "payload resource_id does not match the ephemeral --bind resource",
+                Some(operation),
+                Some("$.resource_id".to_string()),
+            ));
+        }
+        object.insert(
+            "resource_id".to_string(),
+            Value::String(resource_id.as_str().to_string()),
+        );
     }
-    object.insert(
-        "resource_id".to_string(),
-        Value::String(resource_id.as_str().to_string()),
-    );
     crate::operations::execute_operation_json(state, operation, payload).await
 }
 

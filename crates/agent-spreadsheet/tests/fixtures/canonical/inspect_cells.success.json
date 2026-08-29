@@ -1,0 +1,53 @@
+{
+  "data": {
+    "budget": {
+      "cells_returned": 2,
+      "max_cells": 25,
+      "max_payload_bytes": 65536,
+      "rows_returned": 1,
+      "total_rows_available": 1
+    },
+    "calculation": {
+      "revision_id": "{{REVISION_ID}}",
+      "state": "clean"
+    },
+    "cells": [
+      {
+        "address": "A1",
+        "cached_value": null,
+        "formula": null,
+        "notes": [],
+        "number_format": null,
+        "style_tags": [],
+        "value": {
+          "kind": "Number",
+          "value": 1.0
+        }
+      },
+      {
+        "address": "C1",
+        "cached_value": null,
+        "formula": null,
+        "notes": [],
+        "number_format": null,
+        "style_tags": [],
+        "value": {
+          "kind": "Number",
+          "value": 3.0
+        }
+      }
+    ],
+    "range": "A1,C1",
+    "sheet_name": "Sheet1",
+    "targets": [
+      "A1",
+      "C1"
+    ],
+    "truncated": false,
+    "workbook_id": "{{WORKBOOK_ID}}"
+  },
+  "operation": "inspect_cells",
+  "resource_id": "{{RESOURCE_ID}}",
+  "revision_id": "{{REVISION_ID}}",
+  "schema_version": "1"
+}

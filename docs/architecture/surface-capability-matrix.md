@@ -1,6 +1,6 @@
 # Surface Capability Matrix (CLI / MCP / WASM / SDK)
 
-Status: active migration baseline (canonical registry Wave 2 additive foundation)
+Status: active migration baseline (canonical registry Wave 3A additive read surface)
 Owner: Tranche 35 (tickets/35-js-surface-migration)
 
 This matrix is the planning baseline for cross-surface migration.
@@ -72,7 +72,7 @@ Boundary contract: `docs/architecture/surface-boundary-rules.md`
 | `write clone-row-band` | _(none today)_ | CLI_ONLY | `adapter-cli.clone_row_band` | n/a | Preview-first contiguous row-band clone helper that inserts repeated blocks, reports formula/patch targets, and warns on merge-boundary conflicts | `crates/agent-spreadsheet/src/cli/commands/write.rs::clone_row_band` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
 | `verify diff` | `get_changeset` (partial overlap) | SHARED_PARTIAL | `core.diff.diff_workbooks` | later | CLI is file-vs-file; MCP is fork-oriented; CLI now projects grouped summary buckets and can suppress `recalc_result` noise | `crates/agent-spreadsheet/src/cli/commands/diff.rs::diff` | `crates/agent-spreadsheet/tests/diff_engine.rs` |
 | `analyze ref-impact` | _(none today)_ | CLI_ONLY | `core.analysis.structure_impact` | n/a | Read-only structural impact preflight; uses same engine as `structure-batch --dry-run --impact-report` | `crates/agent-spreadsheet/src/cli/commands/write.rs::check_ref_impact` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
-| `operations` | _(registry discovery)_ | ALL | `operations.operation_registry` | mvp | Lists canonical operation policy/capability metadata; initial additive set is list_sheets, sheet_overview, read_table | `crates/agent-spreadsheet/src/operations.rs::operation_registry` | `crates/agent-spreadsheet/tests/canonical_operations.rs` |
+| `operations` | _(registry discovery)_ | ALL | `operations.operation_registry` | mvp | Lists canonical operation policy/capability metadata; additive discovery/read/search/analysis set is registry-derived | `crates/agent-spreadsheet/src/operations.rs::operation_registry` | `crates/agent-spreadsheet/tests/canonical_operations.rs` |
 | `op` | _(canonical dispatcher)_ | ALL | `operations.execute_operation` | mvp | Machine JSON mode; CLI binds --bind path to an ephemeral resource and injects resource_id | `crates/agent-spreadsheet/src/cli/mod.rs::run_machine_operation` | `crates/agent-spreadsheet/tests/canonical_operations.rs` |
 | `schema` | _(none today)_ | CLI_ONLY | `adapter-cli.discoverability.schema` | n/a | Global schema discovery for canonical operations, batch write payloads, and session op payloads | `crates/agent-spreadsheet/src/cli/mod.rs::run_schema_command` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
 | `example` | _(none today)_ | CLI_ONLY | `adapter-cli.discoverability.example` | n/a | Global example discovery for batch write payloads and session op payloads | `crates/agent-spreadsheet/src/cli/mod.rs::run_example_command` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
@@ -145,15 +145,28 @@ Boundary contract: `docs/architecture/surface-boundary-rules.md`
 
 ## C) Canonical registry migration status
 
-Wave 2 adds the registry and dispatcher without changing the default MCP tool list. The initial registered operations are `list_sheets`, `sheet_overview`, and `read_table`.
+Wave 3A registers the complete canonical discovery/read/search/analysis surface without changing the default MCP router. `asp operations`, `asp schema <operation>`, and `asp op <operation>` derive lookup and schemas from the registry.
 
-| Canonical operation | Existing CLI projection | Existing MCP projection | Dispatcher implementation | Capability | Risk ceiling | Parity owner |
-|---|---|---|---|---|---|---|
-| `list_sheets` | `read sheets` | `list_sheets` | `crates/agent-spreadsheet/src/operations.rs::execute_operation` -> `tools::list_sheets_semantic` | `workbook_read` | low | `crates/agent-spreadsheet/tests/canonical_operations.rs` |
-| `sheet_overview` | `read overview` | `sheet_overview` | `crates/agent-spreadsheet/src/operations.rs::execute_operation` -> `tools::sheet_overview_semantic` | `workbook_read` | low | `crates/agent-spreadsheet/tests/canonical_operations.rs` |
-| `read_table` | `read table` | `read_table` | `crates/agent-spreadsheet/src/operations.rs::execute_operation` -> `tools::read_table_semantic` | `workbook_read` | low | `crates/agent-spreadsheet/tests/canonical_operations.rs` |
+| Canonical operation | Existing compatibility projection | Dispatcher implementation | Capability | Risk |
+|---|---|---|---|---|
+| `list_workbooks` | CLI/MCP `list_workbooks` remains legacy data-only | canonical discovery adapter; no request/resource binding | `workbook_discovery` | low |
+| `describe_workbook` | legacy metadata and workbook-summary tools remain separate | exact metadata plus opt-in scoped derived summary | `workbook_read` | low |
+| `list_sheets`, `sheet_overview`, `read_table` | CLI/MCP wrappers project canonical `data` | shared semantic implementations | `workbook_read` | low |
+| `read_cells` | legacy `range_values` and `sheet_page` remain available | correlated range/row engine with revision/request-bound opaque cursor | `workbook_read` | low |
+| `inspect_cells` | legacy detail view stays separate to retain its historical partial-payload behavior; canonical fails before truncation | shared semantic implementation with distinct truncation policy | `workbook_read` | low |
+| `named_ranges` | legacy MCP wrapper projects canonical `data` | shared semantic implementation | `workbook_read` | low |
+| `read_layout` | legacy `layout_page` stays separate | explicitly lossy layout projection | `workbook_read` | low |
+| `export_grid` | legacy `grid_export` stays separate | coordinate-preserving paged grid export of cell content and explicit formatting; implicit presentation defaults excluded | `workbook_read` | low |
+| `analyze_styles` | legacy sheet/workbook style tools stay separate | closed `scope.kind` union with bounded-count coverage | `workbook_read` | low |
+| `search_values` | legacy `find_value` projects canonical `data` | preserves label, direction, scope, type, header, and context options | `workbook_read` | low |
+| `search_formulas` | legacy formula search/volatile tools stay separate | closed `result_mode` branches and actual function classifications | `workbook_read` | low |
+| `formula_trace` | legacy structured-cursor wrapper stays separate; canonical uses a revision/request-bound opaque cursor | shared formula analysis |
+| `formula_map` | legacy MCP wrapper projects canonical `data` | shared formula analysis with opaque canonical continuation | `workbook_read` | low |
+| `profile_table`, `sheet_statistics` | legacy MCP wrappers project canonical `data` | shared bounded analysis | `workbook_read` | low |
 
-Compatibility wrappers project `CanonicalResponse.data` back to their pre-existing response types. Canonical machine mode emits the stable versioned envelope unchanged. Registry schemas and structured errors are closed; resource paths remain confined to the CLI binding adapter.
+Canonical responses use the versioned operation envelope and state reads carry `revision_id`. Value-bearing reads expose calculation state. Merged responses echo branch discriminants. Checked-in full JSON fixtures cover both branches of `describe_workbook`, `read_cells`, `analyze_styles`, and `search_formulas`, plus every unbranched operation.
+
+Compatibility projections are only routed through the dispatcher when the legacy response can be reconstructed without loss. `range_values`/`sheet_page`, workbook summaries, layout/grid, style summaries, and formula-search variants remain separate compatibility implementations rather than claiming false response parity. No default MCP router switch is authorized in Wave 3A.
 
 ---
 

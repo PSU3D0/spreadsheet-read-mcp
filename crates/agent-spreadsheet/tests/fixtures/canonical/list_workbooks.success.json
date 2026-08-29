@@ -1,0 +1,31 @@
+{
+  "data": {
+    "next_offset": null,
+    "workbooks": [
+      {
+        "backend_capabilities": {
+          "backend": "xlsx_umya",
+          "supports_comments": true,
+          "supports_conditional_formatting": true,
+          "supports_defined_names": true,
+          "supports_formula_graph": true,
+          "supports_styles": true,
+          "supports_tables": true
+        },
+        "metadata": {
+          "bytes": 2070,
+          "last_modified": "{{LAST_MODIFIED}}",
+          "revision_id": "{{REVISION_ID}}",
+          "short_id": "{{SHORT_ID}}",
+          "slug": "baseline"
+        },
+        "paths": {
+          "internal": "baseline.xlsx"
+        },
+        "resource_id": "{{RESOURCE_ID}}"
+      }
+    ]
+  },
+  "operation": "list_workbooks",
+  "schema_version": "1"
+}

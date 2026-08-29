@@ -1,0 +1,47 @@
+{
+  "data": {
+    "column_count": 3,
+    "density": 0.3333333432674408,
+    "duplicate_warnings": [],
+    "null_counts": {
+      "B": 1,
+      "C": 1
+    },
+    "numeric_columns": [
+      {
+        "column": "A",
+        "header": "1",
+        "max": 1.0,
+        "mean": 1.0,
+        "min": 1.0,
+        "samples": [
+          {
+            "kind": "Number",
+            "value": 1.0
+          }
+        ]
+      },
+      {
+        "column": "B",
+        "header": null,
+        "max": null,
+        "mean": null,
+        "min": null
+      },
+      {
+        "column": "C",
+        "header": null,
+        "max": null,
+        "mean": null,
+        "min": null
+      }
+    ],
+    "row_count": 1,
+    "sheet_name": "Sheet1",
+    "workbook_id": "{{WORKBOOK_ID}}"
+  },
+  "operation": "sheet_statistics",
+  "resource_id": "{{RESOURCE_ID}}",
+  "revision_id": "{{REVISION_ID}}",
+  "schema_version": "1"
+}

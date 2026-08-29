@@ -1,0 +1,16 @@
+{
+  "data": {
+    "direction": "precedents",
+    "formula_parse_diagnostics": null,
+    "layers": [],
+    "next_cursor": null,
+    "notes": [],
+    "origin": "A1",
+    "sheet_name": "Sheet1",
+    "workbook_id": "{{WORKBOOK_ID}}"
+  },
+  "operation": "formula_trace",
+  "resource_id": "{{RESOURCE_ID}}",
+  "revision_id": "{{REVISION_ID}}",
+  "schema_version": "1"
+}

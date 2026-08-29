@@ -751,6 +751,9 @@ pub struct TableProfileParams {
     /// Profile a named Excel table
     #[serde(default)]
     pub table_name: Option<String>,
+    /// Profile an explicit A1 range.
+    #[serde(default)]
+    pub range: Option<String>,
     /// Sampling mode for selecting sample rows
     #[serde(default)]
     pub sample_mode: Option<SampleMode>,
@@ -807,6 +810,14 @@ pub async fn sheet_page(
     state: Arc<AppState>,
     params: SheetPageParams,
 ) -> Result<SheetPageResponse> {
+    sheet_page_with_header_row(state, params, 1).await
+}
+
+pub(crate) async fn sheet_page_with_header_row(
+    state: Arc<AppState>,
+    params: SheetPageParams,
+    header_row: u32,
+) -> Result<SheetPageResponse> {
     if params.page_size == 0 {
         return Err(anyhow!("page_size must be greater than zero"));
     }
@@ -848,6 +859,7 @@ pub async fn sheet_page(
             include_formulas,
             include_styles,
             include_header,
+            header_row.max(1),
         )
     })?;
 
@@ -929,6 +941,58 @@ pub async fn sheet_page(
     Ok(response)
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn range_rows_unbudgeted(
+    state: Arc<AppState>,
+    workbook_id: &WorkbookId,
+    sheet_name: &str,
+    start_col: u32,
+    start_row: u32,
+    end_col: u32,
+    end_row: u32,
+    include_formulas: bool,
+    include_styles: bool,
+) -> Result<Vec<RowSnapshot>> {
+    let workbook = state.open_workbook(workbook_id).await?;
+    let columns = (start_col..=end_col).collect::<Vec<_>>();
+    workbook.with_sheet(sheet_name, |sheet| {
+        (start_row..=end_row)
+            .map(|row| {
+                build_row_snapshot(sheet, row, &columns, include_formulas, include_styles)
+            })
+            .collect()
+    })
+}
+
+pub(crate) async fn sheet_rows_unbudgeted_with_header_row(
+    state: Arc<AppState>,
+    params: SheetPageParams,
+    header_row: u32,
+) -> Result<(Option<RowSnapshot>, Vec<RowSnapshot>)> {
+    if params.page_size == 0 {
+        return Err(anyhow!("page_size must be greater than zero"));
+    }
+
+    let workbook = state.open_workbook(&params.workbook_or_fork_id).await?;
+    let start_row = params.start_row.max(1);
+    let page_size = params.page_size.min(500);
+    let page = workbook.with_sheet(&params.sheet_name, |sheet| {
+        build_page(
+            sheet,
+            start_row,
+            page_size,
+            params.columns,
+            params.columns_by_header,
+            params.include_formulas,
+            params.include_styles,
+            params.include_header,
+            header_row.max(1),
+        )
+    })?;
+
+    Ok((page.header, page.rows))
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SheetFormulaMapParams {
     /// Workbook ID or fork ID
@@ -944,6 +1008,9 @@ pub struct SheetFormulaMapParams {
     /// Maximum formula groups to return
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Zero-based formula group continuation offset.
+    #[serde(default)]
+    pub offset: Option<u32>,
     /// Sort by: "address" (default), "complexity" (longest formulas first), "count" (most repeated first)
     #[serde(default)]
     pub sort_by: Option<FormulaSortBy>,
@@ -1001,7 +1068,7 @@ pub enum FindContext {
 }
 
 /// Sampling mode for table reads
-#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SampleMode {
     /// First N rows (default)
@@ -1063,6 +1130,31 @@ pub enum ValueTypeFilter {
 }
 
 pub async fn sheet_formula_map(
+    state: Arc<AppState>,
+    params: SheetFormulaMapParams,
+) -> Result<SheetFormulaMapResponse> {
+    let request = crate::operations::FormulaMapRequest {
+        resource_id: crate::operations::ResourceId::bind_workbook(&params.workbook_or_fork_id)
+            .map_err(anyhow::Error::msg)?,
+        sheet_name: params.sheet_name,
+        range: params.range,
+        expand: params.expand,
+        limit: params.limit,
+        sort_by: params.sort_by,
+        summary_only: params.summary_only,
+        include_addresses: params.include_addresses,
+        addresses_limit: params.addresses_limit,
+        formula_parse_policy: params.formula_parse_policy,
+        cursor: None,
+    };
+    crate::operations::project_legacy(
+        state,
+        crate::operations::SpreadsheetOperation::FormulaMap(request),
+    )
+    .await
+}
+
+pub(crate) async fn sheet_formula_map_semantic(
     state: Arc<AppState>,
     params: SheetFormulaMapParams,
 ) -> Result<SheetFormulaMapResponse> {
@@ -1128,6 +1220,11 @@ pub async fn sheet_formula_map(
         }
     }
 
+    let offset = params.offset.unwrap_or(0) as usize;
+    if offset > 0 {
+        groups = groups.into_iter().skip(offset).collect();
+    }
+
     if let Some(limit) = params.limit
         && groups.len() > limit as usize
     {
@@ -1159,8 +1256,8 @@ pub async fn sheet_formula_map(
         }
     }
 
-    let next_offset = if groups.len() < total_groups {
-        Some(groups.len() as u32)
+    let next_offset = if offset + groups.len() < total_groups {
+        Some((offset + groups.len()) as u32)
     } else {
         None
     };
@@ -1194,6 +1291,13 @@ pub struct FormulaTraceParams {
 }
 
 pub async fn formula_trace(
+    state: Arc<AppState>,
+    params: FormulaTraceParams,
+) -> Result<FormulaTraceResponse> {
+    formula_trace_semantic(state, params).await
+}
+
+pub(crate) async fn formula_trace_semantic(
     state: Arc<AppState>,
     params: FormulaTraceParams,
 ) -> Result<FormulaTraceResponse> {
@@ -1254,6 +1358,23 @@ pub struct NamedRangesParams {
 }
 
 pub async fn named_ranges(
+    state: Arc<AppState>,
+    params: NamedRangesParams,
+) -> Result<NamedRangesResponse> {
+    let request = crate::operations::NamedRangesRequest {
+        resource_id: crate::operations::ResourceId::bind_workbook(&params.workbook_or_fork_id)
+            .map_err(anyhow::Error::msg)?,
+        sheet_name: params.sheet_name,
+        name_prefix: params.name_prefix,
+    };
+    crate::operations::project_legacy(
+        state,
+        crate::operations::SpreadsheetOperation::NamedRanges(request),
+    )
+    .await
+}
+
+pub(crate) async fn named_ranges_semantic(
     state: Arc<AppState>,
     params: NamedRangesParams,
 ) -> Result<NamedRangesResponse> {
@@ -1822,16 +1943,22 @@ fn build_page(
     include_formulas: bool,
     include_styles: bool,
     include_header: bool,
+    header_row: u32,
 ) -> PageBuildResult {
     let max_col = sheet.get_highest_column();
     let end_row = (start_row + page_size - 1).min(sheet.get_highest_row().max(start_row));
-    let column_indices =
-        resolve_columns_with_headers(sheet, columns.as_ref(), columns_by_header.as_ref(), max_col);
+    let column_indices = resolve_columns_with_headers(
+        sheet,
+        columns.as_ref(),
+        columns_by_header.as_ref(),
+        max_col,
+        header_row,
+    );
 
     let header = if include_header {
         Some(build_row_snapshot(
             sheet,
-            1,
+            header_row,
             &column_indices,
             include_formulas,
             include_styles,
@@ -1961,6 +2088,7 @@ fn resolve_columns_with_headers(
     columns: Option<&Vec<String>>,
     columns_by_header: Option<&Vec<String>>,
     max_column: u32,
+    header_row: u32,
 ) -> Vec<u32> {
     use std::collections::BTreeSet;
 
@@ -1981,7 +2109,7 @@ fn resolve_columns_with_headers(
         .collect();
 
     for col_idx in 1..=max_column.max(1) {
-        let header_cell = sheet.get_cell((col_idx, 1u32));
+        let header_cell = sheet.get_cell((col_idx, header_row));
         let header_value = header_cell
             .and_then(cell_to_value)
             .map(cell_value_to_string_lower);
@@ -2334,7 +2462,7 @@ fn cell_matrix_to_rows_keyed(
     out
 }
 
-fn build_range_values_entry(
+pub(crate) fn build_range_values_entry(
     format: TableOutputFormat,
     range: &str,
     rows: &[Vec<Option<CellValue>>],
@@ -2433,7 +2561,7 @@ where
     low
 }
 
-fn build_compact_payload(
+pub(crate) fn build_compact_payload(
     header: &Option<RowSnapshot>,
     rows: &[RowSnapshot],
     include_header: bool,
@@ -2464,7 +2592,7 @@ fn build_compact_payload(
     }
 }
 
-fn build_values_only_payload(
+pub(crate) fn build_values_only_payload(
     header: &Option<RowSnapshot>,
     rows: &[RowSnapshot],
     include_header: bool,
@@ -2577,6 +2705,24 @@ pub async fn sheet_statistics(
     state: Arc<AppState>,
     params: SheetStatisticsParams,
 ) -> Result<SheetStatisticsResponse> {
+    let request = crate::operations::SheetStatisticsRequest {
+        resource_id: crate::operations::ResourceId::bind_workbook(&params.workbook_or_fork_id)
+            .map_err(anyhow::Error::msg)?,
+        sheet_name: params.sheet_name,
+        sample_rows: params.sample_rows,
+        summary_only: params.summary_only,
+    };
+    crate::operations::project_legacy(
+        state,
+        crate::operations::SpreadsheetOperation::SheetStatistics(request),
+    )
+    .await
+}
+
+pub(crate) async fn sheet_statistics_semantic(
+    state: Arc<AppState>,
+    params: SheetStatisticsParams,
+) -> Result<SheetStatisticsResponse> {
     let workbook = state.open_workbook(&params.workbook_or_fork_id).await?;
     let config = state.config();
     let output_profile = config.output_profile();
@@ -2679,6 +2825,9 @@ fn parse_range(range: &str) -> Option<((u32, u32), (u32, u32))> {
     let mut parts = range.split(':');
     let start = parts.next()?;
     let end = parts.next().unwrap_or(start);
+    if parts.next().is_some() {
+        return None;
+    }
     let start_idx = parse_address(start)?;
     let end_idx = parse_address(end)?;
     Some((
@@ -2688,12 +2837,32 @@ fn parse_range(range: &str) -> Option<((u32, u32), (u32, u32))> {
 }
 
 fn parse_address(address: &str) -> Option<(u32, u32)> {
-    use umya_spreadsheet::helper::coordinate::index_from_coordinate;
-    let (col, row, _, _) = index_from_coordinate(address);
-    match (col, row) {
-        (Some(c), Some(r)) => Some((c, r)),
-        _ => None,
+    let address = address.trim();
+    let bytes = address.as_bytes();
+    let mut index = usize::from(bytes.first() == Some(&b'$'));
+    let letters_start = index;
+    let mut col = 0_u32;
+    while let Some(byte) = bytes.get(index).filter(|byte| byte.is_ascii_alphabetic()) {
+        col = col
+            .checked_mul(26)?
+            .checked_add(u32::from(byte.to_ascii_uppercase() - b'A' + 1))?;
+        index += 1;
     }
+    if index == letters_start {
+        return None;
+    }
+    if bytes.get(index) == Some(&b'$') {
+        index += 1;
+    }
+    let digits_start = index;
+    while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+        index += 1;
+    }
+    if index == digits_start || index != bytes.len() {
+        return None;
+    }
+    let row = address[digits_start..].parse::<u32>().ok()?;
+    (row > 0).then_some((col, row))
 }
 
 #[derive(Clone)]
@@ -2708,6 +2877,12 @@ fn resolve_table_target(
     workbook: &WorkbookContext,
     params: &ReadTableParams,
 ) -> Result<TableTarget> {
+    let explicit_range = params
+        .range
+        .as_deref()
+        .map(|range| parse_range(range).ok_or_else(|| anyhow!("invalid range: {range}")))
+        .transpose()?;
+
     if let Some(region_id) = params.region_id
         && let Some(sheet) = &params.sheet_name
         && let Ok(region) = workbook.detected_region(sheet, region_id)
@@ -2761,9 +2936,7 @@ fn resolve_table_target(
         .clone()
         .unwrap_or_else(|| workbook.sheet_names().first().cloned().unwrap_or_default());
 
-    if let Some(rng) = &params.range
-        && let Some(range) = parse_range(rng)
-    {
+    if let Some(range) = explicit_range {
         return Ok(TableTarget {
             sheet_name,
             table_name: None,
@@ -4104,10 +4277,25 @@ impl StyleAccum {
     }
 }
 
+pub(crate) struct BoundedSheetStyles {
+    pub response: SheetStylesResponse,
+    pub cells_scanned: u64,
+    pub cells_in_scope: u64,
+    pub scan_truncated: bool,
+}
+
 pub async fn sheet_styles(
     state: Arc<AppState>,
     params: SheetStylesParams,
 ) -> Result<SheetStylesResponse> {
+    Ok(sheet_styles_bounded(state, params, None).await?.response)
+}
+
+pub(crate) async fn sheet_styles_bounded(
+    state: Arc<AppState>,
+    params: SheetStylesParams,
+    max_cells_scan: Option<u32>,
+) -> Result<BoundedSheetStyles> {
     let workbook = state.open_workbook(&params.workbook_or_fork_id).await?;
     let config = state.config();
     let output_profile = config.output_profile();
@@ -4156,95 +4344,116 @@ pub async fn sheet_styles(
         .unwrap_or(STYLE_RANGE_LIMIT)
         .clamp(1, MAX_MAX_ITEMS);
 
-    let (mut styles, total_styles, mut styles_truncated) =
-        workbook.with_sheet(&params.sheet_name, |sheet| {
-            let mut acc: HashMap<String, StyleAccum> = HashMap::new();
+    let scan_limit = max_cells_scan.map(u64::from).unwrap_or(u64::MAX);
+    let (
+        mut styles,
+        total_styles,
+        mut styles_truncated,
+        cells_scanned,
+        cells_in_scope,
+        scan_truncated,
+    ) = workbook.with_sheet(&params.sheet_name, |sheet| {
+        let mut acc: HashMap<String, StyleAccum> = HashMap::new();
+        let mut cells_scanned = 0_u64;
+        let mut cells_in_scope = 0_u64;
 
-            for cell in sheet.get_cell_collection() {
-                let address = cell.get_coordinate().get_coordinate().to_string();
-                let Some((col, row)) = parse_address(&address) else {
-                    continue;
-                };
-                if col < bounds.0.0 || col > bounds.1.0 || row < bounds.0.1 || row > bounds.1.1 {
-                    continue;
-                }
+        for cell in sheet.get_cell_collection() {
+            let address = cell.get_coordinate().get_coordinate().to_string();
+            let Some((col, row)) = parse_address(&address) else {
+                continue;
+            };
+            if col < bounds.0.0 || col > bounds.1.0 || row < bounds.0.1 || row > bounds.1.1 {
+                continue;
+            }
+            cells_in_scope += 1;
+            if cells_scanned >= scan_limit {
+                continue;
+            }
+            cells_scanned += 1;
 
-                let descriptor = crate::styles::descriptor_from_style(cell.get_style());
-                let style_id = crate::styles::stable_style_id(&descriptor);
+            let descriptor = crate::styles::descriptor_from_style(cell.get_style());
+            let style_id = crate::styles::stable_style_id(&descriptor);
 
-                let entry = acc
-                    .entry(style_id.clone())
-                    .or_insert_with(|| StyleAccum::new(descriptor.clone()));
-                entry.occurrences += 1;
-                if entry.example_cells.len() < STYLE_EXAMPLE_LIMIT {
-                    entry.example_cells.push(address.clone());
-                }
-
-                if let Some((_, tagging)) = crate::analysis::style::tag_cell(cell) {
-                    for tag in tagging.tags {
-                        entry.tags.insert(tag);
-                    }
-                }
-
-                entry.positions.push((row, col));
+            let entry = acc
+                .entry(style_id.clone())
+                .or_insert_with(|| StyleAccum::new(descriptor.clone()));
+            entry.occurrences += 1;
+            if entry.example_cells.len() < STYLE_EXAMPLE_LIMIT {
+                entry.example_cells.push(address.clone());
             }
 
-            let mut summaries: Vec<StyleSummary> = acc
-                .into_iter()
-                .map(|(style_id, mut entry)| {
-                    entry.positions.sort_unstable();
-                    entry.positions.dedup();
+            if let Some((_, tagging)) = crate::analysis::style::tag_cell(cell) {
+                for tag in tagging.tags {
+                    entry.tags.insert(tag);
+                }
+            }
 
-                    let (cell_ranges, ranges_truncated) = if include_ranges {
-                        if granularity == StyleGranularity::Cells {
-                            let mut out = Vec::new();
-                            for (row, col) in entry.positions.iter().take(max_items) {
-                                out.push(crate::utils::cell_address(*col, *row));
-                            }
-                            (out, entry.positions.len() > max_items)
-                        } else {
-                            crate::styles::compress_positions_to_ranges(&entry.positions, max_items)
+            entry.positions.push((row, col));
+        }
+
+        let mut summaries: Vec<StyleSummary> = acc
+            .into_iter()
+            .map(|(style_id, mut entry)| {
+                entry.positions.sort_unstable();
+                entry.positions.dedup();
+
+                let (cell_ranges, ranges_truncated) = if include_ranges {
+                    if granularity == StyleGranularity::Cells {
+                        let mut out = Vec::new();
+                        for (row, col) in entry.positions.iter().take(max_items) {
+                            out.push(crate::utils::cell_address(*col, *row));
                         }
+                        (out, entry.positions.len() > max_items)
                     } else {
-                        (Vec::new(), false)
-                    };
-
-                    StyleSummary {
-                        style_id,
-                        occurrences: entry.occurrences,
-                        tags: entry.tags.into_iter().collect(),
-                        example_cells: if include_example_cells {
-                            entry.example_cells
-                        } else {
-                            Vec::new()
-                        },
-                        descriptor: if include_descriptor {
-                            Some(entry.descriptor)
-                        } else {
-                            None
-                        },
-                        cell_ranges,
-                        ranges_truncated,
+                        crate::styles::compress_positions_to_ranges(&entry.positions, max_items)
                     }
-                })
-                .collect();
+                } else {
+                    (Vec::new(), false)
+                };
 
-            summaries.sort_by(|a, b| {
-                b.occurrences
-                    .cmp(&a.occurrences)
-                    .then_with(|| a.style_id.cmp(&b.style_id))
-            });
+                StyleSummary {
+                    style_id,
+                    occurrences: entry.occurrences,
+                    tags: entry.tags.into_iter().collect(),
+                    example_cells: if include_example_cells {
+                        entry.example_cells
+                    } else {
+                        Vec::new()
+                    },
+                    descriptor: if include_descriptor {
+                        Some(entry.descriptor)
+                    } else {
+                        None
+                    },
+                    cell_ranges,
+                    ranges_truncated,
+                }
+            })
+            .collect();
 
-            let total = summaries.len() as u32;
-            let truncated = if summaries.len() > style_limit {
-                summaries.truncate(style_limit);
-                true
-            } else {
-                false
-            };
+        summaries.sort_by(|a, b| {
+            b.occurrences
+                .cmp(&a.occurrences)
+                .then_with(|| a.style_id.cmp(&b.style_id))
+        });
 
-            Ok::<_, anyhow::Error>((summaries, total, truncated))
-        })??;
+        let total = summaries.len() as u32;
+        let truncated = if summaries.len() > style_limit {
+            summaries.truncate(style_limit);
+            true
+        } else {
+            false
+        };
+
+        Ok::<_, anyhow::Error>((
+            summaries,
+            total,
+            truncated,
+            cells_scanned,
+            cells_in_scope,
+            cells_scanned < cells_in_scope,
+        ))
+    })??;
 
     if let Some(max_bytes) = max_payload_bytes {
         let row_limit = cap_rows_by_payload_bytes(styles.len(), Some(max_bytes), |count| {
@@ -4266,13 +4475,18 @@ pub async fn sheet_styles(
         }
     }
 
-    Ok(SheetStylesResponse {
-        workbook_id: workbook.id.clone(),
-        sheet_name: params.sheet_name.clone(),
-        styles,
-        conditional_rules: Vec::new(),
-        total_styles,
-        styles_truncated,
+    Ok(BoundedSheetStyles {
+        response: SheetStylesResponse {
+            workbook_id: workbook.id.clone(),
+            sheet_name: params.sheet_name.clone(),
+            styles,
+            conditional_rules: Vec::new(),
+            total_styles,
+            styles_truncated,
+        },
+        cells_scanned,
+        cells_in_scope,
+        scan_truncated,
     })
 }
 
@@ -4521,6 +4735,13 @@ pub async fn inspect_cells(
     state: Arc<AppState>,
     params: InspectCellsParams,
 ) -> Result<InspectCellsResponse> {
+    inspect_cells_semantic(state, params).await
+}
+
+pub(crate) async fn inspect_cells_semantic(
+    state: Arc<AppState>,
+    params: InspectCellsParams,
+) -> Result<InspectCellsResponse> {
     const DETAIL_LIMIT: usize = 25;
     const DETAIL_LIMIT_MAX: usize = 200;
 
@@ -4674,6 +4895,36 @@ pub async fn inspect_cells(
 }
 
 pub async fn find_value(
+    state: Arc<AppState>,
+    params: FindValueParams,
+) -> Result<FindValueResponse> {
+    let request = crate::operations::SearchValuesRequest {
+        resource_id: crate::operations::ResourceId::bind_workbook(&params.workbook_or_fork_id)
+            .map_err(anyhow::Error::msg)?,
+        query: params.query,
+        label: params.label,
+        mode: params.mode,
+        match_mode: params.match_mode,
+        case_sensitive: params.case_sensitive,
+        sheet_name: params.sheet_name,
+        region_id: params.region_id,
+        table_name: params.table_name,
+        value_types: params.value_types,
+        search_headers_only: params.search_headers_only,
+        direction: params.direction,
+        limit: params.limit,
+        offset: params.offset,
+        context: params.context,
+        context_width: params.context_width,
+    };
+    crate::operations::project_legacy(
+        state,
+        crate::operations::SpreadsheetOperation::SearchValues(request),
+    )
+    .await
+}
+
+pub(crate) async fn find_value_semantic(
     state: Arc<AppState>,
     params: FindValueParams,
 ) -> Result<FindValueResponse> {
@@ -4891,6 +5142,35 @@ pub async fn table_profile(
     state: Arc<AppState>,
     params: TableProfileParams,
 ) -> Result<TableProfileResponse> {
+    let request = crate::operations::ProfileTableRequest {
+        resource_id: crate::operations::ResourceId::bind_workbook(&params.workbook_or_fork_id)
+            .map_err(anyhow::Error::msg)?,
+        sheet_name: params.sheet_name,
+        region_id: params.region_id,
+        table_name: params.table_name,
+        range: params.range,
+        sample_mode: params.sample_mode,
+        sample_size: params.sample_size,
+        summary_only: params.summary_only,
+    };
+    crate::operations::project_legacy(
+        state,
+        crate::operations::SpreadsheetOperation::ProfileTable(request),
+    )
+    .await
+}
+
+pub(crate) struct ResolvedTableProfile {
+    pub response: TableProfileResponse,
+    pub bounds: String,
+    pub header_row: u32,
+    pub header_from_selector: bool,
+}
+
+pub(crate) async fn table_profile_semantic(
+    state: Arc<AppState>,
+    params: TableProfileParams,
+) -> Result<ResolvedTableProfile> {
     let workbook = state.open_workbook(&params.workbook_or_fork_id).await?;
     let config = state.config();
     let output_profile = config.output_profile();
@@ -4904,7 +5184,7 @@ pub async fn table_profile(
             sheet_name: params.sheet_name.clone(),
             table_name: params.table_name.clone(),
             region_id: params.region_id,
-            range: None,
+            range: params.range.clone(),
             header_row: None,
             header_rows: None,
             columns: None,
@@ -4918,6 +5198,19 @@ pub async fn table_profile(
         },
     )?;
 
+    let ((start_col, start_row), (end_col, end_row)) = resolved.range;
+    let header_row = resolved
+        .header_hint
+        .unwrap_or(start_row)
+        .clamp(start_row, end_row);
+    let header_from_selector = resolved.header_hint.is_some();
+    let bounds = format!(
+        "{}{}:{}{}",
+        crate::utils::column_number_to_name(start_col),
+        start_row,
+        crate::utils::column_number_to_name(end_col),
+        end_row
+    );
     let sample_size = params.sample_size.unwrap_or(10) as usize;
     let sample_mode = params.sample_mode.unwrap_or(SampleMode::Distributed);
 
@@ -5032,15 +5325,20 @@ pub async fn table_profile(
         }
     }
 
-    Ok(TableProfileResponse {
-        workbook_id: workbook.id.clone(),
-        sheet_name: resolved.sheet_name,
-        table_name: resolved.table_name,
-        headers,
-        column_types,
-        row_count: total_rows,
-        samples,
-        notes: Vec::new(),
+    Ok(ResolvedTableProfile {
+        response: TableProfileResponse {
+            workbook_id: workbook.id.clone(),
+            sheet_name: resolved.sheet_name,
+            table_name: resolved.table_name,
+            headers,
+            column_types,
+            row_count: total_rows,
+            samples,
+            notes: Vec::new(),
+        },
+        bounds,
+        header_row,
+        header_from_selector,
     })
 }
 
