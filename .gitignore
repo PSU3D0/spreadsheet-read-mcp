@@ -19,6 +19,8 @@ tickets/**
 !tickets/45-headless-proof-strategic/**
 !tickets/46-docs-site-and-skills-library/
 !tickets/46-docs-site-and-skills-library/**
+!tickets/47-just-bash-extension-and-registries/
+!tickets/47-just-bash-extension-and-registries/**
 .venv/
 .pi
 ref-libs/

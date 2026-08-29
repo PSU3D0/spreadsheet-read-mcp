@@ -94,30 +94,53 @@ The current surface is much stronger than a plain “read some cells” tool. Ma
 
 ## Install
 
-### npm (recommended for CLI)
+### Shell installer
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/PSU3D0/agent-spreadsheet/main/install.sh | sh
+```
+
+The installer downloads a prebuilt CLI to `~/.local/bin` and creates the `asp` command. Pin a release with `ASP_VERSION=0.12.0`, set `ASP_INSTALL_DIR` to choose another destination, or pass `--mcp` to install the MCP server too:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/PSU3D0/agent-spreadsheet/main/install.sh | sh -s -- --mcp
+```
+
+### npm
 
 ```bash
 npm i -g agent-spreadsheet
-asp --help
 ```
 
-Installs both:
-- `asp` — primary command
-- `agent-spreadsheet` — compatibility alias
+This installs both `asp` (the primary command) and `agent-spreadsheet` (the compatibility alias) from a prebuilt native binary. No Rust toolchain is required.
 
-Downloads a prebuilt native binary for your platform. No Rust toolchain required.
+### cargo-binstall
+
+```bash
+cargo binstall agent-spreadsheet
+```
+
+This installs the prebuilt CLI in seconds.
 
 ### Cargo
 
 ```bash
-# CLI
 cargo install agent-spreadsheet --features recalc --bin asp --bin agent-spreadsheet
-
-# MCP server
-cargo install agent-spreadsheet-mcp
 ```
 
-Formualizer (the native Rust recalc engine) is included by default.
+This builds the CLI from source. Formualizer (the native Rust recalc engine) is included by default.
+
+### mise
+
+```bash
+mise use -g "ubi:PSU3D0/agent-spreadsheet[exe=asp]"
+```
+
+### MCP server
+
+```bash
+cargo install agent-spreadsheet-mcp
+```
 
 ### Docker
 
@@ -137,10 +160,11 @@ npm i agent-spreadsheet-sdk
 
 ### Prebuilt binaries
 
-Download from [GitHub Releases](https://github.com/PSU3D0/agent-spreadsheet/releases).
+Download raw binaries and archives from [GitHub Releases](https://github.com/PSU3D0/agent-spreadsheet/releases).
 
 Published native assets include:
 - Linux x86_64
+- Linux arm64
 - macOS x86_64
 - macOS arm64
 - Windows x86_64
