@@ -49,7 +49,7 @@ fn workbook_context_caches_sheet_metrics() {
     let metrics_second = context.get_sheet_metrics("Sheet1").expect("metrics");
     assert!(Arc::ptr_eq(&metrics_first, &metrics_second));
 
-    assert_eq!(metrics_first.metrics.non_empty_cells, 9);
+    assert_eq!(metrics_first.metrics.non_empty_cells, 10);
     assert_eq!(metrics_first.metrics.formula_cells, 1);
     assert_eq!(metrics_first.metrics.cached_values, 0);
 

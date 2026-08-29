@@ -19,7 +19,10 @@ use crate::config::OutputProfile;
 use crate::model::*;
 use crate::state::AppState;
 use crate::utils::column_number_to_name;
-use crate::verification::{VerifyOptions, VerifyResponse, compare_workbooks};
+use crate::verification::{
+    VerifyOptions, VerifyResponse, compare_workbooks_with_coverage,
+    evaluate_workbook_pair_for_verification, failed_verification_response,
+};
 use crate::workbook::{WorkbookContext, cell_to_value};
 use anyhow::{Context, Result, anyhow};
 use regex::Regex;
@@ -1326,14 +1329,37 @@ pub async fn verify_workbook(
         None
     };
 
-    compare_workbooks(
+    let config = state.config();
+    let evaluated = match evaluate_workbook_pair_for_verification(
+        &config,
+        &baseline_workbook,
+        &config,
+        &current_workbook,
+    )
+    .await
+    {
+        Ok(evaluated) => evaluated,
+        Err(error) => {
+            return Ok(failed_verification_response(
+                params.baseline_workbook_or_fork_id.as_str().to_string(),
+                params.current_workbook_or_fork_id.as_str().to_string(),
+                &baseline_workbook,
+                &current_workbook,
+                format!("verification evaluation failed: {error}"),
+            ));
+        }
+    };
+
+    compare_workbooks_with_coverage(
         params.baseline_workbook_or_fork_id.as_str().to_string(),
         params.current_workbook_or_fork_id.as_str().to_string(),
-        &baseline_workbook,
-        &current_workbook,
+        &evaluated.baseline().workbook,
+        &evaluated.current().workbook,
         &options,
         baseline_named.as_ref().map(|r| r.items.as_slice()),
         current_named.as_ref().map(|r| r.items.as_slice()),
+        evaluated.baseline().coverage.clone(),
+        evaluated.current().coverage.clone(),
     )
 }
 
@@ -4226,6 +4252,7 @@ pub async fn range_values(
     params: RangeValuesParams,
 ) -> Result<RangeValuesResponse> {
     let workbook = state.open_workbook(&params.workbook_or_fork_id).await?;
+    let calculation = workbook.calculation_metadata();
     let config = state.config();
     let output_profile = config.output_profile();
     let format = params.format.unwrap_or(match output_profile {
@@ -4454,6 +4481,7 @@ pub async fn range_values(
 
     Ok(RangeValuesResponse {
         workbook_id: workbook.id.clone(),
+        calculation,
         sheet_name: params.sheet_name,
         warnings,
         values,
@@ -4489,6 +4517,7 @@ pub async fn inspect_cells(
         .unwrap_or(DETAIL_LIMIT);
 
     let workbook = state.open_workbook(&params.workbook_or_fork_id).await?;
+    let calculation = workbook.calculation_metadata();
     let config = state.config();
     let detail_limit = config
         .max_cells()
@@ -4559,6 +4588,7 @@ pub async fn inspect_cells(
     let cell_limit = cap_rows_by_payload_bytes(cells.len(), max_payload_bytes, |count| {
         let response = InspectCellsResponse {
             workbook_id: workbook.id.clone(),
+            calculation: calculation.clone(),
             sheet_name: params.sheet_name.clone(),
             range: params.targets.join(","),
             targets: if params.targets.len() > 1 {
@@ -4600,6 +4630,7 @@ pub async fn inspect_cells(
 
     Ok(InspectCellsResponse {
         workbook_id: workbook.id.clone(),
+        calculation,
         sheet_name: params.sheet_name,
         range: params.targets.join(","),
         targets: if params.targets.len() > 1 {
@@ -4694,6 +4725,7 @@ pub async fn read_table(
     params: ReadTableParams,
 ) -> Result<ReadTableResponse> {
     let workbook = state.open_workbook(&params.workbook_or_fork_id).await?;
+    let calculation = workbook.calculation_metadata();
     let config = state.config();
     let output_profile = config.output_profile();
     let format = params.format.unwrap_or(match output_profile {
@@ -4770,6 +4802,7 @@ pub async fn read_table(
             );
             let response = ReadTableResponse {
                 workbook_id: workbook.id.clone(),
+                calculation: calculation.clone(),
                 sheet_name: resolved.sheet_name.clone(),
                 table_name: resolved.table_name.clone(),
                 warnings: warnings.clone(),
@@ -4798,6 +4831,7 @@ pub async fn read_table(
 
     Ok(ReadTableResponse {
         workbook_id: workbook.id.clone(),
+        calculation,
         sheet_name: resolved.sheet_name,
         table_name: resolved.table_name,
         warnings,

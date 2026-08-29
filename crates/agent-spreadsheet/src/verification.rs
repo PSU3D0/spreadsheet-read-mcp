@@ -1,5 +1,8 @@
-use crate::model::{CellValue, NamedItemKind, NamedRangeDescriptor, NamedRangeScope};
-use crate::workbook::{WorkbookContext, cell_to_value};
+use crate::model::{
+    CellValue, EvaluationCoverage, EvaluationState, NamedItemKind, NamedRangeDescriptor,
+    NamedRangeScope,
+};
+use crate::workbook::{WorkbookContext, cell_to_value, is_spreadsheet_error};
 use anyhow::{Result, anyhow, bail};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -71,10 +74,26 @@ pub struct NamedRangeDelta {
     pub after_kind: Option<NamedItemKind>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProofStatus {
+    Proved,
+    DifferencesFound,
+    InconclusiveUnevaluated,
+    Failed,
+}
+
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct VerifyResponse {
     pub baseline: String,
     pub current: String,
+    pub proof_status: ProofStatus,
+    pub baseline_state: EvaluationState,
+    pub current_state: EvaluationState,
+    pub baseline_evaluation_coverage: EvaluationCoverage,
+    pub current_evaluation_coverage: EvaluationCoverage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
     pub target_deltas: Vec<TargetDelta>,
     pub new_errors: Vec<ErrorDelta>,
     pub resolved_errors: Vec<ErrorDelta>,
@@ -102,6 +121,98 @@ struct TargetCellSnapshot {
 struct ErrorCellSnapshot {
     error: String,
     formula: Option<String>,
+}
+
+pub struct EvaluatedWorkbook {
+    _temp_dir: tempfile::TempDir,
+    pub workbook: WorkbookContext,
+    pub coverage: EvaluationCoverage,
+}
+
+pub struct EvaluatedWorkbookPair {
+    baseline: EvaluatedWorkbook,
+    current: Option<EvaluatedWorkbook>,
+}
+
+impl EvaluatedWorkbookPair {
+    pub fn baseline(&self) -> &EvaluatedWorkbook {
+        &self.baseline
+    }
+
+    pub fn current(&self) -> &EvaluatedWorkbook {
+        self.current.as_ref().unwrap_or(&self.baseline)
+    }
+
+    pub fn evaluations_performed(&self) -> u8 {
+        if self.current.is_some() { 2 } else { 1 }
+    }
+}
+
+pub fn can_reuse_verification_evaluation(
+    baseline: &WorkbookContext,
+    current: &WorkbookContext,
+) -> bool {
+    baseline.id == current.id && baseline.revision_id == current.revision_id
+}
+
+pub async fn evaluate_workbook_pair_for_verification(
+    baseline_config: &std::sync::Arc<crate::config::ServerConfig>,
+    baseline: &WorkbookContext,
+    current_config: &std::sync::Arc<crate::config::ServerConfig>,
+    current: &WorkbookContext,
+) -> Result<EvaluatedWorkbookPair> {
+    if can_reuse_verification_evaluation(baseline, current) {
+        return Ok(EvaluatedWorkbookPair {
+            baseline: evaluate_workbook_for_verification(baseline_config, baseline).await?,
+            current: None,
+        });
+    }
+
+    let (baseline, current) = tokio::try_join!(
+        evaluate_workbook_for_verification(baseline_config, baseline),
+        evaluate_workbook_for_verification(current_config, current),
+    )?;
+    Ok(EvaluatedWorkbookPair {
+        baseline,
+        current: Some(current),
+    })
+}
+
+#[cfg(feature = "recalc-formualizer")]
+pub async fn evaluate_workbook_for_verification(
+    config: &std::sync::Arc<crate::config::ServerConfig>,
+    workbook: &WorkbookContext,
+) -> Result<EvaluatedWorkbook> {
+    use crate::recalc::{FormualizerBackend, RecalcBackend};
+
+    let temp_dir = tempfile::tempdir()?;
+    let path = temp_dir.path().join("verification.xlsx");
+    workbook.save_copy(&path)?;
+
+    let result = FormualizerBackend.recalculate(&path, None).await?;
+    let mut coverage = result.evaluation_coverage;
+    coverage.revision_id = workbook.revision_id.clone();
+    let evaluated = WorkbookContext::load_from_path(
+        config,
+        &path,
+        workbook.id.clone(),
+        workbook.short_id.clone(),
+        Some(workbook.revision_id.clone()),
+    )?;
+
+    Ok(EvaluatedWorkbook {
+        _temp_dir: temp_dir,
+        workbook: evaluated,
+        coverage,
+    })
+}
+
+#[cfg(not(feature = "recalc-formualizer"))]
+pub async fn evaluate_workbook_for_verification(
+    _config: &std::sync::Arc<crate::config::ServerConfig>,
+    _workbook: &WorkbookContext,
+) -> Result<EvaluatedWorkbook> {
+    bail!("verification requires the recalc-formualizer feature")
 }
 
 impl VerifyOptions {
@@ -142,6 +253,32 @@ pub fn compare_workbooks(
     baseline_named_ranges: Option<&[NamedRangeDescriptor]>,
     current_named_ranges: Option<&[NamedRangeDescriptor]>,
 ) -> Result<VerifyResponse> {
+    let baseline_coverage = baseline.imported_evaluation_coverage();
+    let current_coverage = current.imported_evaluation_coverage();
+    compare_workbooks_with_coverage(
+        baseline_label,
+        current_label,
+        baseline,
+        current,
+        options,
+        baseline_named_ranges,
+        current_named_ranges,
+        baseline_coverage,
+        current_coverage,
+    )
+}
+
+pub fn compare_workbooks_with_coverage(
+    baseline_label: impl Into<String>,
+    current_label: impl Into<String>,
+    baseline: &WorkbookContext,
+    current: &WorkbookContext,
+    options: &VerifyOptions,
+    baseline_named_ranges: Option<&[NamedRangeDescriptor]>,
+    current_named_ranges: Option<&[NamedRangeDescriptor]>,
+    baseline_evaluation_coverage: EvaluationCoverage,
+    current_evaluation_coverage: EvaluationCoverage,
+) -> Result<VerifyResponse> {
     options.validate()?;
 
     let target_deltas = if options.errors_only {
@@ -171,9 +308,35 @@ pub fn compare_workbooks(
     };
 
     let target_classification_counts = count_target_classifications(&target_deltas);
+    let baseline_state = baseline_evaluation_coverage.state();
+    let current_state = current_evaluation_coverage.state();
+    let complete_and_fresh = baseline_evaluation_coverage.is_complete_and_fresh()
+        && current_evaluation_coverage.is_complete_and_fresh();
+    let changed_preexisting_error = preexisting_errors.iter().any(|delta| {
+        delta.before_error != delta.after_error || delta.before_formula != delta.after_formula
+    });
+    let has_differences = target_deltas.iter().any(|delta| delta.changed)
+        || !new_errors.is_empty()
+        || !resolved_errors.is_empty()
+        || changed_preexisting_error
+        || !named_range_deltas.is_empty();
+    let proof_status = if !complete_and_fresh {
+        ProofStatus::InconclusiveUnevaluated
+    } else if has_differences {
+        ProofStatus::DifferencesFound
+    } else {
+        ProofStatus::Proved
+    };
+
     Ok(VerifyResponse {
         baseline: baseline_label.into(),
         current: current_label.into(),
+        proof_status,
+        baseline_state,
+        current_state,
+        baseline_evaluation_coverage,
+        current_evaluation_coverage,
+        failure: None,
         summary: VerifySummary {
             target_count: target_deltas.len() as u32,
             changed_targets: target_deltas.iter().filter(|d| d.changed).count() as u32,
@@ -189,6 +352,41 @@ pub fn compare_workbooks(
         preexisting_errors,
         named_range_deltas,
     })
+}
+
+pub fn failed_verification_response(
+    baseline_label: impl Into<String>,
+    current_label: impl Into<String>,
+    baseline: &WorkbookContext,
+    current: &WorkbookContext,
+    failure: impl Into<String>,
+) -> VerifyResponse {
+    let baseline_evaluation_coverage = baseline.imported_evaluation_coverage();
+    let current_evaluation_coverage = current.imported_evaluation_coverage();
+    VerifyResponse {
+        baseline: baseline_label.into(),
+        current: current_label.into(),
+        proof_status: ProofStatus::Failed,
+        baseline_state: baseline_evaluation_coverage.state(),
+        current_state: current_evaluation_coverage.state(),
+        baseline_evaluation_coverage,
+        current_evaluation_coverage,
+        failure: Some(failure.into()),
+        target_deltas: Vec::new(),
+        new_errors: Vec::new(),
+        resolved_errors: Vec::new(),
+        preexisting_errors: Vec::new(),
+        named_range_deltas: Vec::new(),
+        summary: VerifySummary {
+            target_count: 0,
+            changed_targets: 0,
+            new_error_count: 0,
+            resolved_error_count: 0,
+            preexisting_error_count: 0,
+            named_range_delta_count: 0,
+            target_classification_counts: TargetClassificationCounts::default(),
+        },
+    }
 }
 
 fn count_target_classifications(target_deltas: &[TargetDelta]) -> TargetClassificationCounts {
@@ -310,7 +508,9 @@ fn collect_error_cells(
             let mut items = Vec::new();
             for cell in sheet.get_cell_collection() {
                 let raw = cell.get_value();
-                if !is_error_text(&raw) {
+                let is_typed_error =
+                    cell.get_data_type() == "e" || (cell.is_formula() && is_error_text(&raw));
+                if !is_typed_error {
                     continue;
                 }
                 let address = format!("{}!{}", sheet_name, cell.get_coordinate().get_coordinate());
@@ -500,20 +700,5 @@ fn non_empty_formula(raw: &str) -> Option<String> {
 }
 
 fn is_error_text(raw: &str) -> bool {
-    let upper = raw.trim().to_ascii_uppercase();
-    matches!(
-        upper.as_str(),
-        "#DIV/0!"
-            | "#VALUE!"
-            | "#NAME?"
-            | "#REF!"
-            | "#N/A"
-            | "#NULL!"
-            | "#NUM!"
-            | "#SPILL!"
-            | "#CALC!"
-            | "#BUSY!"
-            | "#FIELD!"
-            | "#UNKNOWN!"
-    )
+    is_spreadsheet_error(raw)
 }

@@ -310,6 +310,12 @@ Cache presence alone never authorizes `clean`; only complete trusted evaluation 
 
 Value-bearing reads (`read_cells`, `read_table`, `inspect_cells`) include lightweight `calculation: {state, revision_id}` metadata. They do not perform evaluation unless explicitly requested, but they never present stale/unknown values without disclosing known calculation state.
 
+The Wave 1 compatibility responses use these additive field names:
+
+- `recalculate`: `state` and `evaluation_coverage` are added beside the existing backend, timing, telemetry, and error fields. A timeout/cancellation is a normal `partial` response and does not persist incomplete caches.
+- `verify_workbook`: `proof_status`, `baseline_state`, `current_state`, `baseline_evaluation_coverage`, and `current_evaluation_coverage` are added beside the existing deltas and summary. The default proof path evaluates temporary workbook copies with Formualizer and never mutates either bound resource. When resource identity and revision hash match, one evaluated copy is reused for both sides. Distinct resources still incur a temporary-file write, backend parse/evaluation/write, and evaluated-file parse per side; removing that backend cost requires a future in-memory evaluator adapter. `failed` includes a `failure` message and empty delta arrays because asymmetric or failed evaluation cannot support error provenance.
+- Compatibility `range_values`, `read_table`, and `inspect_cells`: `calculation.state` uses the same four-state vocabulary and `calculation.revision_id` identifies the values read. Imported caches can establish diagnostic partial coverage or known errors, but unknown freshness remains `not_evaluated` rather than `clean`. Reads do not retain a prior operation's evaluation proof across independent resource bindings.
+
 ### Write atomicity, concurrency, and staging
 
 `write.mode` is `preview | apply | stage`:

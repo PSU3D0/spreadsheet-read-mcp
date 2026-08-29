@@ -1,6 +1,9 @@
 use crate::runtime::stateless::StatelessRuntime;
 use crate::tools::{self, NamedRangesParams};
-use crate::verification::{VerifyOptions, compare_workbooks};
+use crate::verification::{
+    VerifyOptions, compare_workbooks_with_coverage, evaluate_workbook_pair_for_verification,
+    failed_verification_response,
+};
 use anyhow::Result;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -64,14 +67,38 @@ pub async fn verify(
         None
     };
 
-    let response = compare_workbooks(
+    let baseline_config = baseline_state.config();
+    let current_config = current_state.config();
+    let evaluated = match evaluate_workbook_pair_for_verification(
+        &baseline_config,
+        &baseline_workbook,
+        &current_config,
+        &current_workbook,
+    )
+    .await
+    {
+        Ok(evaluated) => evaluated,
+        Err(error) => {
+            return Ok(serde_json::to_value(failed_verification_response(
+                baseline.display().to_string(),
+                current.display().to_string(),
+                &baseline_workbook,
+                &current_workbook,
+                format!("verification evaluation failed: {error}"),
+            ))?);
+        }
+    };
+
+    let response = compare_workbooks_with_coverage(
         baseline.display().to_string(),
         current.display().to_string(),
-        &baseline_workbook,
-        &current_workbook,
+        &evaluated.baseline().workbook,
+        &evaluated.current().workbook,
         &options,
         baseline_named.as_ref().map(|r| r.items.as_slice()),
         current_named.as_ref().map(|r| r.items.as_slice()),
+        evaluated.baseline().coverage.clone(),
+        evaluated.current().coverage.clone(),
     )?;
 
     Ok(serde_json::to_value(response)?)

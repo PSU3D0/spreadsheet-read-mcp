@@ -17,11 +17,18 @@ pub async fn execute_with_backend(
     backend: Arc<dyn crate::recalc::RecalcBackend>,
 ) -> Result<RecalculateOutcome> {
     let result = backend.recalculate(path, timeout_ms).await?;
+    let state = if result.incomplete {
+        crate::model::EvaluationState::Partial
+    } else {
+        result.evaluation_coverage.state()
+    };
     Ok(RecalculateOutcome {
         backend: result.backend_name.to_string(),
         duration_ms: result.duration_ms,
         cells_evaluated: result.cells_evaluated,
         eval_errors: result.eval_errors,
+        state,
+        evaluation_coverage: result.evaluation_coverage,
     })
 }
 

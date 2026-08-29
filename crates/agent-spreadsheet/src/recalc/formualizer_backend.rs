@@ -1,6 +1,6 @@
 use super::RecalcResult;
 use crate::recalc::RecalcBackend;
-use crate::utils::column_number_to_name;
+use crate::utils::{column_number_to_name, hash_file_sha256_hex};
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use formualizer::common::PackedSheetCell;
@@ -82,12 +82,26 @@ fn recalc_sync(path: &Path, timeout_ms: Option<u64>) -> Result<RecalcResult> {
     let stream_ms = stream_start.elapsed().as_millis() as u64;
 
     let eval_start = Instant::now();
-    let (cells_evaluated, cycle_errors, changed_cells) =
-        evaluate_with_optional_timeout(&mut engine, timeout_ms)
-            .map_err(|e| anyhow!("formualizer evaluate_all failed: {e}"))?;
+    let (cells_evaluated, cycle_errors, changed_cells, incomplete, interruption) =
+        match evaluate_with_optional_timeout(&mut engine, timeout_ms) {
+            Ok((cells, cycles, changed)) => (cells, cycles, changed, false, None),
+            Err(error) if timeout_ms.is_some() => (
+                0,
+                0,
+                None,
+                true,
+                Some(format!(
+                    "evaluation interrupted before complete coverage: {error}"
+                )),
+            ),
+            Err(error) => return Err(anyhow!("formualizer evaluate_all failed: {error}")),
+        };
     let evaluate_ms = eval_start.elapsed().as_millis() as u64;
 
     let mut eval_errors = Vec::new();
+    if let Some(interruption) = interruption {
+        eval_errors.push(interruption);
+    }
     if cycle_errors > 0 {
         eval_errors.push(format!(
             "Detected {} circular reference cycle(s). Cells in cycles are reported as #CIRC! by this backend; workbooks built with Excel's iterative calculation (common in financial models with interest/cash-sweep circularity) need a backend that iterates. If LibreOffice is installed, retry with SPREADSHEET_MCP_RECALC_BACKEND=libreoffice. Do not try to 'fix' intentional circular references.",
@@ -99,19 +113,23 @@ fn recalc_sync(path: &Path, timeout_ms: Option<u64>) -> Result<RecalcResult> {
     let date_system = engine.config.date_system;
     let changed_filter = changed_cells.as_ref();
     let mut cache_updates = Vec::with_capacity(formula_cells_len);
+    let mut error_formula_cells = 0u64;
     for (sheet_name, row, col) in formula_cells {
         let value = engine
             .get_cell_value(&sheet_name, row, col)
             .unwrap_or(LiteralValue::Empty);
 
-        if let LiteralValue::Error(err) = &value
-            && eval_errors.len() < 200
-        {
-            let addr = format!("{}{}", column_number_to_name(col), row);
-            eval_errors.push(format!("{}!{}: {}", sheet_name, addr, err));
+        if let LiteralValue::Error(err) = &value {
+            error_formula_cells += 1;
+            if eval_errors.len() < 200 {
+                let addr = format!("{}{}", column_number_to_name(col), row);
+                eval_errors.push(format!("{}!{}: {}", sheet_name, addr, err));
+            }
         }
 
-        let should_write = if let Some(changed) = changed_filter {
+        let should_write = if incomplete {
+            false
+        } else if let Some(changed) = changed_filter {
             match engine
                 .sheet_id(&sheet_name)
                 .and_then(|sid| PackedSheetCell::try_from_excel_1based(sid, row, col))
@@ -179,6 +197,20 @@ fn recalc_sync(path: &Path, timeout_ms: Option<u64>) -> Result<RecalcResult> {
         } else {
             Some(eval_errors)
         },
+        evaluation_coverage: crate::model::EvaluationCoverage {
+            formula_cells: formula_cells_len as u64,
+            evaluated_formula_cells: if incomplete {
+                0
+            } else {
+                formula_cells_len as u64
+            },
+            unsupported_formula_cells: 0,
+            error_formula_cells,
+            source: crate::model::EvaluationSource::Formualizer,
+            freshness: crate::model::EvaluationFreshness::CurrentRevision,
+            revision_id: hash_file_sha256_hex(path)?,
+        },
+        incomplete,
     })
 }
 

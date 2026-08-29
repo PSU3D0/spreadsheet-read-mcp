@@ -32,7 +32,17 @@ impl RecalcBackend for TestRecalcBackend {
             was_warm: true,
             backend_name: "test",
             cells_evaluated: None,
-            eval_errors: None,
+            eval_errors: Some(vec!["backend diagnostic".to_string()]),
+            evaluation_coverage: agent_spreadsheet_mcp::model::EvaluationCoverage {
+                formula_cells: 0,
+                evaluated_formula_cells: 0,
+                unsupported_formula_cells: 0,
+                error_formula_cells: 0,
+                source: agent_spreadsheet_mcp::model::EvaluationSource::None,
+                freshness: agent_spreadsheet_mcp::model::EvaluationFreshness::CurrentRevision,
+                revision_id: "test-revision".to_string(),
+            },
+            incomplete: false,
         })
     }
 
@@ -147,7 +157,7 @@ async fn recalculate_clears_recalc_needed() -> Result<()> {
     let registry = state.fork_registry().unwrap().clone();
     assert!(registry.get_fork(&fork.fork_id)?.recalc_needed);
 
-    recalculate_with_backend(
+    let response = recalculate_with_backend(
         state.clone(),
         RecalculateParams {
             fork_id: fork.fork_id.clone(),
@@ -158,6 +168,8 @@ async fn recalculate_clears_recalc_needed() -> Result<()> {
     )
     .await?;
 
+    assert_eq!(response.error_count, Some(1));
+    assert_eq!(response.evaluation_coverage.error_formula_cells, 0);
     assert!(!registry.get_fork(&fork.fork_id)?.recalc_needed);
     Ok(())
 }

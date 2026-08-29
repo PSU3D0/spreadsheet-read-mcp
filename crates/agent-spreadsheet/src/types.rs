@@ -38,4 +38,6 @@ pub struct RecalculateOutcome {
     pub duration_ms: u64,
     pub cells_evaluated: Option<u64>,
     pub eval_errors: Option<Vec<String>>,
+    pub state: crate::model::EvaluationState,
+    pub evaluation_coverage: crate::model::EvaluationCoverage,
 }
