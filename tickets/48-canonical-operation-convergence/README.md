@@ -6,7 +6,7 @@ Design: [`docs/architecture/canonical-operation-surface.md`](../../docs/architec
 
 ## Outcome
 
-Replace surface-specific operation taxonomies with one canonical Rust operation registry and dispatcher. Project approximately 26 default operations (30 with optional capability groups) consistently through CLI, MCP, WASM, the JavaScript SDK, and the future just-bash adapter.
+Replace surface-specific operation taxonomies with one canonical Rust operation registry and dispatcher. Project approximately 27 default operations (31 with optional capability groups) consistently through CLI, MCP, WASM, the JavaScript SDK, and the future just-bash adapter.
 
 This is consolidation by durable agent intent, not a three-verb mega-tool design. `sheet_overview`, `inspect_cells`, searches, formula analysis, and table profiling remain distinct. Consolidation targets true overlap: `sheet_page` + `range_values`, write families, related resource CRUD, and duplicated summaries/layout reads.
 
@@ -27,4 +27,4 @@ Land additively across small PRs. Keep old MCP tools in explicit compatibility m
 
 ## Exit criteria
 
-See the architecture design's acceptance gates. In particular: one implementation per operation, cross-surface golden parity, complete `write` op coverage, evaluation soundness, approximately 26/30 MCP tools, and a just-bash adapter containing no spreadsheet behavior.
+See the architecture design's acceptance gates. In particular: one implementation per operation, cross-surface golden parity, complete atomic/CAS `write` op coverage, evaluation soundness, approximately 27/31 MCP tools, and a just-bash adapter containing no spreadsheet behavior.

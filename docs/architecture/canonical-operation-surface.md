@@ -1,6 +1,6 @@
 # Canonical Operation Surface
 
-Status: proposed
+Status: contract v1 frozen after Wave 0 / Fable Gate 1
 
 This document defines the target semantic operation surface shared by the Rust core, CLI, MCP server, WASM bindings, JavaScript SDK, and future just-bash adapter.
 
@@ -51,8 +51,13 @@ pub struct OperationDescriptor {
     pub name: &'static str,
     pub description: &'static str,
     pub capability: Capability,
-    pub risk: OperationRisk,
+    pub risk_ceiling: OperationRisk,
+    pub risk_for: fn(&SpreadsheetOperation) -> OperationRisk,
+    pub capability: fn(&RuntimeCapabilities) -> bool,
+    pub cost: OperationCost,
+    pub schema_version: &'static str,
     pub input_schema: fn() -> RootSchema,
+    pub output_schema: fn() -> RootSchema,
 }
 
 pub enum SpreadsheetOperation {
@@ -82,7 +87,8 @@ The registry is the source for operation names, schemas, descriptions, capabilit
 | `read_cells` | Bulk rectangular or row-window extraction with pagination | merges `range_values` + `sheet_page` |
 | `inspect_cells` | Sparse deep diagnostics: value, formula, cache, type, format, style | unchanged |
 | `read_table` | Header-aware tabular/record extraction | unchanged |
-| `read_layout` | Bounded layout-aware/grid representation | merges `layout_page` + `grid_export` |
+| `read_layout` | Lossy display/layout representation for human or agent orientation | renames `layout_page` |
+| `export_grid` | Lossless, round-trippable rich grid payload | renames `grid_export`; pairs with `write.import_grid` |
 | `named_ranges` | Read workbook- and sheet-scoped names | unchanged |
 | `analyze_styles` | Workbook- or sheet-scoped style patterns | merges `sheet_styles` + `workbook_style_summary` |
 
@@ -90,7 +96,7 @@ The registry is the source for operation names, schemas, descriptions, capabilit
 
 ```json
 {
-  "workbook_or_fork_id": "...",
+  "resource_id": "...",
   "sheet_name": "Revenue",
   "selection": {
     "kind": "range",
@@ -132,7 +138,7 @@ Volatile discovery becomes:
 
 ```json
 {
-  "workbook_or_fork_id": "...",
+  "resource_id": "...",
   "filter": { "volatile": true }
 }
 ```
@@ -186,7 +192,7 @@ Its tagged op union includes:
 - named-range create/update/delete;
 - rich grid/CSV imports where supported.
 
-One op and many ops use the same request. Preview reports `ops_staged`; apply reports `ops_applied`. Failure identifies the op index and whether earlier ops took effect.
+One op and many ops use the same request. Pure preview reports `ops_previewed` and creates no staged state; stage reports `ops_staged`; apply reports `ops_applied`. Atomic failure rolls back completely. Explicit non-atomic execution identifies every applied, failed, and skipped op.
 
 `recalculate` and `verify_workbook` stay separate because evaluation and comparison are distinct intents. `recalculate` may optionally request proof against a baseline, but this convenience composes the same verification implementation rather than replacing `verify_workbook`.
 
@@ -234,7 +240,8 @@ These operations are registered only when their backing capability is enabled:
 | `sheet_page`, `range_values` | `read_cells` |
 | `inspect_cells` | `inspect_cells` |
 | `read_table` | `read_table` |
-| `layout_page`, `grid_export` | `read_layout` |
+| `layout_page` | `read_layout` |
+| `grid_export` | `export_grid` |
 | `named_ranges` | `named_ranges` |
 | `sheet_styles`, `workbook_style_summary` | `analyze_styles` |
 | `find_value` | `search_values` |
@@ -257,7 +264,101 @@ These operations are registered only when their backing capability is enabled:
 | `vba_project_summary`, `vba_module_source` | `inspect_vba` (optional) |
 | `close_workbook` | remove from agent surface |
 
-Target: approximately **26 default operations and 30 fully enabled operations**, down from 46 in the current slim MCP surface, without collapsing distinct agent intents.
+Target: approximately **27 default operations and 31 fully enabled operations**, down from 46 in the current slim MCP surface, without collapsing distinct agent intents.
+
+## Normative cross-cutting contracts (Gate 1)
+
+This section resolves Wave 0's five blocking contract questions and overrides any earlier illustrative sketch that conflicts with it.
+
+### Resource binding and identity
+
+Canonical operations receive exactly one opaque `resource_id`. Workbook, fork, and session resources share a typed-prefix namespace. The semantic operation layer never receives a filesystem path, raw workbook bytes, or a just-bash VFS path.
+
+Adapters own binding and export:
+
+- MCP discovery/fork lifecycle resolves workspace entries to resource ids.
+- CLI human commands remain stateless and path-driven. Canonical machine mode binds `--bind <path>` to an ephemeral resource. Mutations use an ephemeral fork and export/replace atomically according to CLI adapter flags.
+- WASM `createSession(bytes)` returns a resource id; export remains a byte/session adapter operation.
+- just-bash reads a VFS path through `ctx.fs`, enforces byte limits, creates the same WASM session, dispatches by resource id, and exports through `ctx.fs`.
+
+Any current CLI behavior that cannot compile to bind → canonical operations → export is either adapter-only file UX or a missing canonical write op. `append_rows`, `clone_row`, and `clone_row_band` are therefore canonical write op kinds rather than CLI-owned spreadsheet planners.
+
+All state-reading responses carry `revision_id`. Mutations require `expected_revision` and return `revision_before` / `revision_after`. A mismatch is `REVISION_CONFLICT` with zero effects. Cursors are opaque, bound to the resource revision and request fingerprint, and fail with `STALE_CURSOR` or `CURSOR_MISMATCH` rather than silently continuing against changed data.
+
+### Evaluation and proof soundness
+
+`recalculate` reports:
+
+```json
+{
+  "state": "clean | errors_found | partial | not_evaluated",
+  "evaluation_coverage": {
+    "formula_cells": 0,
+    "evaluated_formula_cells": 0,
+    "unsupported_formula_cells": 0,
+    "error_formula_cells": 0,
+    "source": "formualizer | trusted_cache | none",
+    "freshness": "current_revision | stale | unknown",
+    "revision_id": "..."
+  }
+}
+```
+
+Cache presence alone never authorizes `clean`; only complete trusted evaluation for the same revision does. Structural formula ratio is `formula_cells / occupied_cells`, bounded to `[0,1]`, and is independent of evaluation coverage.
+
+`verify_workbook` evaluates both sides in memory by default. Its proof status is `proved | differences_found | inconclusive_unevaluated | failed`. Empty error arrays and clean/proved claims are unreachable without complete fresh coverage. Asymmetric coverage cannot manufacture new/resolved-error provenance.
+
+Value-bearing reads (`read_cells`, `read_table`, `inspect_cells`) include lightweight `calculation: {state, revision_id}` metadata. They do not perform evaluation unless explicitly requested, but they never present stale/unknown values without disclosing known calculation state.
+
+### Write atomicity, concurrency, and staging
+
+`write.mode` is `preview | apply | stage`:
+
+- `preview` is pure: validate and compute impact/diff, create no durable state, mutate nothing.
+- `apply` mutates the target.
+- `stage` creates exactly one ordered approval bundle with its `base_revision`; it is not the default cautious workflow.
+
+`atomic` defaults to `true`. Every request fully parses and statically validates all ops before mutation. Atomic execution uses a temporary workbook/state and atomic swap: failure leaves the original revision unchanged and reports `rolled_back: true`. `atomic:false` is explicit; partial execution returns `status:"partial"`, exact applied/skipped counts, and one result per op. A side-effecting call never communicates partial effects only through a transport error.
+
+Every mutation requires `expected_revision`. Preview → apply is safe because apply uses the previewed revision as CAS. Staged apply requires `base_revision == current revision`; stale bundles are rejected, not implicitly rebased. Every write op kind is stageable/applicable through the same dispatcher.
+
+The `write` schema is a closed discriminated union, not `{kind, additionalProperties:true}`. `set_cells` uses typed content (`value` versus `formula`) rather than inferring formula meaning from a leading equals sign. The union covers all existing families plus `set_cells`, `import_grid`, `import_csv`, named-range CRUD, `append_rows`, `clone_row`, and `clone_row_band`.
+
+### Merge admission, response discriminants, and omissions
+
+A merged operation is admitted only when:
+
+1. its request has a required top-level discriminant (`selection.kind`, `view.kind`, `scope.kind`, `result_mode`, or `action`) echoed by the response;
+2. it has one closed stable envelope with branch-specific payload keys;
+3. every branch offers compatible paging, truncation, and losslessness guarantees;
+4. registry input/output schemas and golden fixtures exist per branch.
+
+This is why `read_cells` remains merged but `read_layout` and `export_grid` are separate: display layout is intentionally lossy while grid export is lossless and round-trippable.
+
+Required discriminants include:
+
+- `read_cells.selection.kind` (`range | rows`);
+- `search_formulas.result_mode` (`cells | groups`);
+- `analyze_styles.scope.kind` (`workbook | sheet`);
+- `get_changes.view.kind` (`operations | net_diff`);
+- `checkpoint.action`;
+- `staged_change.action`;
+- `sheetport_manifest.action`;
+- `inspect_vba.view`.
+
+Expensive fields are opt-in. Omitted, `null`, and empty have distinct meanings. Derived/inferred values never flatten into exact metadata namespaces. `describe_workbook` returns cheap exact metadata by default; `include:["summary"]` adds a separately scoped summary with coverage/status.
+
+`read_cells` returns correlated blocks (`selection_index`, requested/returned ranges) and one revision-bound opaque continuation cursor. A single small exact range remains simple: one complete block and `next_cursor:null`. Row-window selection retains column projection by letters/headers, header inclusion, style tags, formulas, and current encodings.
+
+`export_grid` is lossless, never trims, preserves absolute coordinates and merge-repeat semantics, and paginates without weakening round-trip guarantees. `read_layout` may trim/cap/render for display and labels itself lossy.
+
+### Risk and capability metadata
+
+The registry has a static risk ceiling plus `risk_for(request)`. Hosts with per-request policy use the dynamic result. MCP annotations are static and use the worst-case risk for a union tool. A union is acceptable only when its common low-risk use is not harmed by worst-case destructive approval friction; read/write unions are forbidden.
+
+Capability registration is adapter-specific. `list_workbooks`, rendering, SheetPort, VBA, and fork lifecycle are registered only where backed. Current SDK capability claims must reflect actual registered/implemented behavior; unsupported WASM verification methods must fail explicitly rather than echoing apparent success.
+
+All canonical responses include `schema_version`. Errors use one structured envelope. Warnings are structured data. Optional screenshot results use bounded artifact handles, never server-local paths as the only result.
 
 ## Surface projections
 
@@ -324,7 +425,7 @@ It must not define an operation list or argument schemas independently. Operatio
 - One Rust implementation and canonical request/response type per operation.
 - CLI machine mode, MCP, WASM, and SDK produce semantically identical JSON for shared fixtures.
 - Cross-surface parity tests are generated from operation descriptors and golden fixtures.
-- Canonical default MCP surface is about 26 tools; optional full surface about 30.
+- Canonical default MCP surface is about 27 tools; optional full surface about 31.
 - Tool-list bytes and initialization instructions are measured and remain below the 0.13 slim baseline.
 - `read_cells` empirically covers exact-range and row-window workflows without loss of continuation metadata.
 - `write` covers every current mutation family, including simple cell edits, with preview/apply and indexed failure semantics.

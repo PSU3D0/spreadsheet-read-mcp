@@ -1,68 +1,95 @@
 # Surface Boundary Rules (Non-Negotiable)
 
-Status: active guardrails (Tranche 35 foundation)
-Owner: Tranche 35 (tickets/35-js-surface-migration)
+Status: active guardrails; amended by canonical-operation Gate 1
+Owner: ticket 48 (`tickets/48-canonical-operation-convergence`)
 
-This document defines the **hard boundaries** across CLI, MCP, WASM, and SDK surfaces.
-If a change conflicts with these rules, the change must be redesigned (not waived ad hoc).
+This document defines the hard boundaries across the Rust operation core, CLI, MCP, WASM, SDK, and external adapters. If a change conflicts with these rules, redesign it or amend this document and the capability matrix explicitly.
 
 ## Rule set
 
-### 1) CLI is stateless and path-driven
+### 1) Shared semantics use opaque resources
 
-- CLI commands **must** operate on explicit file paths or explicit output paths.
-- CLI commands **must not** require long-lived server sessions, fork IDs, staged-change IDs, or MCP transport envelopes.
-- CLI mutation mode flags (`--dry-run`, `--in-place`, `--output`, `--force`) are **CLI adapter concerns** and are not parity requirements for MCP/WASM.
+- Canonical operations accept one opaque `resource_id`, never a filesystem path, raw workbook bytes, VFS path, workspace root, or transport envelope.
+- Workbook, fork, and session resources share a typed-prefix identity namespace.
+- State reads return `revision_id`; mutations require `expected_revision` and return `revision_before` / `revision_after`.
+- Shared semantic behavior lives behind `execute_operation`; adapters bind resources and project responses.
 
-Primary implementation boundary:
+### 2) CLI remains stateless and path-driven for users
+
+- Human CLI commands operate on explicit file/output paths and must not require long-lived server sessions or MCP envelopes.
+- CLI adapter flags (`--dry-run`, `--in-place`, `--output`, `--force`) control bind/export/file-replacement behavior, not spreadsheet semantics.
+- Canonical machine mode (`asp op`) binds a path to an ephemeral resource; mutation binds an ephemeral fork and exports/replaces atomically.
+- CLI helpers that understand spreadsheet structure must compile to canonical operations. If they cannot, the canonical write/read model is incomplete. Only generic file copying, shell formatting, and path UX may remain CLI-only.
+
+Primary adapter boundary:
 - `crates/agent-spreadsheet/src/cli/**`
 - `crates/agent-spreadsheet/src/runtime/stateless.rs`
 
-### 2) MCP owns session/fork/staging orchestration
+### 3) MCP owns workspace and durable orchestration
 
-- Fork lifecycle (`create_fork`, `save_fork`, `discard_fork`, checkpoints, staged changes) is **MCP-first orchestration**.
-- These workflows **must not** leak into CLI as required behavior.
-- MCP transport contracts (tool envelopes, tool-level guardrails/timeouts) are **adapter-mcp concerns**.
+- MCP maps workspace discovery, workbook cache, forks, checkpoints, staged approvals, and artifacts to canonical resource ids.
+- MCP transport envelopes, annotations, timeouts, and tool registration are adapter concerns.
+- MCP wrappers must call the canonical dispatcher and must not normalize or reimplement spreadsheet behavior.
+- Tool annotations use the operation's worst-case risk; request-aware hosts may use `risk_for(request)`.
 
-Primary implementation boundary:
+Primary adapter boundary:
 - `crates/agent-spreadsheet-mcp/src/server.rs`
-- `crates/agent-spreadsheet/src/tools/fork.rs`
 
-### 3) WASM is byte/session oriented (not workspace/path oriented)
+### 4) WASM is byte/session oriented
 
-- WASM surface **must** expose in-memory/session APIs suitable for browser/runtime embedding.
-- WASM surface **must not** require workspace roots, repository scanning, or host path mapping semantics.
-- Any host-specific path/workspace policy remains outside WASM adapter boundaries.
+- WASM creates a resource from workbook bytes and exports bytes from a resource.
+- WASM must not require workspace roots, repository scanning, host paths, or MCP fork identity.
+- One generic operation-dispatch binding is preferred; per-operation bindings may exist only when generated from the canonical registry.
+- Memory/byte ceilings are enforced before workbook allocation.
 
-Primary architecture projection boundary:
-- `core.read.*`, `core.write.*`, `core.analysis.*` semantics are reusable.
-- Path/workspace semantics remain adapter-owned (CLI/MCP hosts).
+Primary adapter boundary:
+- `crates/agent-spreadsheet-wasm/**`
 
-### 4) SDK is backend-abstraction, not a fourth semantics fork
+### 5) SDK is transport/backend abstraction, not a semantics fork
 
-- SDK **must** normalize on shared capability semantics across `McpBackend` and `WasmBackend` where the matrix says `ALL`.
-- SDK **must not** expose backend-specific orchestration primitives as default cross-backend APIs.
-- Backend-specific operations (e.g., MCP fork lifecycle) must be explicitly namespaced/opt-in.
+- SDK backends expose `execute(operation, input)` with canonical request/response JSON.
+- Typed convenience methods are generated/thin wrappers over `execute`.
+- SDK must not hand-normalize canonical response semantics, fabricate unsupported success, or advertise capabilities not registered by its backend.
+- Backend-specific concerns are resource creation/export, transport, and explicit capabilities.
 
-### 5) Shared semantics live in core
+Primary adapter boundary:
+- `npm/agent-spreadsheet-sdk/**`
 
-- Capabilities marked `ALL` in the matrix are expected to converge on shared core behavior.
-- Adapters may shape UX/transport, but semantic divergence requires explicit matrix/boundary doc updates.
-- New capabilities must declare classification (`ALL`, `CLI_ONLY`, `MCP_ONLY`, `SHARED_PARTIAL`) before implementation.
+### 6) External adapters are projections only
+
+- just-bash registers one `asp` custom command supporting `asp op <operation> --json <payload>`.
+- It uses the SDK dispatcher and just-bash `ctx.fs`; it carries no operation taxonomy, operation-specific parser, or spreadsheet logic.
+- Other adapters follow the same rule: bind resource, dispatch canonical operation, serialize canonical response.
+
+### 7) Proof and value freshness are explicit
+
+- Cache presence never authorizes a clean/proved result.
+- Recalculation and verification report evaluation coverage and same-revision freshness.
+- Value-bearing reads report known calculation state without implying evaluation.
+- Derived metrics report coverage/sampling and never flatten into exact metadata.
+
+### 8) Mutation safety is semantic, not adapter-specific
+
+- Canonical writes support pure preview, apply, and explicit durable stage.
+- Atomic execution defaults on; non-atomic partial effects are structured results, not transport-only errors.
+- Every mutation uses revision CAS.
+- Every write op kind passes through one dispatcher for preview/apply/stage.
 
 ## Enforcement hooks
 
-- Capability inventory source of truth:
-  - `docs/architecture/surface-capability-matrix.md`
-- Drift check (CLI/MCP coverage against matrix):
-  - `scripts/check_surface_matrix_drift.py`
-- Local enforcement command:
+- Canonical design: `docs/architecture/canonical-operation-surface.md`
+- Capability inventory: `docs/architecture/surface-capability-matrix.md`
+- Drift check: `scripts/check_surface_matrix_drift.py`
+- Local enforcement:
   - `python3 scripts/check_surface_matrix_drift.py`
   - `cargo test -p agent-spreadsheet surface_matrix_drift_check`
+- Cross-surface canonical parity fixtures are required per operation and response branch.
 
 ## Change control
 
-Any boundary exception proposal must include:
-1. Which rule is being changed and why.
-2. Matrix updates (`surface-capability-matrix.md`) for affected rows.
-3. Drift-check/test updates so the new rule is enforced automatically.
+Any boundary exception must include:
+
+1. The rule being changed and why.
+2. Canonical design and capability-matrix updates.
+3. Drift/parity test updates.
+4. Evidence that behavior was not duplicated in an adapter.
