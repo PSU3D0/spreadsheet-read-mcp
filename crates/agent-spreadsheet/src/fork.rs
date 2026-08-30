@@ -11,7 +11,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 const FORK_DIR: &str = "/tmp/mcp-forks";
 const CHECKPOINT_DIR: &str = "/tmp/mcp-checkpoints";

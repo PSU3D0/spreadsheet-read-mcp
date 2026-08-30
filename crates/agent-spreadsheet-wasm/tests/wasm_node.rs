@@ -13,22 +13,63 @@ async fn node_executes_canonical_session_reads_and_errors() {
     let session_id = create_session_js(js_sys::Uint8Array::from(WORKBOOK)).expect("create session");
     assert!(session_id.starts_with("session:"));
 
-    let response: Value = serde_json::from_str(
-        &execute_operation_js(
-            session_id.clone(),
-            "list_sheets".to_string(),
-            "{}".to_string(),
-        )
-        .await
-        .expect("list sheets"),
-    )
-    .expect("response JSON");
-    assert_eq!(response["schema_version"], "1");
-    assert_eq!(response["operation"], "list_sheets");
-    assert_eq!(response["resource_id"], session_id);
-    assert!(response["data"]["sheets"].as_array().is_some());
+    let discovery: Value =
+        serde_json::from_str(&operations_js().expect("operations")).expect("discovery JSON");
+    let operations = discovery.as_array().expect("operations array");
+    assert_eq!(operations.len(), 19, "unexpected WASM operation surface");
 
-    let revision = response["revision_id"].as_str().expect("revision");
+    let params = |name: &str| match name {
+        "describe_workbook" | "list_sheets" | "named_ranges" => serde_json::json!({}),
+        "sheet_overview" | "formula_map" | "profile_table" | "sheet_statistics" => {
+            serde_json::json!({"sheet_name":"Sheet1"})
+        }
+        "read_cells" => serde_json::json!({
+            "sheet_name":"Sheet1",
+            "selection":{"kind":"range","ranges":["A1:B2"]},
+            "format":"dense"
+        }),
+        "inspect_cells" => serde_json::json!({"sheet_name":"Sheet1","targets":["A1"]}),
+        "read_table" => {
+            serde_json::json!({"sheet_name":"Sheet1","range":"A1:B2","format":"values"})
+        }
+        "read_layout" | "export_grid" => serde_json::json!({"sheet_name":"Sheet1","range":"A1:B2"}),
+        "analyze_styles" => serde_json::json!({
+            "scope":{"kind":"sheet","sheet_name":"Sheet1","selection":{"kind":"all"}},
+            "include":["descriptors"]
+        }),
+        "search_values" => serde_json::json!({"query":"1","match_mode":"contains"}),
+        "search_formulas" => {
+            serde_json::json!({"query":{"text":"SUM","match_mode":"contains"},"result_mode":"cells"})
+        }
+        "formula_trace" => {
+            serde_json::json!({"sheet_name":"Sheet1","cell_address":"A1","direction":"precedents"})
+        }
+        other => panic!("no direct Node fixture for advertised operation {other}"),
+    };
+
+    let mut revision = None;
+    for operation in operations {
+        let name = operation["name"].as_str().expect("operation name");
+        if matches!(name, "write" | "recalculate" | "verify_workbook") {
+            continue;
+        }
+        let response: Value = serde_json::from_str(
+            &execute_operation_js(
+                session_id.clone(),
+                name.to_string(),
+                params(name).to_string(),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("advertised operation {name} aborted: {error:?}")),
+        )
+        .unwrap_or_else(|error| panic!("invalid {name} response JSON: {error}"));
+        assert_eq!(response["schema_version"], "1", "operation {name}");
+        assert_eq!(response["operation"], name, "operation {name}");
+        assert_eq!(response["resource_id"], session_id, "operation {name}");
+        revision = response["revision_id"].as_str().map(str::to_string);
+    }
+
+    let revision = revision.expect("read revision");
     let write: Value = serde_json::from_str(
         &execute_operation_js(
             session_id.clone(),
@@ -82,9 +123,6 @@ async fn node_executes_canonical_session_reads_and_errors() {
     assert_eq!(verified["data"]["proof_status"], "differences_found");
     assert!(dispose_session_js(baseline_id).expect("dispose baseline"));
 
-    let discovery: Value =
-        serde_json::from_str(&operations_js().expect("operations")).expect("discovery JSON");
-    let operations = discovery.as_array().expect("operations array");
     assert!(operations.iter().all(
         |operation| operation["name"] != "inspect_vba" && operation["name"] != "list_workbooks"
     ));

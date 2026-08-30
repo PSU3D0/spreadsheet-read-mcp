@@ -41,6 +41,7 @@ Limits are checked before workbook bytes are copied into WASM or parsed and befo
 cargo test -p agent-spreadsheet-wasm
 cargo check -p agent-spreadsheet-wasm --target wasm32-unknown-unknown
 cargo test -p agent-spreadsheet-wasm --target wasm32-unknown-unknown --test wasm_node
+cargo test -p agent-spreadsheet-wasm --target wasm32-unknown-unknown --test wasm_write_kinds
 cargo test -p agent-spreadsheet-wasm --target wasm32-unknown-unknown --test wasm_browser
 cargo clippy -p agent-spreadsheet-wasm --all-targets -- -D warnings
 ```

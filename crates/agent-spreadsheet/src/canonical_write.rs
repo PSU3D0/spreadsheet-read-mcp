@@ -1,8 +1,13 @@
-use crate::fork::{ChangeSummary, StagedChange, StagedOp};
+use crate::fork::ChangeSummary;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::fork::{StagedChange, StagedOp};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::model::WorkbookId;
 use crate::model::{
-    CellValuePrimitive, FormulaParsePolicy, GridPayload, NamedRangeScope, StylePatch, WorkbookId,
+    CellValuePrimitive, FormulaParsePolicy, GridPayload, NamedRangeScope, StylePatch,
 };
 use crate::operations::{OperationRisk, ResourceId};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::state::AppState;
 use crate::styles::StylePatchMode;
 use crate::tools::fork::{
@@ -17,6 +22,7 @@ use crate::tools::rules_batch::{ConditionalFormatRuleSpec, RulesOp, apply_rules_
 use crate::tools::sheet_layout::{SheetLayoutOp, apply_sheet_layout_ops_to_workbook};
 use crate::utils::{hash_file_sha256_hex, make_short_random_id};
 use anyhow::{Result, anyhow, bail};
+#[cfg(not(target_arch = "wasm32"))]
 use chrono::Utc;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -24,6 +30,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
 const MAX_WRITE_OPS: usize = 128;
@@ -1253,11 +1260,6 @@ fn swap_temp(temp: tempfile::NamedTempFile, target: &Path) -> Result<()> {
     Ok(())
 }
 
-fn diff_paths(before: &Path, after: &Path) -> Result<WriteDiff> {
-    let changes = crate::core::diff::calculate_changeset(before, after, None)?;
-    changes_to_write_diff(changes)
-}
-
 fn diff_bytes(before: &[u8], after: &[u8]) -> Result<WriteDiff> {
     let changes = crate::diff::calculate_changeset_bytes(before, after, None)?;
     changes_to_write_diff(changes)
@@ -1556,17 +1558,6 @@ fn apply_grid_to_workbook(
     )
 }
 
-pub(crate) fn apply_write_op_to_file(
-    path: &Path,
-    op: &WriteOp,
-    policy: FormulaParsePolicy,
-) -> Result<Value> {
-    let mut book = umya_spreadsheet::reader::xlsx::read(path)?;
-    let result = apply_write_op_to_workbook(&mut book, op, policy)?;
-    umya_spreadsheet::writer::xlsx::write(&book, path)?;
-    Ok(result)
-}
-
 pub(crate) fn apply_write_op_to_workbook(
     book: &mut umya_spreadsheet::Spreadsheet,
     op: &WriteOp,
@@ -1858,50 +1849,6 @@ pub(crate) fn apply_write_op_to_workbook(
     }
 }
 
-fn run_ops(
-    path: &Path,
-    ops: &[WriteOp],
-    policy: FormulaParsePolicy,
-) -> (Vec<WriteOpResult>, Option<usize>) {
-    let mut results = Vec::with_capacity(ops.len());
-    for (index, op) in ops.iter().enumerate() {
-        match apply_write_op_to_file(path, op, policy) {
-            Ok(detail) => results.push(WriteOpResult {
-                index,
-                kind: op.kind().to_string(),
-                status: WriteOpStatus::Applied,
-                detail: Some(detail),
-                error: None,
-            }),
-            Err(error) => {
-                results.push(WriteOpResult {
-                    index,
-                    kind: op.kind().to_string(),
-                    status: WriteOpStatus::Failed,
-                    detail: None,
-                    error: Some(WriteOpError {
-                        code: "OPERATION_FAILED".to_string(),
-                        message: error.to_string(),
-                        path: format!("$.ops[{index}]"),
-                        retryable: false,
-                    }),
-                });
-                for (skip, later) in ops.iter().enumerate().skip(index + 1) {
-                    results.push(WriteOpResult {
-                        index: skip,
-                        kind: later.kind().to_string(),
-                        status: WriteOpStatus::Skipped,
-                        detail: None,
-                        error: None,
-                    });
-                }
-                return (results, Some(index));
-            }
-        }
-    }
-    (results, None)
-}
-
 pub(crate) fn apply_bundle_atomically_to_path(
     path: &Path,
     bundle: &CanonicalStagedBundle,
@@ -1919,11 +1866,13 @@ pub(crate) fn apply_bundle_atomically_to_path(
             current
         );
     }
-    let temp = temp_copy(path)?;
+    let original_bytes = fs::read(path)?;
+    let original =
+        umya_spreadsheet::reader::xlsx::read_reader(std::io::Cursor::new(&original_bytes), true)?;
     let policy = bundle
         .formula_parse_policy
         .unwrap_or(FormulaParsePolicy::Warn);
-    let (results, failure) = run_ops(temp.path(), &bundle.ops, policy);
+    let (candidate, results, failure) = apply_atomic_candidate(&original, &bundle.ops, policy);
     if let Some(index) = failure {
         bail!(
             "staged write op {index} failed: {}",
@@ -1934,34 +1883,283 @@ pub(crate) fn apply_bundle_atomically_to_path(
                 .unwrap_or("unknown failure")
         );
     }
+    let bytes = workbook_bytes(&candidate)?;
+    let temp = temp_copy(path)?;
+    fs::write(temp.path(), bytes)?;
     swap_temp(temp, path)?;
     Ok(bundle.ops.len())
 }
 
-pub fn execute_write_on_bytes(
-    bytes: &[u8],
-    current_revision: &str,
-    request: WriteRequest,
-) -> Result<(WriteResponseData, Option<Vec<u8>>)> {
-    validate_request(&request)?;
-    if !request.resource_id.as_str().starts_with("session:") {
-        return Err(invalid_request(
-            "in-memory write requires a session: mutable resource_id",
-        ));
+#[derive(Debug)]
+struct WriteSnapshot {
+    bytes: Vec<u8>,
+    revision: String,
+    content_revision: String,
+}
+
+trait WriteTransactionBackend {
+    fn validate_resource(&self, resource_id: &ResourceId) -> Result<()>;
+    fn snapshot(&mut self) -> Result<WriteSnapshot>;
+    fn supports_stage(&self) -> bool {
+        false
     }
-    if request.expected_revision != current_revision {
-        bail!(
-            "revision conflict: expected {}, current {}",
-            request.expected_revision,
-            current_revision
+    fn commit(
+        &mut self,
+        expected_revision: &str,
+        bytes: Vec<u8>,
+        op_kinds: &[String],
+    ) -> Result<String>;
+    fn stage(
+        &mut self,
+        _expected_revision: &str,
+        _bundle: CanonicalStagedBundle,
+        _label: Option<&str>,
+        _impact: &WriteImpact,
+        _diff: &WriteDiff,
+    ) -> Result<(String, String)> {
+        Err(invalid_request(
+            "mode 'stage' is unavailable for this storage backend; use preview or apply",
+        ))
+    }
+}
+
+struct ByteSessionBackend<'a> {
+    bytes: &'a [u8],
+    revision: &'a str,
+    committed: Option<Vec<u8>>,
+}
+
+impl WriteTransactionBackend for ByteSessionBackend<'_> {
+    fn validate_resource(&self, resource_id: &ResourceId) -> Result<()> {
+        if resource_id.as_str().starts_with("session:") {
+            Ok(())
+        } else {
+            Err(invalid_request(
+                "in-memory write requires a session: mutable resource_id",
+            ))
+        }
+    }
+
+    fn snapshot(&mut self) -> Result<WriteSnapshot> {
+        Ok(WriteSnapshot {
+            bytes: self.bytes.to_vec(),
+            revision: self.revision.to_string(),
+            content_revision: crate::utils::hash_bytes_sha256_hex(self.bytes),
+        })
+    }
+
+    fn commit(
+        &mut self,
+        expected_revision: &str,
+        bytes: Vec<u8>,
+        _op_kinds: &[String],
+    ) -> Result<String> {
+        if expected_revision != self.revision {
+            bail!(
+                "revision conflict: expected {}, current {}",
+                expected_revision,
+                self.revision
+            );
+        }
+        let revision = format!("state:{}", make_short_random_id("rev", 20));
+        self.committed = Some(bytes);
+        Ok(revision)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct ForkFileBackend<'a> {
+    fork: &'a mut crate::fork::ForkContext,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl WriteTransactionBackend for ForkFileBackend<'_> {
+    fn validate_resource(&self, resource_id: &ResourceId) -> Result<()> {
+        if resource_id.as_str().starts_with("fork:")
+            && resource_id.to_workbook_id().as_str() == self.fork.fork_id
+        {
+            Ok(())
+        } else {
+            Err(invalid_request(
+                "native canonical write requires the bound fork: mutable resource_id",
+            ))
+        }
+    }
+
+    fn snapshot(&mut self) -> Result<WriteSnapshot> {
+        let revision = self.fork.sync_revisions()?;
+        Ok(WriteSnapshot {
+            bytes: fs::read(&self.fork.work_path)?,
+            revision,
+            content_revision: self.fork.content_revision.clone(),
+        })
+    }
+
+    fn supports_stage(&self) -> bool {
+        true
+    }
+
+    fn commit(
+        &mut self,
+        expected_revision: &str,
+        bytes: Vec<u8>,
+        op_kinds: &[String],
+    ) -> Result<String> {
+        let current = self.fork.sync_revisions()?;
+        if current != expected_revision {
+            bail!(
+                "revision conflict: expected {}, current {}",
+                expected_revision,
+                current
+            );
+        }
+        let temp = temp_copy(&self.fork.work_path)?;
+        fs::write(temp.path(), bytes)?;
+        swap_temp(temp, &self.fork.work_path)?;
+        self.fork.recalc_needed = true;
+        self.fork.content_revision = hash_file_sha256_hex(&self.fork.work_path)?;
+        let revision_after = self.fork.advance_state_revision();
+        self.fork.push_canonical_operation(
+            "write",
+            op_kinds.to_vec(),
+            expected_revision.to_string(),
+            revision_after.clone(),
         );
+        Ok(revision_after)
     }
-    if request.mode == WriteMode::Stage {
+
+    fn stage(
+        &mut self,
+        expected_revision: &str,
+        bundle: CanonicalStagedBundle,
+        label: Option<&str>,
+        impact: &WriteImpact,
+        diff: &WriteDiff,
+    ) -> Result<(String, String)> {
+        let current = self.fork.sync_revisions()?;
+        if current != expected_revision {
+            bail!(
+                "revision conflict: expected {}, current {}",
+                expected_revision,
+                current
+            );
+        }
+        let change_id = make_short_random_id("chg", 12);
+        let mut summary = ChangeSummary {
+            op_kinds: impact.op_kinds.clone(),
+            ..ChangeSummary::default()
+        };
+        summary
+            .counts
+            .insert("ops_staged".to_string(), bundle.ops.len() as u64);
+        summary
+            .counts
+            .insert("preview_change_items".to_string(), diff.change_count as u64);
+        self.fork.push_staged_change(StagedChange {
+            change_id: change_id.clone(),
+            created_at: Utc::now(),
+            label: label.map(str::to_string),
+            ops: vec![StagedOp {
+                kind: "canonical_write_bundle".to_string(),
+                payload: serde_json::to_value(bundle)?,
+            }],
+            summary,
+            fork_path_snapshot: None,
+        });
+        let revision_after = self.fork.advance_state_revision();
+        Ok((change_id, revision_after))
+    }
+}
+
+fn write_error(index: usize, op: &WriteOp, error: anyhow::Error) -> WriteOpResult {
+    WriteOpResult {
+        index,
+        kind: op.kind().to_string(),
+        status: WriteOpStatus::Failed,
+        detail: None,
+        error: Some(WriteOpError {
+            code: "OPERATION_FAILED".to_string(),
+            message: error.to_string(),
+            path: format!("$.ops[{index}]"),
+            retryable: false,
+        }),
+    }
+}
+
+fn skipped_result(index: usize, op: &WriteOp) -> WriteOpResult {
+    WriteOpResult {
+        index,
+        kind: op.kind().to_string(),
+        status: WriteOpStatus::Skipped,
+        detail: None,
+        error: None,
+    }
+}
+
+fn applied_result(index: usize, op: &WriteOp, detail: Value) -> WriteOpResult {
+    WriteOpResult {
+        index,
+        kind: op.kind().to_string(),
+        status: WriteOpStatus::Applied,
+        detail: Some(detail),
+        error: None,
+    }
+}
+
+fn apply_atomic_candidate(
+    original: &umya_spreadsheet::Spreadsheet,
+    ops: &[WriteOp],
+    policy: FormulaParsePolicy,
+) -> (
+    umya_spreadsheet::Spreadsheet,
+    Vec<WriteOpResult>,
+    Option<usize>,
+) {
+    let mut candidate = original.clone();
+    let mut results = Vec::with_capacity(ops.len());
+    let mut failure = None;
+    for (index, op) in ops.iter().enumerate() {
+        if failure.is_some() {
+            results.push(skipped_result(index, op));
+            continue;
+        }
+        match apply_write_op_to_workbook(&mut candidate, op, policy) {
+            Ok(detail) => results.push(applied_result(index, op, detail)),
+            Err(error) => {
+                failure = Some(index);
+                results.push(write_error(index, op, error));
+            }
+        }
+    }
+    (candidate, results, failure)
+}
+
+fn workbook_bytes(book: &umya_spreadsheet::Spreadsheet) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    umya_spreadsheet::writer::xlsx::write_writer(book, &mut bytes)?;
+    Ok(bytes)
+}
+
+fn execute_write_transaction<B: WriteTransactionBackend>(
+    backend: &mut B,
+    request: WriteRequest,
+) -> Result<WriteResponseData> {
+    validate_request(&request)?;
+    backend.validate_resource(&request.resource_id)?;
+    if request.mode == WriteMode::Stage && !backend.supports_stage() {
         return Err(invalid_request(
             "mode 'stage' is unavailable for in-memory sessions; use preview or apply",
         ));
     }
 
+    let snapshot = backend.snapshot()?;
+    if request.expected_revision != snapshot.revision {
+        bail!(
+            "revision conflict: expected {}, current {}",
+            request.expected_revision,
+            snapshot.revision
+        );
+    }
     let policy = request
         .formula_parse_policy
         .unwrap_or(FormulaParsePolicy::Warn);
@@ -1969,73 +2167,22 @@ pub fn execute_write_on_bytes(
         op_kinds: request.ops.iter().map(|op| op.kind().to_string()).collect(),
         risk: worst_risk(&request.ops),
     };
-    let original = umya_spreadsheet::reader::xlsx::read_reader(std::io::Cursor::new(bytes), true)?;
+    let original =
+        umya_spreadsheet::reader::xlsx::read_reader(std::io::Cursor::new(&snapshot.bytes), true)?;
 
-    if request.mode == WriteMode::Preview || request.atomic {
-        let mut candidate = original.clone();
-        let mut results = Vec::with_capacity(request.ops.len());
-        let mut failure = None;
-        for (index, op) in request.ops.iter().enumerate() {
-            if failure.is_some() {
-                results.push(WriteOpResult {
-                    index,
-                    kind: op.kind().to_string(),
-                    status: WriteOpStatus::Skipped,
-                    detail: None,
-                    error: None,
-                });
-                continue;
-            }
-            match apply_write_op_to_workbook(&mut candidate, op, policy) {
-                Ok(detail) => results.push(WriteOpResult {
-                    index,
-                    kind: op.kind().to_string(),
-                    status: WriteOpStatus::Applied,
-                    detail: Some(detail),
-                    error: None,
-                }),
-                Err(error) => {
-                    failure = Some(index);
-                    results.push(WriteOpResult {
-                        index,
-                        kind: op.kind().to_string(),
-                        status: WriteOpStatus::Failed,
-                        detail: None,
-                        error: Some(WriteOpError {
-                            code: "OPERATION_FAILED".to_string(),
-                            message: error.to_string(),
-                            path: format!("$.ops[{index}]"),
-                            retryable: false,
-                        }),
-                    });
-                }
-            }
-        }
+    if matches!(request.mode, WriteMode::Preview | WriteMode::Stage) || request.atomic {
+        let (candidate, mut results, failure) =
+            apply_atomic_candidate(&original, &request.ops, policy);
         if let Some(index) = failure {
             for result in &mut results[..index] {
                 result.status = WriteOpStatus::RolledBack;
             }
-            let response = if request.mode == WriteMode::Preview {
-                let mut candidate_bytes = Vec::new();
-                umya_spreadsheet::writer::xlsx::write_writer(&candidate, &mut candidate_bytes)?;
-                let mut diff = diff_bytes(bytes, &candidate_bytes)?;
-                add_effect_manifest(&mut diff, &results);
-                WriteResponseData::Failed {
-                    mode: request.mode,
-                    atomic: request.atomic,
-                    revision_before: current_revision.to_string(),
-                    revision_after: current_revision.to_string(),
-                    ops_applied: 0,
-                    diff,
-                    impact,
-                    results,
-                }
-            } else {
-                WriteResponseData::RolledBack {
+            if request.mode == WriteMode::Apply {
+                return Ok(WriteResponseData::RolledBack {
                     mode: request.mode,
                     atomic: true,
-                    revision_before: current_revision.to_string(),
-                    revision_after: current_revision.to_string(),
+                    revision_before: snapshot.revision.clone(),
+                    revision_after: snapshot.revision,
                     ops_applied: 0,
                     rolled_back: true,
                     diff: WriteDiff {
@@ -2044,240 +2191,64 @@ pub fn execute_write_on_bytes(
                     },
                     impact,
                     results,
-                }
-            };
-            return Ok((response, None));
+                });
+            }
+            let candidate_bytes = workbook_bytes(&candidate)?;
+            let mut diff = diff_bytes(&snapshot.bytes, &candidate_bytes)?;
+            add_effect_manifest(&mut diff, &results);
+            return Ok(WriteResponseData::Failed {
+                mode: request.mode,
+                atomic: request.atomic,
+                revision_before: snapshot.revision.clone(),
+                revision_after: snapshot.revision,
+                ops_applied: 0,
+                diff,
+                impact,
+                results,
+            });
         }
 
-        let mut candidate_bytes = Vec::new();
-        umya_spreadsheet::writer::xlsx::write_writer(&candidate, &mut candidate_bytes)?;
-        let mut diff = diff_bytes(bytes, &candidate_bytes)?;
+        let candidate_bytes = workbook_bytes(&candidate)?;
+        let mut diff = diff_bytes(&snapshot.bytes, &candidate_bytes)?;
         add_effect_manifest(&mut diff, &results);
         if request.mode == WriteMode::Preview {
             for result in &mut results {
                 result.status = WriteOpStatus::Previewed;
             }
-            return Ok((
-                WriteResponseData::Previewed {
-                    mode: request.mode,
-                    atomic: request.atomic,
-                    revision_before: current_revision.to_string(),
-                    revision_after: current_revision.to_string(),
-                    ops_previewed: request.ops.len(),
-                    diff,
-                    impact,
-                    results,
-                },
-                None,
-            ));
-        }
-        let revision_after = format!("state:{}", make_short_random_id("rev", 20));
-        return Ok((
-            WriteResponseData::Applied {
+            return Ok(WriteResponseData::Previewed {
                 mode: request.mode,
-                atomic: true,
-                revision_before: current_revision.to_string(),
-                revision_after,
-                ops_applied: request.ops.len(),
+                atomic: request.atomic,
+                revision_before: snapshot.revision.clone(),
+                revision_after: snapshot.revision,
+                ops_previewed: request.ops.len(),
                 diff,
                 impact,
                 results,
-            },
-            Some(candidate_bytes),
-        ));
-    }
-
-    let mut current = original;
-    let mut results = Vec::with_capacity(request.ops.len());
-    let mut applied = 0usize;
-    let mut failed = false;
-    for (index, op) in request.ops.iter().enumerate() {
-        if failed {
-            results.push(WriteOpResult {
-                index,
-                kind: op.kind().to_string(),
-                status: WriteOpStatus::Skipped,
-                detail: None,
-                error: None,
             });
-            continue;
         }
-        let mut candidate = current.clone();
-        match apply_write_op_to_workbook(&mut candidate, op, policy) {
-            Ok(detail) => {
-                current = candidate;
-                applied += 1;
-                results.push(WriteOpResult {
-                    index,
-                    kind: op.kind().to_string(),
-                    status: WriteOpStatus::Applied,
-                    detail: Some(detail),
-                    error: None,
-                });
-            }
-            Err(error) => {
-                failed = true;
-                results.push(WriteOpResult {
-                    index,
-                    kind: op.kind().to_string(),
-                    status: WriteOpStatus::Failed,
-                    detail: None,
-                    error: Some(WriteOpError {
-                        code: "OPERATION_FAILED".to_string(),
-                        message: error.to_string(),
-                        path: format!("$.ops[{index}]"),
-                        retryable: false,
-                    }),
-                });
-            }
-        }
-    }
-    let mut current_bytes = Vec::new();
-    umya_spreadsheet::writer::xlsx::write_writer(&current, &mut current_bytes)?;
-    let mut diff = diff_bytes(bytes, &current_bytes)?;
-    add_effect_manifest(&mut diff, &results);
-    let revision_after = if applied > 0 {
-        format!("state:{}", make_short_random_id("rev", 20))
-    } else {
-        current_revision.to_string()
-    };
-    let response = if failed {
-        WriteResponseData::Partial {
-            mode: request.mode,
-            atomic: false,
-            revision_before: current_revision.to_string(),
-            revision_after,
-            ops_applied: applied,
-            diff,
-            impact,
-            results,
-        }
-    } else {
-        WriteResponseData::Applied {
-            mode: request.mode,
-            atomic: false,
-            revision_before: current_revision.to_string(),
-            revision_after,
-            ops_applied: applied,
-            diff,
-            impact,
-            results,
-        }
-    };
-    Ok((response, (applied > 0).then_some(current_bytes)))
-}
-
-pub async fn execute_write(
-    state: Arc<AppState>,
-    request: WriteRequest,
-) -> Result<WriteResponseData> {
-    validate_request(&request)?;
-    if !request.resource_id.as_str().starts_with("fork:")
-        && !request.resource_id.as_str().starts_with("session:")
-    {
-        return Err(invalid_request(
-            "write requires a fork: or session: mutable resource_id",
-        ));
-    }
-    if request.resource_id.as_str().starts_with("session:") {
-        bail!("session resources are not backed by the native canonical dispatcher yet");
-    }
-    let fork_id = request.resource_id.to_workbook_id().0;
-    let registry = state
-        .fork_registry()
-        .ok_or_else(|| anyhow!("fork registry not available"))?;
-    let response = registry.with_fork_mut(&fork_id, |fork| {
-        let path = fork.work_path.clone();
-        let revision_before = fork.sync_revisions()?;
-        let file_revision_before = fork.content_revision.clone();
-        if revision_before != request.expected_revision {
-            bail!(
-                "revision conflict: expected {}, current {}",
-                request.expected_revision,
-                revision_before
-            );
-        }
-        let policy = request
-            .formula_parse_policy
-            .unwrap_or(FormulaParsePolicy::Warn);
-        let impact = WriteImpact {
-            op_kinds: request.ops.iter().map(|op| op.kind().to_string()).collect(),
-            risk: worst_risk(&request.ops),
-        };
-
-        if matches!(request.mode, WriteMode::Preview | WriteMode::Stage) {
-            let temp = temp_copy(&path)?;
-            let (mut results, failure) = run_ops(temp.path(), &request.ops, policy);
-            let mut diff = diff_paths(&path, temp.path())?;
-            add_effect_manifest(&mut diff, &results);
-            if let Some(index) = failure {
-                for result in &mut results[..index] {
-                    result.status = WriteOpStatus::RolledBack;
-                }
-                return Ok(WriteResponseData::Failed {
-                    mode: request.mode,
-                    atomic: request.atomic,
-                    revision_before: revision_before.clone(),
-                    revision_after: revision_before,
-                    ops_applied: 0,
-                    diff,
-                    impact,
-                    results,
-                });
-            }
-            if request.mode == WriteMode::Preview {
-                for result in &mut results {
-                    result.status = WriteOpStatus::Previewed;
-                }
-                return Ok(WriteResponseData::Previewed {
-                    mode: request.mode,
-                    atomic: request.atomic,
-                    revision_before: revision_before.clone(),
-                    revision_after: revision_before,
-                    ops_previewed: request.ops.len(),
-                    diff,
-                    impact,
-                    results,
-                });
-            }
+        if request.mode == WriteMode::Stage {
             for result in &mut results {
                 result.status = WriteOpStatus::Staged;
             }
-            let change_id = make_short_random_id("chg", 12);
             let bundle = CanonicalStagedBundle {
-                base_revision: file_revision_before.clone(),
+                base_revision: snapshot.content_revision,
                 max_risk: impact.risk,
                 atomic: true,
                 ops: request.ops.clone(),
                 formula_parse_policy: request.formula_parse_policy,
             };
-            let mut summary = ChangeSummary {
-                op_kinds: impact.op_kinds.clone(),
-                ..ChangeSummary::default()
-            };
-            summary
-                .counts
-                .insert("ops_staged".to_string(), request.ops.len() as u64);
-            summary
-                .counts
-                .insert("preview_change_items".to_string(), diff.change_count as u64);
-            fork.push_staged_change(StagedChange {
-                change_id: change_id.clone(),
-                created_at: Utc::now(),
-                label: request.label.clone(),
-                ops: vec![StagedOp {
-                    kind: "canonical_write_bundle".to_string(),
-                    payload: serde_json::to_value(bundle)?,
-                }],
-                summary,
-                fork_path_snapshot: None,
-            });
-            let stage_revision = fork.advance_state_revision();
+            let (change_id, revision_after) = backend.stage(
+                &snapshot.revision,
+                bundle,
+                request.label.as_deref(),
+                &impact,
+                &diff,
+            )?;
             return Ok(WriteResponseData::Staged {
                 mode: request.mode,
                 atomic: true,
-                revision_before,
-                revision_after: stage_revision,
+                revision_before: snapshot.revision,
+                revision_after,
                 ops_staged: request.ops.len(),
                 change_id,
                 diff,
@@ -2286,147 +2257,104 @@ pub async fn execute_write(
             });
         }
 
-        if request.atomic {
-            let temp = temp_copy(&path)?;
-            let (mut results, failure) = run_ops(temp.path(), &request.ops, policy);
-            if let Some(index) = failure {
-                for result in &mut results[..index] {
-                    result.status = WriteOpStatus::RolledBack;
-                }
-                return Ok(WriteResponseData::RolledBack {
-                    mode: request.mode,
-                    atomic: true,
-                    revision_before: revision_before.clone(),
-                    revision_after: revision_before,
-                    ops_applied: 0,
-                    rolled_back: true,
-                    diff: WriteDiff {
-                        change_count: 0,
-                        changes: Vec::new(),
-                    },
-                    impact,
-                    results,
-                });
-            }
-            let mut diff = diff_paths(&path, temp.path())?;
-            add_effect_manifest(&mut diff, &results);
-            swap_temp(temp, &path)?;
-            fork.recalc_needed = true;
-            fork.content_revision = hash_file_sha256_hex(&path)?;
-            let revision_after = fork.advance_state_revision();
-            fork.push_canonical_operation(
-                "write",
-                request.ops.iter().map(|op| op.kind().to_string()).collect(),
-                revision_before.clone(),
-                revision_after.clone(),
-            );
-            return Ok(WriteResponseData::Applied {
-                mode: request.mode,
-                atomic: true,
-                revision_before,
-                revision_after,
-                ops_applied: request.ops.len(),
-                diff,
-                impact,
-                results,
-            });
-        }
+        let revision_after =
+            backend.commit(&snapshot.revision, candidate_bytes, &impact.op_kinds)?;
+        return Ok(WriteResponseData::Applied {
+            mode: request.mode,
+            atomic: true,
+            revision_before: snapshot.revision,
+            revision_after,
+            ops_applied: request.ops.len(),
+            diff,
+            impact,
+            results,
+        });
+    }
 
-        let before_snapshot = temp_copy(&path)?;
-        let mut results = Vec::with_capacity(request.ops.len());
-        let mut failed = false;
-        let mut applied = 0usize;
-        for (index, op) in request.ops.iter().enumerate() {
-            if failed {
-                results.push(WriteOpResult {
-                    index,
-                    kind: op.kind().to_string(),
-                    status: WriteOpStatus::Skipped,
-                    detail: None,
-                    error: None,
-                });
-                continue;
-            }
-            let outcome = (|| {
-                let temp = temp_copy(&path)?;
-                let detail = apply_write_op_to_file(temp.path(), op, policy)?;
-                swap_temp(temp, &path)?;
-                Ok::<_, anyhow::Error>(detail)
-            })();
-            match outcome {
-                Ok(detail) => {
-                    applied += 1;
-                    results.push(WriteOpResult {
-                        index,
-                        kind: op.kind().to_string(),
-                        status: WriteOpStatus::Applied,
-                        detail: Some(detail),
-                        error: None,
-                    });
-                }
-                Err(error) => {
-                    failed = true;
-                    results.push(WriteOpResult {
-                        index,
-                        kind: op.kind().to_string(),
-                        status: WriteOpStatus::Failed,
-                        detail: None,
-                        error: Some(WriteOpError {
-                            code: "OPERATION_FAILED".to_string(),
-                            message: error.to_string(),
-                            path: format!("$.ops[{index}]"),
-                            retryable: false,
-                        }),
-                    });
-                }
-            }
-        }
-        if applied > 0 {
-            fork.recalc_needed = true;
-        }
-        let mut diff = diff_paths(before_snapshot.path(), &path)?;
-        add_effect_manifest(&mut diff, &results);
-        let file_revision_after = hash_file_sha256_hex(&path)?;
-        let revision_after = if applied > 0 {
-            fork.content_revision = file_revision_after;
-            fork.advance_state_revision()
-        } else {
-            fork.state_revision.clone()
-        };
-        if applied > 0 {
-            fork.push_canonical_operation(
-                "write",
-                request.ops[..applied]
-                    .iter()
-                    .map(|op| op.kind().to_string())
-                    .collect(),
-                revision_before.clone(),
-                revision_after.clone(),
-            );
-        }
+    let mut current = original;
+    let mut results = Vec::with_capacity(request.ops.len());
+    let mut applied = 0usize;
+    let mut failed = false;
+    for (index, op) in request.ops.iter().enumerate() {
         if failed {
-            Ok(WriteResponseData::Partial {
-                mode: request.mode,
-                atomic: false,
-                revision_before,
-                revision_after,
-                ops_applied: applied,
-                diff,
-                impact,
-                results,
-            })
-        } else {
-            Ok(WriteResponseData::Applied {
-                mode: request.mode,
-                atomic: false,
-                revision_before,
-                revision_after,
-                ops_applied: applied,
-                diff,
-                impact,
-                results,
-            })
+            results.push(skipped_result(index, op));
+            continue;
         }
+        let mut candidate = current.clone();
+        match apply_write_op_to_workbook(&mut candidate, op, policy) {
+            Ok(detail) => {
+                current = candidate;
+                applied += 1;
+                results.push(applied_result(index, op, detail));
+            }
+            Err(error) => {
+                failed = true;
+                results.push(write_error(index, op, error));
+            }
+        }
+    }
+    let current_bytes = workbook_bytes(&current)?;
+    let mut diff = diff_bytes(&snapshot.bytes, &current_bytes)?;
+    add_effect_manifest(&mut diff, &results);
+    let revision_after = if applied > 0 {
+        backend.commit(
+            &snapshot.revision,
+            current_bytes,
+            &impact.op_kinds[..applied],
+        )?
+    } else {
+        snapshot.revision.clone()
+    };
+    if failed {
+        Ok(WriteResponseData::Partial {
+            mode: request.mode,
+            atomic: false,
+            revision_before: snapshot.revision,
+            revision_after,
+            ops_applied: applied,
+            diff,
+            impact,
+            results,
+        })
+    } else {
+        Ok(WriteResponseData::Applied {
+            mode: request.mode,
+            atomic: false,
+            revision_before: snapshot.revision,
+            revision_after,
+            ops_applied: applied,
+            diff,
+            impact,
+            results,
+        })
+    }
+}
+
+pub fn execute_write_on_bytes(
+    bytes: &[u8],
+    current_revision: &str,
+    request: WriteRequest,
+) -> Result<(WriteResponseData, Option<Vec<u8>>)> {
+    let mut backend = ByteSessionBackend {
+        bytes,
+        revision: current_revision,
+        committed: None,
+    };
+    let response = execute_write_transaction(&mut backend, request)?;
+    Ok((response, backend.committed))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn execute_write(
+    state: Arc<AppState>,
+    request: WriteRequest,
+) -> Result<WriteResponseData> {
+    let fork_id = request.resource_id.to_workbook_id().0;
+    let registry = state
+        .fork_registry()
+        .ok_or_else(|| anyhow!("fork registry not available"))?;
+    let response = registry.with_fork_mut(&fork_id, |fork| {
+        execute_write_transaction(&mut ForkFileBackend { fork }, request)
     })?;
     if matches!(
         response,
