@@ -3,8 +3,8 @@ mod support;
 use agent_spreadsheet::canonical_optional::{InspectVbaData, SheetportManifestData};
 use agent_spreadsheet::model::WorkbookId;
 use agent_spreadsheet::operations::{
-    CanonicalErrorCode, ResourceId, RuntimeCapabilities, decode_operation, execute_operation_json,
-    operation_descriptor, operations_discovery,
+    CanonicalErrorCode, ResourceId, RuntimeCapabilities, canonical_error_schema, decode_operation,
+    execute_operation_json, operation_descriptor, operations_discovery,
 };
 use agent_spreadsheet::tools::{self, ListWorkbooksParams};
 use serde_json::{Value, json};
@@ -41,16 +41,84 @@ fn optional_capabilities_are_not_advertised_when_unbacked() {
         ..RuntimeCapabilities::default()
     };
     let names = operation_names(&operations_discovery(&enabled));
-    for optional in [
-        "screenshot_sheet",
-        "sheetport_manifest",
-        "execute_sheetport",
-        "inspect_vba",
-    ] {
+    for optional in ["sheetport_manifest", "execute_sheetport", "inspect_vba"] {
         assert!(
             names.iter().any(|name| name == optional),
             "missing {optional}"
         );
+    }
+    assert_eq!(
+        names.iter().any(|name| name == "screenshot_sheet"),
+        cfg!(feature = "recalc-libreoffice") && std::path::Path::new("/usr/bin/soffice").exists()
+    );
+}
+
+#[test]
+fn optional_schemas_mirror_runtime_bounds() {
+    let sheetport = (operation_descriptor("execute_sheetport")
+        .unwrap()
+        .input_schema)();
+    assert_eq!(
+        sheetport["properties"]["manifest_yaml"]["maxLength"],
+        1_048_576
+    );
+    assert_eq!(sheetport["properties"]["inputs"]["maxProperties"], 256);
+    let sheetport_schema = sheetport.to_string();
+    assert!(sheetport_schema.contains("\"maxLength\":65536"));
+    assert!(sheetport_schema.contains("\"maxItems\":10000"));
+    assert!(sheetport_schema.contains("\"maxItems\":100000"));
+    assert!(sheetport_schema.contains("\"maxProperties\":1000"));
+
+    let screenshot = (operation_descriptor("screenshot_sheet")
+        .unwrap()
+        .input_schema)();
+    assert_eq!(screenshot["properties"]["sheet_name"]["minLength"], 1);
+    assert_eq!(screenshot["properties"]["sheet_name"]["maxLength"], 31);
+    assert_eq!(screenshot["properties"]["range"]["maxLength"], 32);
+    assert!(screenshot["properties"]["range"]["pattern"].is_string());
+
+    let vba = (operation_descriptor("inspect_vba").unwrap().input_schema)();
+    assert_eq!(vba["oneOf"][0]["properties"]["limit_modules"]["minimum"], 1);
+    assert_eq!(
+        vba["oneOf"][0]["properties"]["limit_modules"]["maximum"],
+        100
+    );
+    assert_eq!(vba["oneOf"][1]["properties"]["limit_lines"]["minimum"], 1);
+    assert_eq!(
+        vba["oneOf"][1]["properties"]["limit_lines"]["maximum"],
+        1_000
+    );
+}
+
+#[test]
+fn optional_response_goldens_are_full_and_schema_valid() {
+    let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/canonical");
+    let successes: Value = serde_json::from_str(
+        &std::fs::read_to_string(fixture_root.join("optional_success_responses.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(successes.as_array().unwrap().len(), 9);
+    for case in successes.as_array().unwrap() {
+        let response = &case["response"];
+        let operation = response["operation"].as_str().unwrap();
+        let schema = (operation_descriptor(operation).unwrap().output_schema)();
+        jsonschema::validator_for(&schema)
+            .unwrap()
+            .validate(response)
+            .unwrap_or_else(|error| panic!("{}: {error}", case["case"]));
+    }
+
+    let errors: Value = serde_json::from_str(
+        &std::fs::read_to_string(fixture_root.join("optional_error_responses.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(errors.as_array().unwrap().len(), 9);
+    let schema = canonical_error_schema();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    for case in errors.as_array().unwrap() {
+        validator
+            .validate(&case["response"])
+            .unwrap_or_else(|error| panic!("{}: {error}", case["case"]));
     }
 }
 
@@ -124,6 +192,58 @@ fn optional_action_discriminants_are_closed_and_schemas_compile() {
     assert_eq!(error.error.code, CanonicalErrorCode::InvalidRequest);
 }
 
+#[test]
+fn cli_binding_rules_are_action_specific_and_deterministic() {
+    let portable = assert_cmd::cargo::cargo_bin_cmd!("asp")
+        .args([
+            "op",
+            "sheetport_manifest",
+            "--json",
+            r#"{"action":"schema"}"#,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        portable.status.success(),
+        "{}",
+        String::from_utf8_lossy(&portable.stderr)
+    );
+    let response: Value = serde_json::from_slice(&portable.stdout).unwrap();
+    assert!(response.get("resource_id").is_none());
+
+    for (operation, payload) in [
+        ("list_sheets", r#"{}"#),
+        ("sheetport_manifest", r#"{"action":"candidates"}"#),
+        (
+            "sheetport_manifest",
+            r#"{"action":"bind_check","manifest_yaml":"spec: fio"}"#,
+        ),
+    ] {
+        let output = assert_cmd::cargo::cargo_bin_cmd!("asp")
+            .args(["op", operation, "--json", payload])
+            .output()
+            .unwrap();
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "INVALID_REQUEST");
+        assert_eq!(error["error"]["path"], "--bind");
+    }
+
+    let output = assert_cmd::cargo::cargo_bin_cmd!("asp")
+        .args([
+            "op",
+            "sheetport_manifest",
+            "--bind",
+            "/definitely/missing.xlsx",
+            "--json",
+            r#"{"action":"validate","manifest_yaml":"spec: fio"}"#,
+        ])
+        .output()
+        .unwrap();
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "INVALID_REQUEST");
+    assert_eq!(error["error"]["path"], "--bind");
+}
+
 #[tokio::test]
 async fn manifest_schema_validate_and_normalize_are_portable_content_actions() {
     let workspace = support::TestWorkspace::new();
@@ -176,6 +296,122 @@ async fn manifest_schema_validate_and_normalize_are_portable_content_actions() {
     .expect_err("bounded manifest");
     assert_eq!(error.error.code, CanonicalErrorCode::InvalidRequest);
     assert!(!error.error.message.contains('/'));
+}
+
+#[tokio::test]
+async fn execute_sheetport_missing_required_inputs_is_structured_and_incomplete() {
+    let workspace = support::TestWorkspace::new();
+    workspace.create_workbook("required.xlsx", |_| {});
+    let state = workspace.app_state();
+    let list = tools::list_workbooks(
+        state.clone(),
+        ListWorkbooksParams {
+            slug_prefix: None,
+            folder: None,
+            path_glob: None,
+            limit: None,
+            offset: None,
+            include_paths: Some(false),
+        },
+    )
+    .await
+    .unwrap();
+    let resource_id = ResourceId::bind_workbook(&list.workbooks[0].workbook_id).unwrap();
+    let manifest = r#"spec: fio
+spec_version: "0.3.0"
+manifest:
+  id: required-input
+  name: Required Input
+  workbook:
+    uri: file://required.xlsx
+ports:
+  - id: rate
+    dir: in
+    shape: scalar
+    location: { a1: Sheet1!A1 }
+    schema: { type: number }
+"#;
+    let execution = execute_operation_json(
+        state,
+        "execute_sheetport",
+        json!({
+            "resource_id": resource_id.as_str(),
+            "manifest_yaml": manifest,
+            "inputs": {}
+        }),
+    )
+    .await
+    .expect("structured missing input result");
+    assert_eq!(execution.data["status"], "failed");
+    assert_eq!(execution.data["coverage"]["state"], "partial");
+    assert_eq!(execution.data["coverage"]["declared_input_ports"], 1);
+    assert_eq!(execution.data["coverage"]["supplied_input_ports"], 0);
+    assert_eq!(
+        execution.data["errors"][0]["code"],
+        "MISSING_REQUIRED_INPUT"
+    );
+    assert_eq!(execution.data["errors"][0]["port_id"], "rate");
+    assert_eq!(
+        execution.data["errors"][0]["constraint"]["kind"],
+        "required"
+    );
+}
+
+#[tokio::test]
+async fn execute_sheetport_constraint_failures_are_structured() {
+    let workspace = support::TestWorkspace::new();
+    workspace.create_workbook("constraint.xlsx", |_| {});
+    let state = workspace.app_state();
+    let list = tools::list_workbooks(
+        state.clone(),
+        ListWorkbooksParams {
+            slug_prefix: None,
+            folder: None,
+            path_glob: None,
+            limit: None,
+            offset: None,
+            include_paths: Some(false),
+        },
+    )
+    .await
+    .unwrap();
+    let resource_id = ResourceId::bind_workbook(&list.workbooks[0].workbook_id).unwrap();
+    let manifest = r#"spec: fio
+spec_version: "0.3.0"
+manifest:
+  id: constrained-input
+  name: Constrained Input
+  workbook:
+    uri: file://constraint.xlsx
+ports:
+  - id: rate
+    dir: in
+    shape: scalar
+    location: { a1: Sheet1!A1 }
+    schema: { type: number }
+    constraints: { min: 0 }
+"#;
+    let execution = execute_operation_json(
+        state,
+        "execute_sheetport",
+        json!({
+            "resource_id": resource_id.as_str(),
+            "manifest_yaml": manifest,
+            "inputs": {"rate": {"kind": "number", "value": -1.0}}
+        }),
+    )
+    .await
+    .expect("structured constraint result");
+    assert_eq!(execution.data["status"], "failed");
+    assert_eq!(execution.data["coverage"]["state"], "partial");
+    assert_eq!(
+        execution.data["errors"][0]["code"],
+        "PORT_CONSTRAINT_VIOLATION"
+    );
+    assert_eq!(
+        execution.data["errors"][0]["constraint"]["kind"],
+        "manifest_constraint"
+    );
 }
 
 #[tokio::test]
@@ -338,6 +574,122 @@ async fn vba_module_source_cursor_is_bounded_fingerprinted_and_revision_bound() 
     .await
     .expect_err("revision-bound cursor");
     assert_eq!(stale.error.code, CanonicalErrorCode::StaleCursor);
+}
+
+#[tokio::test]
+async fn vba_cursor_is_bound_to_resource_even_when_workbook_bytes_match() {
+    let workspace = support::TestWorkspace::new();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../agent-spreadsheet-mcp/tests/test_files/vba_minimal.xlsm");
+    workspace.copy_workbook(&fixture, "macro-a.xlsm");
+    workspace.copy_workbook(&fixture, "macro-b.xlsm");
+    let state = workspace.app_state();
+    let list = tools::list_workbooks(
+        state.clone(),
+        ListWorkbooksParams {
+            slug_prefix: None,
+            folder: None,
+            path_glob: None,
+            limit: None,
+            offset: None,
+            include_paths: Some(false),
+        },
+    )
+    .await
+    .unwrap();
+    let first_resource = ResourceId::bind_workbook(&list.workbooks[0].workbook_id).unwrap();
+    let second_resource = ResourceId::bind_workbook(&list.workbooks[1].workbook_id).unwrap();
+    let first = execute_operation_json(
+        state.clone(),
+        "inspect_vba",
+        json!({
+            "view": "project_summary",
+            "resource_id": first_resource.as_str(),
+            "limit_modules": 1
+        }),
+    )
+    .await
+    .unwrap();
+    let cursor = first.data["next_cursor"]
+        .as_str()
+        .expect("second module page");
+    let mismatch = execute_operation_json(
+        state,
+        "inspect_vba",
+        json!({
+            "view": "project_summary",
+            "resource_id": second_resource.as_str(),
+            "limit_modules": 1,
+            "cursor": cursor
+        }),
+    )
+    .await
+    .expect_err("cross-resource cursor rejected");
+    assert_eq!(mismatch.error.code, CanonicalErrorCode::CursorMismatch);
+}
+
+#[cfg(feature = "recalc")]
+#[tokio::test]
+async fn screenshot_validation_is_invalid_request_path_free_and_does_not_precreate() {
+    use agent_spreadsheet::canonical_optional::{ScreenshotSheetRequest, screenshot_sheet};
+
+    let workspace = support::TestWorkspace::new();
+    let state = workspace.app_state();
+    let invalid = screenshot_sheet(
+        state.clone(),
+        ScreenshotSheetRequest {
+            resource_id: serde_json::from_value(json!("wb:abc")).unwrap(),
+            sheet_name: "Sheet1".to_string(),
+            range: Some("../secret".to_string()),
+        },
+    )
+    .await
+    .expect_err("invalid range");
+    assert!(invalid.to_string().starts_with("invalid request:"));
+    assert!(!invalid.to_string().contains("../secret"));
+    assert!(!workspace.path("screenshots").exists());
+
+    workspace.create_workbook("plain.xlsx", |_| {});
+    let list = tools::list_workbooks(
+        state.clone(),
+        ListWorkbooksParams {
+            slug_prefix: None,
+            folder: None,
+            path_glob: None,
+            limit: None,
+            offset: None,
+            include_paths: Some(false),
+        },
+    )
+    .await
+    .unwrap();
+    let resource_id = ResourceId::bind_workbook(&list.workbooks[0].workbook_id).unwrap();
+    let invalid = execute_operation_json(
+        state.clone(),
+        "screenshot_sheet",
+        json!({
+            "resource_id": resource_id.as_str(),
+            "sheet_name": "Sheet1",
+            "range": "A0:XFE9999999"
+        }),
+    )
+    .await
+    .expect_err("canonical invalid range");
+    assert_eq!(invalid.error.code, CanonicalErrorCode::InvalidRequest);
+    assert!(!invalid.error.message.contains('/'));
+
+    let error = screenshot_sheet(
+        state,
+        ScreenshotSheetRequest {
+            resource_id,
+            sheet_name: "Sheet1".to_string(),
+            range: None,
+        },
+    )
+    .await
+    .expect_err("runtime has no screenshot backing");
+    assert_eq!(error.to_string(), "screenshot rendering failed");
+    assert!(!workspace.path("screenshots").exists());
 }
 
 #[cfg(all(unix, feature = "recalc"))]

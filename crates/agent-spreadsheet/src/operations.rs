@@ -136,10 +136,7 @@ impl RuntimeCapabilities {
             workbook_discovery: true,
             workbook_read: true,
             workbook_write: cfg!(all(not(target_arch = "wasm32"), feature = "recalc")),
-            screenshot_rendering: cfg!(all(
-                not(target_arch = "wasm32"),
-                feature = "recalc-libreoffice"
-            )),
+            screenshot_rendering: native_screenshot_available(),
             sheetport: cfg!(feature = "recalc-formualizer"),
             vba: true,
         }
@@ -459,6 +456,15 @@ struct OptionalResourceResponseSchema<T: JsonSchema> {
     data: T,
 }
 
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc-libreoffice"))]
+fn native_screenshot_available() -> bool {
+    crate::recalc::ScreenshotExecutor::new(&crate::recalc::RecalcConfig::default()).is_available()
+}
+#[cfg(not(all(not(target_arch = "wasm32"), feature = "recalc-libreoffice")))]
+fn native_screenshot_available() -> bool {
+    false
+}
+
 fn workbook_read(capabilities: &RuntimeCapabilities) -> bool {
     capabilities.workbook_read
 }
@@ -467,10 +473,10 @@ fn workbook_discovery(capabilities: &RuntimeCapabilities) -> bool {
 }
 #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 fn screenshot_rendering(capabilities: &RuntimeCapabilities) -> bool {
-    capabilities.workbook_read && capabilities.screenshot_rendering
+    capabilities.workbook_read && capabilities.screenshot_rendering && native_screenshot_available()
 }
 fn sheetport(capabilities: &RuntimeCapabilities) -> bool {
-    capabilities.sheetport
+    capabilities.sheetport && cfg!(feature = "recalc-formualizer")
 }
 fn vba(capabilities: &RuntimeCapabilities) -> bool {
     capabilities.workbook_read && capabilities.vba
@@ -798,13 +804,51 @@ fn sheetport_manifest_input_schema() -> Value {
 fn sheetport_manifest_output_schema() -> Value {
     optional_resource_output_schema::<SheetportManifestData>("sheetport_manifest")
 }
-schemas!(
-    execute_sheetport_input_schema,
-    execute_sheetport_output_schema,
-    ExecuteSheetportRequest,
-    ExecuteSheetportData,
-    "execute_sheetport"
-);
+fn apply_sheetport_value_bounds(value: &mut Value, property: Option<&str>) {
+    if let Some(object) = value.as_object_mut() {
+        if matches!(property, Some("inputs" | "results")) {
+            object.insert("maxProperties".to_string(), json!(256));
+        }
+        if object.get("type") == Some(&Value::String("object".to_string()))
+            && object
+                .get("additionalProperties")
+                .and_then(Value::as_object)
+                .and_then(|schema| schema.get("$ref"))
+                == Some(&json!("#/$defs/SheetportScalar"))
+        {
+            object.insert("maxProperties".to_string(), json!(1_000));
+        }
+        if object.get("type") == Some(&Value::String("array".to_string()))
+            && object
+                .get("items")
+                .and_then(Value::as_object)
+                .and_then(|schema| schema.get("$ref"))
+                == Some(&json!("#/$defs/SheetportScalar"))
+        {
+            object.insert("maxItems".to_string(), json!(100_000));
+        }
+        let keys = object.keys().cloned().collect::<Vec<_>>();
+        for key in keys {
+            if let Some(child) = object.get_mut(&key) {
+                apply_sheetport_value_bounds(child, Some(&key));
+            }
+        }
+    } else if let Some(array) = value.as_array_mut() {
+        for child in array {
+            apply_sheetport_value_bounds(child, property);
+        }
+    }
+}
+fn execute_sheetport_input_schema() -> Value {
+    let mut schema = closed_schema::<ExecuteSheetportRequest>();
+    apply_sheetport_value_bounds(&mut schema, None);
+    schema
+}
+fn execute_sheetport_output_schema() -> Value {
+    let mut schema = resource_output_schema::<ExecuteSheetportData>("execute_sheetport");
+    apply_sheetport_value_bounds(&mut schema, None);
+    schema
+}
 schemas!(
     inspect_vba_input_schema,
     inspect_vba_output_schema,
@@ -1526,12 +1570,19 @@ pub fn decode_operation(
             SpreadsheetOperation::SheetStatistics
         ),
         #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
-        "screenshot_sheet" => decode!(
-            payload,
-            name,
-            ScreenshotSheetRequest,
-            SpreadsheetOperation::ScreenshotSheet
-        ),
+        "screenshot_sheet" => {
+            let request = serde_json::from_value::<ScreenshotSheetRequest>(payload)
+                .map_err(|error| CanonicalErrorEnvelope::invalid_request(name, error))?;
+            crate::canonical_optional::validate_screenshot_request(&request).map_err(|error| {
+                CanonicalErrorEnvelope::new(
+                    CanonicalErrorCode::InvalidRequest,
+                    error.to_string(),
+                    Some(name),
+                    None,
+                )
+            })?;
+            Ok(SpreadsheetOperation::ScreenshotSheet(request))
+        }
         "sheetport_manifest" => decode!(
             payload,
             name,
@@ -1708,6 +1759,8 @@ pub async fn execute_operation(
                     CanonicalErrorCode::ResourceNotFound,
                     if name == "inspect_vba" {
                         "VBA resource could not be opened".to_string()
+                    } else if name == "screenshot_sheet" {
+                        "screenshot resource could not be opened".to_string()
                     } else {
                         error.to_string()
                     },

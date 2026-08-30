@@ -63,6 +63,16 @@ impl StatelessRuntime {
         Ok((state, workbook_id))
     }
 
+    pub fn open_unbound_state(&self) -> Result<Arc<AppState>> {
+        let workspace_root = std::env::current_dir()?.canonicalize()?;
+        let placeholder = workspace_root.join(".asp-unbound.xlsx");
+        let mut config = self.build_cli_config(&placeholder);
+        config.workspace_root = workspace_root.clone();
+        config.screenshot_dir = workspace_root.join("screenshots");
+        config.single_workbook = None;
+        Ok(Arc::new(AppState::new(Arc::new(config))))
+    }
+
     #[cfg(feature = "recalc")]
     pub async fn open_fork_state_for_file(
         &self,
@@ -99,8 +109,8 @@ impl StatelessRuntime {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
         ServerConfig {
+            screenshot_dir: workspace_root.join("screenshots"),
             workspace_root,
-            screenshot_dir: PathBuf::from("screenshots"),
             path_mappings: Vec::new(),
             cache_capacity: 2,
             supported_extensions: vec!["xlsx".into(), "xlsm".into(), "xls".into(), "xlsb".into()],

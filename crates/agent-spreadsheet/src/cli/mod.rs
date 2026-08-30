@@ -519,7 +519,7 @@ enum SurfaceCommands {
             value_name = "FILE",
             help = "Bind a workbook path as an ephemeral resource"
         )]
-        bind: PathBuf,
+        bind: Option<PathBuf>,
         #[arg(
             long,
             value_name = "JSON",
@@ -3341,7 +3341,7 @@ enum ResolvedSurfaceCommand {
     Operations,
     Operation {
         operation: String,
-        bind: PathBuf,
+        bind: Option<PathBuf>,
         json: Option<String>,
         output: Option<PathBuf>,
         in_place: bool,
@@ -4025,9 +4025,31 @@ fn normalize_canonical_discoverability_argv(mut argv: Vec<OsString>) -> Vec<OsSt
     argv
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MachineBindRule {
+    Required,
+    OptionalContext,
+    Forbidden,
+}
+
+fn machine_bind_rule(operation: &str, payload: &serde_json::Map<String, Value>) -> MachineBindRule {
+    match operation {
+        "list_workbooks" | "list_forks" => MachineBindRule::OptionalContext,
+        "sheetport_manifest"
+            if matches!(
+                payload.get("action").and_then(Value::as_str),
+                Some("schema" | "validate" | "normalize")
+            ) =>
+        {
+            MachineBindRule::Forbidden
+        }
+        _ => MachineBindRule::Required,
+    }
+}
+
 async fn run_machine_operation(
     operation: &str,
-    bind: PathBuf,
+    bind: Option<PathBuf>,
     json_payload: Option<String>,
     output: Option<PathBuf>,
     in_place: bool,
@@ -4083,6 +4105,32 @@ async fn run_machine_operation(
         )
     })?;
 
+    let bind_rule = machine_bind_rule(operation, object);
+    if bind_rule == MachineBindRule::Required && bind.is_none() {
+        return Err(CanonicalErrorEnvelope::new(
+            CanonicalErrorCode::InvalidRequest,
+            format!("canonical operation '{operation}' requires --bind <FILE>"),
+            Some(operation),
+            Some("--bind".to_string()),
+        ));
+    }
+    if bind_rule == MachineBindRule::Forbidden && bind.is_some() {
+        return Err(CanonicalErrorEnvelope::new(
+            CanonicalErrorCode::InvalidRequest,
+            format!("canonical operation '{operation}' does not accept --bind"),
+            Some(operation),
+            Some("--bind".to_string()),
+        ));
+    }
+    if bind_rule != MachineBindRule::Required && object.contains_key("resource_id") {
+        return Err(CanonicalErrorEnvelope::new(
+            CanonicalErrorCode::InvalidRequest,
+            format!("canonical operation '{operation}' does not accept resource_id"),
+            Some(operation),
+            Some("$.resource_id".to_string()),
+        ));
+    }
+
     let runtime = crate::runtime::stateless::StatelessRuntime;
     let is_write = operation == "write";
     if !is_write && (output.is_some() || in_place || force) {
@@ -4126,11 +4174,26 @@ async fn run_machine_operation(
             ));
         }
     }
-    let (state, workbook_id, fork_path) = if is_write {
-        let (state, id, path) = runtime
-            .open_fork_state_for_file(&bind)
-            .await
-            .map_err(|error| {
+    let (state, workbook_id, fork_path) = match (bind_rule, is_write) {
+        (MachineBindRule::Required, true) => {
+            let bind = bind.as_ref().expect("required bind validated");
+            let (state, id, path) =
+                runtime
+                    .open_fork_state_for_file(bind)
+                    .await
+                    .map_err(|error| {
+                        CanonicalErrorEnvelope::new(
+                            CanonicalErrorCode::ResourceNotFound,
+                            error.to_string(),
+                            Some(operation),
+                            Some("--bind".to_string()),
+                        )
+                    })?;
+            (state, Some(id), Some(path))
+        }
+        (MachineBindRule::Required, false) => {
+            let bind = bind.as_ref().expect("required bind validated");
+            let (state, id) = runtime.open_state_for_file(bind).await.map_err(|error| {
                 CanonicalErrorEnvelope::new(
                     CanonicalErrorCode::ResourceNotFound,
                     error.to_string(),
@@ -4138,36 +4201,47 @@ async fn run_machine_operation(
                     Some("--bind".to_string()),
                 )
             })?;
-        (state, id, Some(path))
-    } else {
-        let (state, id) = runtime.open_state_for_file(&bind).await.map_err(|error| {
+            (state, Some(id), None)
+        }
+        (MachineBindRule::OptionalContext, false) if bind.is_some() => {
+            let (state, _) = runtime
+                .open_state_for_file(bind.as_ref().expect("optional bind present"))
+                .await
+                .map_err(|error| {
+                    CanonicalErrorEnvelope::new(
+                        CanonicalErrorCode::ResourceNotFound,
+                        error.to_string(),
+                        Some(operation),
+                        Some("--bind".to_string()),
+                    )
+                })?;
+            (state, None, None)
+        }
+        (MachineBindRule::OptionalContext | MachineBindRule::Forbidden, false) => (
+            runtime.open_unbound_state().map_err(|_| {
+                CanonicalErrorEnvelope::new(
+                    CanonicalErrorCode::OperationFailed,
+                    "failed to initialize the unbound canonical runtime",
+                    Some(operation),
+                    None,
+                )
+            })?,
+            None,
+            None,
+        ),
+        (MachineBindRule::OptionalContext | MachineBindRule::Forbidden, true) => {
+            unreachable!("write always requires a bind")
+        }
+    };
+    if let Some(workbook_id) = workbook_id {
+        let resource_id = ResourceId::bind_workbook(&workbook_id).map_err(|message| {
             CanonicalErrorEnvelope::new(
-                CanonicalErrorCode::ResourceNotFound,
-                error.to_string(),
+                CanonicalErrorCode::InvalidRequest,
+                message,
                 Some(operation),
                 Some("--bind".to_string()),
             )
         })?;
-        (state, id, None)
-    };
-    let resource_id = ResourceId::bind_workbook(&workbook_id).map_err(|message| {
-        CanonicalErrorEnvelope::new(
-            CanonicalErrorCode::InvalidRequest,
-            message,
-            Some(operation),
-            Some("--bind".to_string()),
-        )
-    })?;
-    if operation == "list_workbooks" {
-        if object.contains_key("resource_id") {
-            return Err(CanonicalErrorEnvelope::new(
-                CanonicalErrorCode::InvalidRequest,
-                "list_workbooks does not accept a resource_id",
-                Some(operation),
-                Some("$.resource_id".to_string()),
-            ));
-        }
-    } else {
         if let Some(provided) = object.get("resource_id")
             && provided.as_str() != Some(resource_id.as_str())
         {
@@ -4192,8 +4266,9 @@ async fn run_machine_operation(
         )
     {
         let source = fork_path.expect("write binds an ephemeral fork");
+        let bind = bind.as_ref().expect("write bind validated");
         let target = if in_place {
-            runtime.normalize_existing_file(&bind)
+            runtime.normalize_existing_file(bind)
         } else {
             runtime.normalize_destination_path(output.as_ref().expect("validated write output"))
         }
@@ -4206,7 +4281,7 @@ async fn run_machine_operation(
             )
         })?;
         if !in_place {
-            let bound = runtime.normalize_existing_file(&bind).map_err(|error| {
+            let bound = runtime.normalize_existing_file(bind).map_err(|error| {
                 CanonicalErrorEnvelope::new(
                     CanonicalErrorCode::InvalidRequest,
                     error.to_string(),

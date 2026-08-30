@@ -12,10 +12,20 @@ use std::sync::Arc;
 
 const MAX_MANIFEST_BYTES: usize = 1_048_576;
 const MAX_SHEETPORT_INPUTS: usize = 256;
+const MAX_SHEETPORT_TEXT_BYTES: usize = 65_536;
+const MAX_SHEETPORT_ROWS: usize = 10_000;
+const MAX_SHEETPORT_CELLS: usize = 100_000;
+const MAX_SHEETPORT_FIELDS: usize = 1_000;
+const MAX_SHEET_FILTER_BYTES: usize = 128;
 const MAX_VBA_MODULES_PER_PAGE: u32 = 100;
 const MAX_VBA_LINES_PER_PAGE: u32 = 1_000;
 const MAX_VBA_SOURCE_PAGE_BYTES: usize = 256 * 1024;
+const MAX_VBA_CURSOR_BYTES: usize = 2_048;
 const MAX_SCREENSHOT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_SCREENSHOT_SHEET_NAME_BYTES: usize = 31;
+const MAX_SCREENSHOT_RANGE_BYTES: usize = 32;
+const MAX_SCREENSHOT_ROWS: u32 = 100;
+const MAX_SCREENSHOT_COLS: u32 = 30;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
@@ -23,17 +33,21 @@ pub enum SheetportManifestRequest {
     Candidates {
         resource_id: ResourceId,
         #[serde(default)]
+        #[schemars(length(max = 128))]
         sheet_filter: Option<String>,
     },
     Schema {},
     Validate {
+        #[schemars(length(max = 1_048_576))]
         manifest_yaml: String,
     },
     Normalize {
+        #[schemars(length(max = 1_048_576))]
         manifest_yaml: String,
     },
     BindCheck {
         resource_id: ResourceId,
+        #[schemars(length(max = 1_048_576))]
         manifest_yaml: String,
     },
 }
@@ -290,6 +304,12 @@ pub async fn execute_sheetport_manifest_action(
             resource_id,
             sheet_filter,
         } => {
+            if sheet_filter
+                .as_deref()
+                .is_some_and(|value| value.len() > MAX_SHEET_FILTER_BYTES)
+            {
+                bail!("invalid request: sheet_filter exceeds {MAX_SHEET_FILTER_BYTES} bytes");
+            }
             let response = tools::get_manifest_stub(
                 state,
                 tools::ManifestStubParams {
@@ -343,15 +363,19 @@ pub enum SheetportValue {
         value: i64,
     },
     Text {
+        #[schemars(length(max = 65_536))]
         value: String,
     },
     Range {
+        #[schemars(length(max = 10_000))]
         rows: Vec<Vec<SheetportScalar>>,
     },
     Table {
+        #[schemars(length(max = 10_000))]
         rows: Vec<BTreeMap<String, SheetportScalar>>,
     },
     Record {
+        #[schemars(length(max = 1_000))]
         fields: BTreeMap<String, SheetportScalar>,
     },
 }
@@ -360,10 +384,19 @@ pub enum SheetportValue {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SheetportScalar {
     Empty {},
-    Boolean { value: bool },
-    Number { value: f64 },
-    Integer { value: i64 },
-    Text { value: String },
+    Boolean {
+        value: bool,
+    },
+    Number {
+        value: f64,
+    },
+    Integer {
+        value: i64,
+    },
+    Text {
+        #[schemars(length(max = 65_536))]
+        value: String,
+    },
 }
 
 impl SheetportScalar {
@@ -486,8 +519,10 @@ impl SheetportValue {
 #[serde(deny_unknown_fields)]
 pub struct ExecuteSheetportRequest {
     pub resource_id: ResourceId,
+    #[schemars(length(max = 1_048_576))]
     pub manifest_yaml: String,
     #[serde(default)]
+    #[schemars(length(max = 256))]
     pub inputs: BTreeMap<String, SheetportValue>,
     #[serde(default)]
     pub rng_seed: Option<u64>,
@@ -495,14 +530,45 @@ pub struct ExecuteSheetportRequest {
     pub freeze_volatile: bool,
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SheetportCoverageState {
     Complete,
     Partial,
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SheetportExecutionStatus {
+    Completed,
+    Partial,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SheetportExecutionErrorCode {
+    MissingRequiredInput,
+    OutputNotReturned,
+    PortConstraintViolation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SheetportConstraintKind {
+    Required,
+    ManifestConstraint,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SheetportPortConstraintError {
+    pub kind: SheetportConstraintKind,
+    pub expected: String,
+    pub actual: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SheetportExecutionCoverage {
     pub state: SheetportCoverageState,
@@ -512,50 +578,116 @@ pub struct SheetportExecutionCoverage {
     pub returned_output_ports: u32,
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SheetportExecutionError {
-    pub code: String,
+    pub code: SheetportExecutionErrorCode,
     pub message: String,
     pub port_id: Option<String>,
+    pub constraint: Option<SheetportPortConstraintError>,
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExecuteSheetportData {
-    pub status: String,
+    pub status: SheetportExecutionStatus,
     pub results: BTreeMap<String, SheetportValue>,
     pub coverage: SheetportExecutionCoverage,
     pub errors: Vec<SheetportExecutionError>,
 }
 
-fn manifest_port_sets(manifest_yaml: &str) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
+struct ManifestPortSets {
+    inputs: BTreeSet<String>,
+    required_inputs: BTreeSet<String>,
+    outputs: BTreeSet<String>,
+}
+
+#[cfg(feature = "recalc-formualizer")]
+fn manifest_port_sets(manifest_yaml: &str) -> Result<ManifestPortSets> {
     ensure_manifest_bound(manifest_yaml)?;
-    let document: serde_yaml::Value = serde_yaml::from_str(manifest_yaml)
+    let manifest = formualizer::sheetport_spec::Manifest::from_yaml_str(manifest_yaml)
         .map_err(|error| anyhow!("invalid request: failed to parse manifest YAML: {error}"))?;
     let mut inputs = BTreeSet::new();
+    let mut required_inputs = BTreeSet::new();
     let mut outputs = BTreeSet::new();
-    let Some(ports) = document
-        .get("ports")
-        .and_then(serde_yaml::Value::as_sequence)
-    else {
-        return Ok((inputs, outputs));
-    };
-    for port in ports {
-        let Some(id) = port.get("id").and_then(serde_yaml::Value::as_str) else {
-            continue;
-        };
-        match port.get("dir").and_then(serde_yaml::Value::as_str) {
-            Some("in") => {
-                inputs.insert(id.to_string());
+    for port in manifest.ports {
+        match port.dir {
+            formualizer::sheetport_spec::Direction::In => {
+                if port.required && port.default.is_none() {
+                    required_inputs.insert(port.id.clone());
+                }
+                inputs.insert(port.id);
             }
-            Some("out") => {
-                outputs.insert(id.to_string());
+            formualizer::sheetport_spec::Direction::Out => {
+                outputs.insert(port.id);
             }
-            _ => {}
         }
     }
-    Ok((inputs, outputs))
+    Ok(ManifestPortSets {
+        inputs,
+        required_inputs,
+        outputs,
+    })
+}
+
+#[cfg(not(feature = "recalc-formualizer"))]
+fn manifest_port_sets(_manifest_yaml: &str) -> Result<ManifestPortSets> {
+    bail!("SheetPort capability unavailable")
+}
+
+fn validate_sheetport_value(value: &SheetportValue, cells: &mut usize) -> Result<()> {
+    let validate_scalar = |scalar: &SheetportScalar| -> Result<()> {
+        if let SheetportScalar::Text { value } = scalar
+            && value.len() > MAX_SHEETPORT_TEXT_BYTES
+        {
+            bail!("invalid request: SheetPort text exceeds {MAX_SHEETPORT_TEXT_BYTES} bytes");
+        }
+        Ok(())
+    };
+    match value {
+        SheetportValue::Text { value } if value.len() > MAX_SHEETPORT_TEXT_BYTES => {
+            bail!("invalid request: SheetPort text exceeds {MAX_SHEETPORT_TEXT_BYTES} bytes")
+        }
+        SheetportValue::Range { rows } => {
+            if rows.len() > MAX_SHEETPORT_ROWS {
+                bail!("invalid request: SheetPort range exceeds {MAX_SHEETPORT_ROWS} rows");
+            }
+            for row in rows {
+                *cells = cells.saturating_add(row.len());
+                for scalar in row {
+                    validate_scalar(scalar)?;
+                }
+            }
+        }
+        SheetportValue::Table { rows } => {
+            if rows.len() > MAX_SHEETPORT_ROWS {
+                bail!("invalid request: SheetPort table exceeds {MAX_SHEETPORT_ROWS} rows");
+            }
+            for row in rows {
+                if row.len() > MAX_SHEETPORT_FIELDS {
+                    bail!("invalid request: SheetPort row exceeds {MAX_SHEETPORT_FIELDS} cells");
+                }
+                *cells = cells.saturating_add(row.len());
+                for scalar in row.values() {
+                    validate_scalar(scalar)?;
+                }
+            }
+        }
+        SheetportValue::Record { fields } => {
+            if fields.len() > MAX_SHEETPORT_FIELDS {
+                bail!("invalid request: SheetPort record exceeds {MAX_SHEETPORT_FIELDS} fields");
+            }
+            *cells = cells.saturating_add(fields.len());
+            for scalar in fields.values() {
+                validate_scalar(scalar)?;
+            }
+        }
+        _ => *cells = cells.saturating_add(1),
+    }
+    if *cells > MAX_SHEETPORT_CELLS {
+        bail!("invalid request: SheetPort inputs exceed {MAX_SHEETPORT_CELLS} cells");
+    }
+    Ok(())
 }
 
 pub async fn execute_sheetport(
@@ -569,16 +701,52 @@ pub async fn execute_sheetport(
     if !issues.is_empty() {
         bail!("invalid request: SheetPort manifest failed validation");
     }
-    let (declared_inputs, declared_outputs) = manifest_port_sets(&request.manifest_yaml)?;
+    let ports = manifest_port_sets(&request.manifest_yaml)?;
     if let Some(unknown) = request
         .inputs
         .keys()
-        .find(|port_id| !declared_inputs.contains(*port_id))
+        .find(|port_id| !ports.inputs.contains(*port_id))
     {
         bail!("invalid request: input port '{unknown}' is not declared by the manifest");
     }
+    let mut input_cells = 0;
+    for value in request.inputs.values() {
+        validate_sheetport_value(value, &mut input_cells)?;
+    }
     let supplied_input_ports = request.inputs.len() as u32;
-    let response = tools::execute_manifest(
+    let supplied = request.inputs.keys().cloned().collect::<BTreeSet<_>>();
+    let missing_required = ports
+        .required_inputs
+        .difference(&supplied)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing_required.is_empty() {
+        return Ok(ExecuteSheetportData {
+            status: SheetportExecutionStatus::Failed,
+            results: BTreeMap::new(),
+            coverage: SheetportExecutionCoverage {
+                state: SheetportCoverageState::Partial,
+                declared_input_ports: ports.inputs.len() as u32,
+                supplied_input_ports,
+                declared_output_ports: ports.outputs.len() as u32,
+                returned_output_ports: 0,
+            },
+            errors: missing_required
+                .into_iter()
+                .map(|port_id| SheetportExecutionError {
+                    code: SheetportExecutionErrorCode::MissingRequiredInput,
+                    message: "required input port was not supplied".to_string(),
+                    port_id: Some(port_id),
+                    constraint: Some(SheetportPortConstraintError {
+                        kind: SheetportConstraintKind::Required,
+                        expected: "supplied input value".to_string(),
+                        actual: "missing".to_string(),
+                    }),
+                })
+                .collect(),
+        });
+    }
+    let response = match tools::execute_manifest(
         state,
         tools::ExecuteManifestParams {
             workbook_or_fork_id: request.resource_id.to_workbook_id(),
@@ -592,7 +760,39 @@ pub async fn execute_sheetport(
             freeze_volatile: request.freeze_volatile,
         },
     )
-    .await?;
+    .await
+    {
+        Ok(response) => response,
+        Err(error)
+            if error
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("constraint") =>
+        {
+            return Ok(ExecuteSheetportData {
+                status: SheetportExecutionStatus::Failed,
+                results: BTreeMap::new(),
+                coverage: SheetportExecutionCoverage {
+                    state: SheetportCoverageState::Partial,
+                    declared_input_ports: ports.inputs.len() as u32,
+                    supplied_input_ports,
+                    declared_output_ports: ports.outputs.len() as u32,
+                    returned_output_ports: 0,
+                },
+                errors: vec![SheetportExecutionError {
+                    code: SheetportExecutionErrorCode::PortConstraintViolation,
+                    message: "a supplied port value violated its manifest constraint".to_string(),
+                    port_id: None,
+                    constraint: Some(SheetportPortConstraintError {
+                        kind: SheetportConstraintKind::ManifestConstraint,
+                        expected: "value satisfying the declared manifest constraint".to_string(),
+                        actual: "constraint violation".to_string(),
+                    }),
+                }],
+            });
+        }
+        Err(error) => return Err(error),
+    };
     let results = response
         .outputs
         .as_object()
@@ -600,7 +800,8 @@ pub async fn execute_sheetport(
         .flatten()
         .map(|(key, value)| (key.clone(), SheetportValue::from_json(value)))
         .collect::<BTreeMap<_, _>>();
-    let missing = declared_outputs
+    let missing = ports
+        .outputs
         .iter()
         .filter(|port_id| !results.contains_key(*port_id))
         .cloned()
@@ -608,16 +809,17 @@ pub async fn execute_sheetport(
     let errors = missing
         .iter()
         .map(|port_id| SheetportExecutionError {
-            code: "OUTPUT_NOT_RETURNED".to_string(),
+            code: SheetportExecutionErrorCode::OutputNotReturned,
             message: "declared output port was not returned".to_string(),
             port_id: Some(port_id.clone()),
+            constraint: None,
         })
         .collect::<Vec<_>>();
     Ok(ExecuteSheetportData {
         status: if errors.is_empty() {
-            "completed".to_string()
+            SheetportExecutionStatus::Completed
         } else {
-            "partial".to_string()
+            SheetportExecutionStatus::Partial
         },
         coverage: SheetportExecutionCoverage {
             state: if errors.is_empty() {
@@ -625,9 +827,9 @@ pub async fn execute_sheetport(
             } else {
                 SheetportCoverageState::Partial
             },
-            declared_input_ports: declared_inputs.len() as u32,
+            declared_input_ports: ports.inputs.len() as u32,
             supplied_input_ports,
-            declared_output_ports: declared_outputs.len() as u32,
+            declared_output_ports: ports.outputs.len() as u32,
             returned_output_ports: results.len() as u32,
         },
         results,
@@ -640,8 +842,13 @@ pub async fn execute_sheetport(
 #[serde(deny_unknown_fields)]
 pub struct ScreenshotSheetRequest {
     pub resource_id: ResourceId,
+    #[schemars(length(min = 1, max = 31))]
     pub sheet_name: String,
     #[serde(default)]
+    #[schemars(
+        pattern(r"^[A-Za-z]{1,3}[1-9][0-9]{0,6}(:[A-Za-z]{1,3}[1-9][0-9]{0,6})?$"),
+        length(max = 32)
+    )]
     pub range: Option<String>,
 }
 
@@ -688,30 +895,40 @@ fn safe_artifact_root(workspace_root: &std::path::Path) -> Result<std::path::Pat
 #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 fn validate_screenshot_directory(state: &AppState) -> Result<std::path::PathBuf> {
     use std::fs;
-    let workspace = state.config().workspace_root.canonicalize()?;
-    let configured = &state.config().screenshot_dir;
+    let config = state.config();
+    let workspace = config
+        .workspace_root
+        .canonicalize()
+        .map_err(|_| anyhow!("invalid request: screenshot workspace is unavailable"))?;
+    let configured = &config.screenshot_dir;
     match fs::symlink_metadata(configured) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
             bail!("invalid request: screenshot directory must be a real directory")
         }
-        Ok(_) => {}
+        Ok(_) => {
+            let canonical = configured
+                .canonicalize()
+                .map_err(|_| anyhow!("invalid request: screenshot directory is unavailable"))?;
+            if !canonical.starts_with(&workspace) {
+                bail!("invalid request: screenshot directory escapes workspace");
+            }
+            Ok(canonical)
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let parent = configured
                 .parent()
                 .ok_or_else(|| anyhow!("invalid request: screenshot directory has no parent"))?
-                .canonicalize()?;
+                .canonicalize()
+                .map_err(|_| {
+                    anyhow!("invalid request: screenshot directory parent is unavailable")
+                })?;
             if !parent.starts_with(&workspace) {
                 bail!("invalid request: screenshot directory escapes workspace");
             }
-            fs::create_dir(configured)?;
+            Ok(configured.clone())
         }
-        Err(error) => return Err(error.into()),
+        Err(_) => bail!("invalid request: screenshot directory is unavailable"),
     }
-    let canonical = configured.canonicalize()?;
-    if !canonical.starts_with(workspace) {
-        bail!("invalid request: screenshot directory escapes workspace");
-    }
-    Ok(canonical)
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
@@ -757,12 +974,50 @@ fn persist_png_artifact(workspace_root: &std::path::Path, bytes: &[u8]) -> Resul
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+pub(crate) fn validate_screenshot_request(request: &ScreenshotSheetRequest) -> Result<()> {
+    let sheet_name = request.sheet_name.as_str();
+    if sheet_name.is_empty()
+        || sheet_name.len() > MAX_SCREENSHOT_SHEET_NAME_BYTES
+        || sheet_name.chars().any(|character| {
+            character.is_control() || matches!(character, '/' | '\\' | '[' | ']' | ':' | '*' | '?')
+        })
+    {
+        bail!("invalid request: sheet_name is not a valid worksheet name");
+    }
+    let Some(range) = request.range.as_deref() else {
+        return Ok(());
+    };
+    if range.len() > MAX_SCREENSHOT_RANGE_BYTES {
+        bail!("invalid request: screenshot range exceeds {MAX_SCREENSHOT_RANGE_BYTES} bytes");
+    }
+    let mut parts = range.split(':');
+    let start = parts.next().unwrap_or_default();
+    let end = parts.next().unwrap_or(start);
+    if parts.next().is_some() {
+        bail!("invalid request: screenshot range must be A1 or A1:B2");
+    }
+    let (start_col, start_row) = crate::write::validate_cell_address(start)
+        .map_err(|_| anyhow!("invalid request: screenshot range must be A1 or A1:B2"))?;
+    let (end_col, end_row) = crate::write::validate_cell_address(end)
+        .map_err(|_| anyhow!("invalid request: screenshot range must be A1 or A1:B2"))?;
+    let rows = start_row.abs_diff(end_row).saturating_add(1);
+    let columns = start_col.abs_diff(end_col).saturating_add(1);
+    if rows > MAX_SCREENSHOT_ROWS || columns > MAX_SCREENSHOT_COLS {
+        bail!(
+            "invalid request: screenshot range exceeds {MAX_SCREENSHOT_ROWS} rows by {MAX_SCREENSHOT_COLS} columns"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 pub async fn screenshot_sheet(
     state: Arc<AppState>,
     request: ScreenshotSheetRequest,
 ) -> Result<ScreenshotSheetData> {
     use std::fs;
 
+    validate_screenshot_request(&request)?;
     let screenshot_root = validate_screenshot_directory(&state)?;
     let response = tools::fork::screenshot_sheet(
         state.clone(),
@@ -772,25 +1027,33 @@ pub async fn screenshot_sheet(
             range: request.range,
         },
     )
-    .await?;
+    .await
+    .map_err(|_| anyhow!("screenshot rendering failed"))?;
     let path = response
         .output_path
         .strip_prefix("file://")
-        .ok_or_else(|| anyhow!("screenshot backend returned an invalid artifact"))?;
+        .ok_or_else(|| anyhow!("screenshot rendering failed"))?;
     let path = std::path::PathBuf::from(path);
-    let metadata = fs::symlink_metadata(&path)?;
+    let metadata =
+        fs::symlink_metadata(&path).map_err(|_| anyhow!("screenshot rendering failed"))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        bail!("screenshot backend returned a non-regular artifact");
+        bail!("screenshot rendering failed");
     }
-    let canonical = path.canonicalize()?;
-    if !canonical.starts_with(&screenshot_root) {
-        bail!("screenshot backend artifact escapes the workspace screenshot directory");
+    let canonical = path
+        .canonicalize()
+        .map_err(|_| anyhow!("screenshot rendering failed"))?;
+    let canonical_root = screenshot_root
+        .canonicalize()
+        .map_err(|_| anyhow!("screenshot rendering failed"))?;
+    if !canonical.starts_with(&canonical_root) {
+        bail!("screenshot rendering failed");
     }
     if metadata.len() > MAX_SCREENSHOT_BYTES as u64 {
         bail!("screenshot artifact exceeds {MAX_SCREENSHOT_BYTES} bytes");
     }
-    let bytes = fs::read(&canonical)?;
-    let artifact = persist_png_artifact(&state.config().workspace_root, &bytes)?;
+    let bytes = fs::read(&canonical).map_err(|_| anyhow!("screenshot rendering failed"))?;
+    let artifact = persist_png_artifact(&state.config().workspace_root, &bytes)
+        .map_err(|_| anyhow!("screenshot artifact persistence failed"))?;
     Ok(ScreenshotSheetData {
         sheet_name: response.sheet_name,
         range: response.range,
@@ -827,8 +1090,10 @@ pub enum InspectVbaRequest {
     ProjectSummary {
         resource_id: ResourceId,
         #[serde(default)]
+        #[schemars(length(max = 2_048))]
         cursor: Option<String>,
         #[serde(default)]
+        #[schemars(range(min = 1, max = 100))]
         limit_modules: Option<u32>,
         #[serde(default)]
         include_references: Option<bool>,
@@ -837,8 +1102,10 @@ pub enum InspectVbaRequest {
         resource_id: ResourceId,
         module_name: VbaModuleName,
         #[serde(default)]
+        #[schemars(length(max = 2_048))]
         cursor: Option<String>,
         #[serde(default)]
+        #[schemars(range(min = 1, max = 1_000))]
         limit_lines: Option<u32>,
     },
 }
@@ -912,9 +1179,15 @@ fn decode_hex(value: &str) -> Result<Vec<u8>> {
         .collect()
 }
 
-fn vba_fingerprint(view: &str, module_name: Option<&str>, include_references: bool) -> String {
+fn vba_fingerprint(
+    resource_id: &ResourceId,
+    view: &str,
+    module_name: Option<&str>,
+    include_references: bool,
+) -> String {
     let material = format!(
-        "{view}\0{}\0{include_references}",
+        "{}\0{view}\0{}\0{include_references}",
+        resource_id.as_str(),
         module_name.unwrap_or("")
     );
     format!("{:x}", Sha256::digest(material.as_bytes()))
@@ -935,6 +1208,9 @@ fn decode_vba_cursor(cursor: Option<&str>, revision: &str, fingerprint: &str) ->
     let Some(cursor) = cursor else {
         return Ok(0);
     };
+    if cursor.len() > MAX_VBA_CURSOR_BYTES {
+        bail!("cursor mismatch: malformed VBA cursor");
+    }
     let mut parts = cursor.split('.');
     let (Some("vba1"), Some(body), Some(signature), None) =
         (parts.next(), parts.next(), parts.next(), parts.next())
@@ -987,7 +1263,8 @@ pub async fn inspect_vba(
                     "invalid request: limit_modules must be between 1 and {MAX_VBA_MODULES_PER_PAGE}"
                 );
             }
-            let fingerprint = vba_fingerprint("project_summary", None, include_references);
+            let fingerprint =
+                vba_fingerprint(&resource_id, "project_summary", None, include_references);
             let offset = decode_vba_cursor(cursor.as_deref(), revision, &fingerprint)?;
             if offset > 10_000 {
                 bail!("invalid request: VBA module cursor exceeds paging limit");
@@ -1047,7 +1324,8 @@ pub async fn inspect_vba(
                     "invalid request: limit_lines must be between 1 and {MAX_VBA_LINES_PER_PAGE}"
                 );
             }
-            let fingerprint = vba_fingerprint("module_source", Some(&module_name), false);
+            let fingerprint =
+                vba_fingerprint(&resource_id, "module_source", Some(&module_name), false);
             let offset = decode_vba_cursor(cursor.as_deref(), revision, &fingerprint)?;
             if offset > 1_000_000 {
                 bail!("invalid request: VBA source cursor exceeds paging limit");

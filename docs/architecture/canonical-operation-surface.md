@@ -219,6 +219,8 @@ These operations are registered only when their backing capability is enabled. T
 | `execute_sheetport` | Execute a typed SheetPort interface |
 | `inspect_vba` | VBA project summary or bounded module source |
 
+`asp op` binds and injects `resource_id` only for operations that consume a workbook. Within `sheetport_manifest`, `candidates` and `bind_check` require `--bind`; `schema`, `validate`, and `normalize` reject resource binding and run against portable content. Optional capability overrides are intersected with compile-time and runtime backing and cannot advertise an unavailable implementation.
+
 ## Operations removed from the agent surface
 
 - `close_workbook`: cache eviction is runtime administration and should be automatic/out-of-band.
