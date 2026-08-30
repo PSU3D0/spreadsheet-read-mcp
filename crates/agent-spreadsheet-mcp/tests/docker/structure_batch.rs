@@ -8,6 +8,8 @@ use anyhow::{anyhow, bail};
 #[cfg(feature = "recalc")]
 use quick_xml::{Reader, events::Event};
 #[cfg(feature = "recalc")]
+use regex::Regex;
+#[cfg(feature = "recalc")]
 use std::fs::{self, File};
 #[cfg(feature = "recalc")]
 use std::io::{Cursor, Read, Write};
@@ -92,6 +94,12 @@ fn inject_defined_names(path: &Path, entries: &[(&str, &str)]) -> Result<()> {
 }
 
 #[cfg(feature = "recalc")]
+fn normalize_simple_quoted_sheet_refs(input: &str) -> String {
+    let simple_quoted_sheet = Regex::new(r"'([A-Za-z_][A-Za-z0-9_.]*)'!").unwrap();
+    simple_quoted_sheet.replace_all(input, "$1!").into_owned()
+}
+
+#[cfg(feature = "recalc")]
 fn read_defined_name_refers_to(path: &Path, target_name: &str) -> Result<Option<String>> {
     let src_bytes = fs::read(path)?;
     let mut archive = ZipArchive::new(Cursor::new(src_bytes))?;
@@ -124,9 +132,11 @@ fn read_defined_name_refers_to(path: &Path, target_name: &str) -> Result<Option<
                                 text.push_str(t.unescape()?.as_ref());
                             }
                             Ok(Event::End(end)) if end.name().as_ref() == b"definedName" => {
-                                return Ok(Some(text));
+                                return Ok(Some(normalize_simple_quoted_sheet_refs(&text)));
                             }
-                            Ok(Event::Eof) => return Ok(Some(text)),
+                            Ok(Event::Eof) => {
+                                return Ok(Some(normalize_simple_quoted_sheet_refs(&text)));
+                            }
                             Ok(_) => {}
                             Err(e) => return Err(anyhow!("failed parsing workbook.xml: {}", e)),
                         }
@@ -878,7 +888,10 @@ async fn test_structure_batch_insert_rows_preserves_named_range_outputs_in_docke
         .await?;
 
     let _ = client
-        .call_tool(call_tool("recalculate", json!({ "fork_id": fork_id })))
+        .call_tool(call_tool(
+            "recalculate",
+            json!({ "fork_id": fork_id, "backend": "libreoffice" }),
+        ))
         .await?;
 
     let calc_page = extract_json(
@@ -973,7 +986,10 @@ async fn test_structure_batch_insert_rows_above_named_range_shifts_ref_in_docker
         .await?;
 
     let _ = client
-        .call_tool(call_tool("recalculate", json!({ "fork_id": fork_id })))
+        .call_tool(call_tool(
+            "recalculate",
+            json!({ "fork_id": fork_id, "backend": "libreoffice" }),
+        ))
         .await?;
 
     let calc_page = extract_json(
@@ -1068,7 +1084,10 @@ async fn test_structure_batch_insert_rows_multirow_expands_named_range_in_docker
         .await?;
 
     let _ = client
-        .call_tool(call_tool("recalculate", json!({ "fork_id": fork_id })))
+        .call_tool(call_tool(
+            "recalculate",
+            json!({ "fork_id": fork_id, "backend": "libreoffice" }),
+        ))
         .await?;
 
     let calc_page = extract_json(
@@ -1163,7 +1182,10 @@ async fn test_structure_batch_insert_rows_adjusts_union_named_ranges_in_docker()
         .await?;
 
     let _ = client
-        .call_tool(call_tool("recalculate", json!({ "fork_id": fork_id })))
+        .call_tool(call_tool(
+            "recalculate",
+            json!({ "fork_id": fork_id, "backend": "libreoffice" }),
+        ))
         .await?;
 
     let calc_page = extract_json(
@@ -1257,7 +1279,10 @@ async fn test_structure_batch_insert_rows_rewrites_formula_defined_names_in_dock
         .await?;
 
     let _ = client
-        .call_tool(call_tool("recalculate", json!({ "fork_id": fork_id })))
+        .call_tool(call_tool(
+            "recalculate",
+            json!({ "fork_id": fork_id, "backend": "libreoffice" }),
+        ))
         .await?;
 
     let calc_page = extract_json(
@@ -1353,7 +1378,10 @@ async fn test_structure_batch_rename_sheet_updates_named_ranges_in_docker() -> R
         .await?;
 
     let _ = client
-        .call_tool(call_tool("recalculate", json!({ "fork_id": fork_id })))
+        .call_tool(call_tool(
+            "recalculate",
+            json!({ "fork_id": fork_id, "backend": "libreoffice" }),
+        ))
         .await?;
 
     let calc_page = extract_json(
@@ -1448,7 +1476,10 @@ async fn test_structure_batch_rename_sheet_updates_quoted_named_ranges_in_docker
         .await?;
 
     let _ = client
-        .call_tool(call_tool("recalculate", json!({ "fork_id": fork_id })))
+        .call_tool(call_tool(
+            "recalculate",
+            json!({ "fork_id": fork_id, "backend": "libreoffice" }),
+        ))
         .await?;
 
     let calc_page = extract_json(
@@ -1542,7 +1573,10 @@ async fn test_structure_batch_rename_sheet_rewrites_formula_defined_names_in_doc
         .await?;
 
     let _ = client
-        .call_tool(call_tool("recalculate", json!({ "fork_id": fork_id })))
+        .call_tool(call_tool(
+            "recalculate",
+            json!({ "fork_id": fork_id, "backend": "libreoffice" }),
+        ))
         .await?;
 
     let calc_page = extract_json(

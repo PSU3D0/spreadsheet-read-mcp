@@ -125,6 +125,34 @@ jobs:
       - name: Run parity harness
         run: node scripts/parity-harness.js
 
+  wasm-browser:
+    name: Browser WASM Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: wasm32-unknown-unknown
+
+      - name: Set up matched Chrome and ChromeDriver
+        id: chrome
+        uses: browser-actions/setup-chrome@48ad923757ca74d66703209fe939badbdf80f2f4 # v2.2.0
+        with:
+          chrome-version: stable
+          install-chromedriver: true
+
+      - name: Install wasm-bindgen test runner
+        run: cargo install wasm-bindgen-cli --version 0.2.114 --locked
+
+      - name: Run browser WASM tests
+        env:
+          CHROMEDRIVER: ${{ steps.chrome.outputs.chromedriver-path }}
+        run: cargo test -p agent-spreadsheet-wasm --target wasm32-unknown-unknown --test wasm_browser --locked
+
   docker-integration:
     name: Docker Integration Tests
     runs-on: ubuntu-latest
