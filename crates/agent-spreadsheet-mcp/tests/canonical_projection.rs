@@ -46,20 +46,23 @@ async fn live_json_rpc_projects_every_available_canonical_descriptor() -> Result
     let client = ().serve(transport).await?;
 
     let tools = client.list_all_tools().await?;
+    let actual = tools
+        .iter()
+        .map(|tool| tool.name.as_ref())
+        .collect::<HashSet<_>>();
     let mut capabilities = RuntimeCapabilities::native();
-    capabilities.screenshot_rendering = false;
+    capabilities.screenshot_rendering = actual.contains("screenshot_sheet");
     capabilities.vba = true;
     let expected = operation_registry()
         .iter()
         .filter(|descriptor| descriptor.is_available(&capabilities))
         .map(|descriptor| descriptor.name)
         .collect::<HashSet<_>>();
-    let actual = tools
-        .iter()
-        .map(|tool| tool.name.as_ref())
-        .collect::<HashSet<_>>();
     assert_eq!(actual, expected);
-    assert_eq!(actual.len(), 30);
+    assert_eq!(
+        actual.len(),
+        30 + usize::from(capabilities.screenshot_rendering)
+    );
     assert!(!actual.contains("close_workbook"));
 
     for tool in &tools {
@@ -137,7 +140,7 @@ async fn live_json_rpc_projects_every_available_canonical_descriptor() -> Result
         .filter(|tool| {
             !matches!(
                 tool.name.as_ref(),
-                "sheetport_manifest" | "execute_sheetport" | "inspect_vba"
+                "sheetport_manifest" | "execute_sheetport" | "inspect_vba" | "screenshot_sheet"
             )
         })
         .collect::<Vec<_>>();

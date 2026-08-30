@@ -2200,7 +2200,16 @@ pub(crate) fn apply_structure_ops_to_file(
                     let sheet = book
                         .get_sheet_by_name_mut(sheet_name)
                         .ok_or_else(|| anyhow!("sheet '{}' not found", sheet_name))?;
+                    let relocated_validations = transform_data_validations_for_structure_change(
+                        sheet,
+                        StructureAxis::Row,
+                        StructureEdit::Insert {
+                            at: *at_row,
+                            count: *count,
+                        },
+                    )?;
                     sheet.insert_new_row(at_row, count);
+                    replace_data_validations(sheet, relocated_validations);
                 }
                 rewrite_formulas_for_sheet_row_insert(
                     &mut book,
@@ -2264,7 +2273,16 @@ pub(crate) fn apply_structure_ops_to_file(
                     let sheet = book
                         .get_sheet_by_name_mut(sheet_name)
                         .ok_or_else(|| anyhow!("sheet '{}' not found", sheet_name))?;
+                    let relocated_validations = transform_data_validations_for_structure_change(
+                        sheet,
+                        StructureAxis::Row,
+                        StructureEdit::Insert {
+                            at: *insert_at,
+                            count: *count,
+                        },
+                    )?;
                     sheet.insert_new_row(insert_at, count);
+                    replace_data_validations(sheet, relocated_validations);
                 }
                 rewrite_formulas_for_sheet_row_insert(
                     &mut book,
@@ -2333,7 +2351,16 @@ pub(crate) fn apply_structure_ops_to_file(
                     let sheet = book
                         .get_sheet_by_name_mut(sheet_name)
                         .ok_or_else(|| anyhow!("sheet '{}' not found", sheet_name))?;
+                    let relocated_validations = transform_data_validations_for_structure_change(
+                        sheet,
+                        StructureAxis::Row,
+                        StructureEdit::Delete {
+                            start: *start_row,
+                            count: *count,
+                        },
+                    )?;
                     sheet.remove_row(start_row, count);
+                    replace_data_validations(sheet, relocated_validations);
                 }
                 rewrite_formulas_for_sheet_row_delete(
                     &mut book,
@@ -3800,78 +3827,221 @@ fn adjust_ref_coord_part(
     axis: StructureAxis,
     edit: StructureEdit,
 ) -> Result<String> {
+    Ok(transform_a1_range(coord_part, axis, edit)?.unwrap_or_else(|| "#REF!".to_string()))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct A1RefSegment {
+    col: Option<u32>,
+    row: Option<u32>,
+    col_lock: bool,
+    row_lock: bool,
+}
+
+fn transform_a1_range(
+    coord_part: &str,
+    axis: StructureAxis,
+    edit: StructureEdit,
+) -> Result<Option<String>> {
     if coord_part == "#REF!" {
-        return Ok(coord_part.to_string());
+        return Ok(Some(coord_part.to_string()));
     }
-    if let Some((start, end)) = coord_part.split_once(':') {
-        let start_adj = adjust_ref_segment(start, axis, edit)?;
-        let end_adj = adjust_ref_segment(end, axis, edit)?;
-        if start_adj == "#REF!" || end_adj == "#REF!" {
-            return Ok("#REF!".to_string());
+
+    let mut transformed = Vec::new();
+    for piece in coord_part.split(',') {
+        if let Some(value) = transform_a1_range_piece(piece, axis, edit)? {
+            transformed.push(value);
         }
-        Ok(format!("{start_adj}:{end_adj}"))
+    }
+    Ok((!transformed.is_empty()).then(|| transformed.join(",")))
+}
+
+fn transform_a1_range_piece(
+    piece: &str,
+    axis: StructureAxis,
+    edit: StructureEdit,
+) -> Result<Option<String>> {
+    if let Some((start_raw, end_raw)) = piece.split_once(':') {
+        let mut start = parse_a1_ref_segment(start_raw)?;
+        let mut end = parse_a1_ref_segment(end_raw)?;
+        let (start_value, end_value) = match axis {
+            StructureAxis::Row => (&mut start.row, &mut end.row),
+            StructureAxis::Col => (&mut start.col, &mut end.col),
+        };
+
+        match (*start_value, *end_value) {
+            (Some(first), Some(last)) if first <= last => {
+                let Some((new_first, new_last)) = transform_a1_interval(first, last, axis, edit)
+                else {
+                    return Ok(None);
+                };
+                *start_value = Some(new_first);
+                *end_value = Some(new_last);
+            }
+            (None, None) => {}
+            _ => {
+                *start_value = transform_a1_scalar(*start_value, axis, edit);
+                *end_value = transform_a1_scalar(*end_value, axis, edit);
+                if start_value.is_none() || end_value.is_none() {
+                    return Ok(None);
+                }
+            }
+        }
+
+        Ok(Some(format!(
+            "{}:{}",
+            format_a1_ref_segment(start)?,
+            format_a1_ref_segment(end)?
+        )))
     } else {
-        Ok(adjust_ref_segment(coord_part, axis, edit)?)
+        let mut segment = parse_a1_ref_segment(piece)?;
+        let value = match axis {
+            StructureAxis::Row => &mut segment.row,
+            StructureAxis::Col => &mut segment.col,
+        };
+        *value = transform_a1_scalar(*value, axis, edit);
+        if segment.col.is_none() && segment.row.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(format_a1_ref_segment(segment)?))
     }
 }
 
-fn adjust_ref_segment(segment: &str, axis: StructureAxis, edit: StructureEdit) -> Result<String> {
-    use umya_spreadsheet::helper::coordinate::{
-        coordinate_from_index_with_lock, index_from_coordinate, string_from_column_index,
-    };
-
-    const EXCEL_MAX_ROW: u32 = 1_048_576;
+fn parse_a1_ref_segment(segment: &str) -> Result<A1RefSegment> {
+    use umya_spreadsheet::helper::coordinate::index_from_coordinate;
 
     let (col, row, col_lock, row_lock) = index_from_coordinate(segment);
-    let mut col = col;
-    let mut row = row;
-
-    match axis {
-        StructureAxis::Col => {
-            if let Some(c) = col {
-                col = match edit {
-                    StructureEdit::Insert { at, count } => Some(adjust_insert(c, at, count)),
-                    StructureEdit::Delete { start, count } => adjust_delete(c, start, count),
-                };
-            }
-        }
-        StructureAxis::Row => {
-            if let Some(r) = row {
-                row = match edit {
-                    StructureEdit::Insert { at, count } => {
-                        Some(adjust_insert_bounded(r, at, count, EXCEL_MAX_ROW))
-                    }
-                    StructureEdit::Delete { start, count } => adjust_delete(r, start, count),
-                };
-            }
-        }
-    }
-
     if col.is_none() && row.is_none() {
-        return Ok("#REF!".to_string());
+        bail!("invalid A1 reference segment '{segment}'");
     }
+    Ok(A1RefSegment {
+        col,
+        row,
+        col_lock: col_lock.unwrap_or(false),
+        row_lock: row_lock.unwrap_or(false),
+    })
+}
 
-    match (col, row) {
-        (Some(c), Some(r)) => Ok(coordinate_from_index_with_lock(
-            &c,
-            &r,
-            &col_lock.unwrap_or(false),
-            &row_lock.unwrap_or(false),
+fn format_a1_ref_segment(segment: A1RefSegment) -> Result<String> {
+    use umya_spreadsheet::helper::coordinate::{
+        coordinate_from_index_with_lock, string_from_column_index,
+    };
+
+    match (segment.col, segment.row) {
+        (Some(col), Some(row)) => Ok(coordinate_from_index_with_lock(
+            &col,
+            &row,
+            &segment.col_lock,
+            &segment.row_lock,
         )),
-        (Some(c), None) => {
-            let col_str = string_from_column_index(&c);
-            Ok(format!(
-                "{}{}",
-                if col_lock.unwrap_or(false) { "$" } else { "" },
-                col_str
-            ))
-        }
-        (None, Some(r)) => Ok(format!(
+        (Some(col), None) => Ok(format!(
             "{}{}",
-            if row_lock.unwrap_or(false) { "$" } else { "" },
-            r
+            if segment.col_lock { "$" } else { "" },
+            string_from_column_index(&col)
         )),
-        (None, None) => Ok("#REF!".to_string()),
+        (None, Some(row)) => Ok(format!(
+            "{}{}",
+            if segment.row_lock { "$" } else { "" },
+            row
+        )),
+        (None, None) => bail!("A1 reference was removed"),
+    }
+}
+
+fn transform_a1_interval(
+    first: u32,
+    last: u32,
+    axis: StructureAxis,
+    edit: StructureEdit,
+) -> Option<(u32, u32)> {
+    let max_value = match axis {
+        StructureAxis::Row => 1_048_576,
+        StructureAxis::Col => 16_384,
+    };
+    match edit {
+        StructureEdit::Insert { at, count } => Some((
+            adjust_insert_bounded(first, at, count, max_value),
+            adjust_insert_bounded(last, at, count, max_value),
+        )),
+        StructureEdit::Delete { start, count } => {
+            let deleted_end = start.saturating_add(count.saturating_sub(1));
+            if last < start {
+                Some((first, last))
+            } else if first > deleted_end {
+                Some((first - count, last - count))
+            } else {
+                let remaining_before = first < start;
+                let remaining_after = last > deleted_end;
+                match (remaining_before, remaining_after) {
+                    (false, false) => None,
+                    (true, false) => Some((first, start - 1)),
+                    (false, true) => Some((start, last - count)),
+                    (true, true) => Some((first, last - count)),
+                }
+            }
+        }
+    }
+}
+
+fn transform_a1_scalar(
+    value: Option<u32>,
+    axis: StructureAxis,
+    edit: StructureEdit,
+) -> Option<u32> {
+    let value = value?;
+    let max_value = match axis {
+        StructureAxis::Row => 1_048_576,
+        StructureAxis::Col => 16_384,
+    };
+    match edit {
+        StructureEdit::Insert { at, count } => {
+            Some(adjust_insert_bounded(value, at, count, max_value))
+        }
+        StructureEdit::Delete { start, count } => adjust_delete(value, start, count),
+    }
+}
+
+fn transform_data_validations_for_structure_change(
+    sheet: &umya_spreadsheet::Worksheet,
+    axis: StructureAxis,
+    edit: StructureEdit,
+) -> Result<Option<umya_spreadsheet::structs::DataValidations>> {
+    let Some(source) = sheet.get_data_validations() else {
+        return Ok(None);
+    };
+    let mut transformed = umya_spreadsheet::structs::DataValidations::default();
+    for source_validation in source.get_data_validation_list() {
+        let mut validation = source_validation.clone();
+        let original_ranges = validation
+            .get_sequence_of_references()
+            .get_range_collection()
+            .iter()
+            .map(|range| range.get_range())
+            .collect::<Vec<_>>();
+        let references = validation.get_sequence_of_references_mut();
+        references.remove_range_collection();
+        let mut seen = BTreeSet::new();
+        for original in original_ranges {
+            if let Some(relocated) = transform_a1_range(&original, axis, edit)?
+                && seen.insert(relocated.clone())
+            {
+                references.set_sqref(relocated);
+            }
+        }
+        if !references.get_range_collection().is_empty() {
+            transformed.add_data_validation_list(validation);
+        }
+    }
+    Ok((!transformed.get_data_validation_list().is_empty()).then_some(transformed))
+}
+
+fn replace_data_validations(
+    sheet: &mut umya_spreadsheet::Worksheet,
+    validations: Option<umya_spreadsheet::structs::DataValidations>,
+) {
+    sheet.remove_data_validations();
+    if let Some(validations) = validations {
+        sheet.set_data_validations(validations);
     }
 }
 
@@ -6964,6 +7134,91 @@ mod tests {
         .expect("adjust range");
 
         assert_eq!(adjusted, "$C$2:$P$1048576");
+    }
+
+    #[test]
+    fn transform_a1_row_insert_handles_unaffected_crossing_multiple_and_bounds() {
+        let adjusted = adjust_ref_coord_part(
+            "A1:B2,C2:C4,$D$1048575:$D$1048576",
+            StructureAxis::Row,
+            StructureEdit::Insert { at: 3, count: 2 },
+        )
+        .expect("adjust ranges");
+
+        assert_eq!(adjusted, "A1:B2,C2:C6,$D$1048576:$D$1048576");
+    }
+
+    #[test]
+    fn transform_a1_row_delete_shrinks_crossing_ranges_and_drops_deleted_ranges() {
+        let adjusted = transform_a1_range(
+            "A2:A8,B4:B5,C4:C8,D2:D5,E10",
+            StructureAxis::Row,
+            StructureEdit::Delete { start: 4, count: 2 },
+        )
+        .expect("adjust ranges");
+
+        assert_eq!(adjusted.as_deref(), Some("A2:A6,C4:C6,D2:D3,E8"));
+    }
+
+    #[test]
+    fn structure_row_edits_relocate_data_validation_sqrefs() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let path = tempdir.path().join("validation-row-shifts.xlsx");
+        let mut workbook = umya_spreadsheet::new_file();
+        let sheet = workbook.get_sheet_by_name_mut("Sheet1").expect("sheet1");
+        let mut validation = umya_spreadsheet::structs::DataValidation::default();
+        validation
+            .get_sequence_of_references_mut()
+            .set_sqref("A1:A2 C2:C4 D10:D11");
+        sheet.set_data_validations(umya_spreadsheet::structs::DataValidations::default());
+        sheet
+            .get_data_validations_mut()
+            .expect("validations")
+            .add_data_validation_list(validation);
+        umya_spreadsheet::writer::xlsx::write(&workbook, &path).expect("write fixture");
+
+        apply_structure_ops_to_file(
+            &path,
+            &[StructureOp::InsertRows {
+                sheet_name: "Sheet1".to_string(),
+                at_row: 3,
+                count: 2,
+                expand_adjacent_sums: false,
+            }],
+            FormulaParsePolicy::Warn,
+        )
+        .expect("insert rows");
+        let workbook = umya_spreadsheet::reader::xlsx::read(&path).expect("read inserted");
+        let sqref = workbook
+            .get_sheet_by_name("Sheet1")
+            .expect("sheet1")
+            .get_data_validations()
+            .expect("validations")
+            .get_data_validation_list()[0]
+            .get_sequence_of_references()
+            .get_sqref();
+        assert_eq!(sqref, "A1:A2 C2:C6 D12:D13");
+
+        apply_structure_ops_to_file(
+            &path,
+            &[StructureOp::DeleteRows {
+                sheet_name: "Sheet1".to_string(),
+                start_row: 4,
+                count: 2,
+            }],
+            FormulaParsePolicy::Warn,
+        )
+        .expect("delete rows");
+        let workbook = umya_spreadsheet::reader::xlsx::read(&path).expect("read deleted");
+        let sqref = workbook
+            .get_sheet_by_name("Sheet1")
+            .expect("sheet1")
+            .get_data_validations()
+            .expect("validations")
+            .get_data_validation_list()[0]
+            .get_sequence_of_references()
+            .get_sqref();
+        assert_eq!(sqref, "A1:A2 C2:C4 D10:D11");
     }
 
     #[test]

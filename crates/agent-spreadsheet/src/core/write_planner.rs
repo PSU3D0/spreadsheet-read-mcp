@@ -700,6 +700,8 @@ pub struct CloneTemplateRowPlan {
     contained_merges: Vec<CloneMergeSpan>,
     #[serde(skip)]
     contained_validations: Vec<CloneValidationSpec>,
+    #[serde(skip)]
+    row_dimension: Option<umya_spreadsheet::structs::Row>,
 }
 
 #[derive(Debug, Clone)]
@@ -971,6 +973,7 @@ pub fn build_clone_template_row_plan(
         confidence_reason,
         contained_merges,
         contained_validations,
+        row_dimension: sheet.get_row_dimension(&source_row).cloned(),
     })
 }
 
@@ -1064,11 +1067,15 @@ fn inspect_clone_row_validations(
     };
 
     for data_validation in validations.get_data_validation_list() {
+        let mut seen_ranges = BTreeSet::new();
         for range in data_validation
             .get_sequence_of_references()
             .get_range_collection()
         {
             let raw = range.get_range();
+            if !seen_ranges.insert(raw.clone()) {
+                continue;
+            }
             let Some(bounds) = parse_append_region_bounds(&raw) else {
                 continue;
             };
@@ -1082,6 +1089,7 @@ fn inspect_clone_row_validations(
                 let mut clone = data_validation.clone();
                 clone
                     .get_sequence_of_references_mut()
+                    .remove_range_collection()
                     .set_sqref(format_a1_range(
                         bounds.start_col,
                         bounds.end_col,
@@ -1243,6 +1251,19 @@ fn simple_sum_range_regex() -> Regex {
     Regex::new(r"(?i)^SUM\(([A-Z]{1,3})(\d+):([A-Z]{1,3})(\d+)\)$").expect("valid simple sum regex")
 }
 
+fn copy_supported_row_dimension(
+    source: &umya_spreadsheet::structs::Row,
+    destination: &mut umya_spreadsheet::structs::Row,
+) {
+    destination
+        .set_height(*source.get_height())
+        .set_descent(*source.get_descent())
+        .set_thick_bot(*source.get_thick_bot())
+        .set_custom_height(*source.get_custom_height())
+        .set_hidden(*source.get_hidden())
+        .set_style(source.get_style().clone());
+}
+
 pub fn apply_clone_template_row_plan_to_file(
     path: &Path,
     plan: &CloneTemplateRowPlan,
@@ -1260,7 +1281,10 @@ pub fn apply_clone_template_row_plan_to_file(
 }
 
 fn apply_clone_template_row_postprocess(path: &Path, plan: &CloneTemplateRowPlan) -> Result<()> {
-    if plan.contained_merges.is_empty() && plan.contained_validations.is_empty() {
+    if plan.contained_merges.is_empty()
+        && plan.contained_validations.is_empty()
+        && plan.row_dimension.is_none()
+    {
         return Ok(());
     }
 
@@ -1272,6 +1296,9 @@ fn apply_clone_template_row_postprocess(path: &Path, plan: &CloneTemplateRowPlan
 
     for copy_idx in 0..plan.count {
         let dest_row = plan.insert_at_row + copy_idx;
+        if let Some(source) = &plan.row_dimension {
+            copy_supported_row_dimension(source, sheet.get_row_dimension_mut(&dest_row));
+        }
         for merge in &plan.contained_merges {
             sheet.add_merge_cells(format_a1_range(
                 merge.start_col,
@@ -1295,6 +1322,7 @@ fn apply_clone_template_row_postprocess(path: &Path, plan: &CloneTemplateRowPlan
                 let mut clone = spec.data_validation.clone();
                 clone
                     .get_sequence_of_references_mut()
+                    .remove_range_collection()
                     .set_sqref(format_a1_range(
                         spec.start_col,
                         spec.end_col,
@@ -1606,11 +1634,15 @@ fn inspect_clone_band_validations(
     };
 
     for data_validation in validations.get_data_validation_list() {
+        let mut seen_ranges = BTreeSet::new();
         for range in data_validation
             .get_sequence_of_references()
             .get_range_collection()
         {
             let raw = range.get_range();
+            if !seen_ranges.insert(raw.clone()) {
+                continue;
+            }
             let Some(bounds) = parse_append_region_bounds(&raw) else {
                 continue;
             };
@@ -1628,6 +1660,7 @@ fn inspect_clone_band_validations(
                 let mut clone = data_validation.clone();
                 clone
                     .get_sequence_of_references_mut()
+                    .remove_range_collection()
                     .set_sqref(format_a1_range(
                         bounds.start_col,
                         bounds.end_col,
@@ -1748,15 +1781,8 @@ fn apply_clone_row_band_postprocess(path: &Path, plan: &CloneRowBandPlan) -> Res
         let block_start = plan.insert_at_row + block_index * plan.source_row_count;
         for row in &plan.template_rows {
             let dest_row = block_start + row.row_offset;
-            if let Some(src_dim) = &row.row_dimension {
-                let dest_dim = sheet.get_row_dimension_mut(&dest_row);
-                dest_dim
-                    .set_height(*src_dim.get_height())
-                    .set_descent(*src_dim.get_descent())
-                    .set_thick_bot(*src_dim.get_thick_bot())
-                    .set_custom_height(*src_dim.get_custom_height())
-                    .set_hidden(*src_dim.get_hidden())
-                    .set_style(src_dim.get_style().clone());
+            if let Some(source) = &row.row_dimension {
+                copy_supported_row_dimension(source, sheet.get_row_dimension_mut(&dest_row));
             }
             for cell in &row.cell_data {
                 let dest_cell = sheet.get_cell_mut((cell.col, dest_row));
@@ -1805,6 +1831,7 @@ fn apply_clone_row_band_postprocess(path: &Path, plan: &CloneRowBandPlan) -> Res
                 let mut clone = spec.data_validation.clone();
                 clone
                     .get_sequence_of_references_mut()
+                    .remove_range_collection()
                     .set_sqref(format_a1_range(
                         spec.start_col,
                         spec.end_col,
@@ -2657,10 +2684,20 @@ mod tests {
             sheet.get_cell_mut("B2").set_value_number(10.0);
             set_formula(sheet, "C2", "B2*2", "20");
             sheet.add_merge_cells("A2:B2");
+            let mut row_style = umya_spreadsheet::Style::default();
+            row_style.get_font_mut().set_bold(true);
+            sheet
+                .get_row_dimension_mut(&2)
+                .set_height(27.5)
+                .set_custom_height(true)
+                .set_hidden(true)
+                .set_descent(0.25)
+                .set_thick_bot(true)
+                .set_style(row_style);
 
             let mut dv = umya_spreadsheet::structs::DataValidation::default();
             dv.set_type(umya_spreadsheet::structs::DataValidationValues::List);
-            dv.get_sequence_of_references_mut().set_sqref("B2:B2");
+            dv.get_sequence_of_references_mut().set_sqref("B2 B2 C2:D2");
             dv.set_formula1("\"A,B,C\"");
             sheet.set_data_validations(umya_spreadsheet::structs::DataValidations::default());
             sheet
@@ -2695,14 +2732,71 @@ mod tests {
             .collect();
         assert!(merge_ranges.contains(&"A3:B3".to_string()));
         assert!(merge_ranges.contains(&"A4:B4".to_string()));
+        let source_dimension = sheet.get_row_dimension(&2).expect("source row dimension");
+        for row_number in [3, 4] {
+            let cloned = sheet
+                .get_row_dimension(&row_number)
+                .expect("cloned row dimension");
+            assert_eq!(cloned.get_height(), source_dimension.get_height());
+            assert_eq!(
+                cloned.get_custom_height(),
+                source_dimension.get_custom_height()
+            );
+            assert_eq!(cloned.get_hidden(), source_dimension.get_hidden());
+            assert_eq!(cloned.get_descent(), source_dimension.get_descent());
+            assert_eq!(cloned.get_thick_bot(), source_dimension.get_thick_bot());
+            assert_eq!(cloned.get_style(), source_dimension.get_style());
+        }
         let validations = sheet.get_data_validations().expect("validations");
         let sqrefs: Vec<String> = validations
             .get_data_validation_list()
             .iter()
             .map(|dv| dv.get_sequence_of_references().get_sqref())
             .collect();
-        assert!(sqrefs.iter().any(|sqref| sqref.contains("B3")));
-        assert!(sqrefs.iter().any(|sqref| sqref.contains("B4")));
+        assert_eq!(sqrefs, vec!["B2 C2:D2", "B3", "C3:D3", "B4", "C4:D4"]);
+    }
+
+    #[test]
+    fn clone_template_row_before_source_relocates_original_and_adds_only_destination_sqrefs() {
+        let (_tmp, path) =
+            write_workbook_fixture("clone-row-before-source-validation.xlsx", |sheet| {
+                sheet.get_cell_mut("A4").set_value("template");
+                let mut validation = umya_spreadsheet::structs::DataValidation::default();
+                validation
+                    .get_sequence_of_references_mut()
+                    .set_sqref("B4 C4:D4");
+                sheet.set_data_validations(umya_spreadsheet::structs::DataValidations::default());
+                sheet
+                    .get_data_validations_mut()
+                    .expect("validations")
+                    .add_data_validation_list(validation);
+            });
+
+        let plan = build_clone_template_row_plan(
+            &path,
+            "Sheet1",
+            4,
+            Some(2),
+            None,
+            None,
+            1,
+            false,
+            ClonePatchTargets::None,
+            CloneMergePolicy::Safe,
+        )
+        .expect("build plan");
+        apply_clone_template_row_plan_to_file(&path, &plan).expect("apply plan");
+
+        let workbook = umya_spreadsheet::reader::xlsx::read(&path).expect("read workbook");
+        let sheet = workbook.get_sheet_by_name("Sheet1").expect("sheet1");
+        let sqrefs = sheet
+            .get_data_validations()
+            .expect("validations")
+            .get_data_validation_list()
+            .iter()
+            .map(|validation| validation.get_sequence_of_references().get_sqref())
+            .collect::<Vec<_>>();
+        assert_eq!(sqrefs, vec!["B5 C5:D5", "B2", "C2:D2"]);
     }
 
     #[test]
