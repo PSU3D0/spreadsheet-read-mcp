@@ -50,9 +50,18 @@ impl StatelessRuntime {
     }
 
     pub async fn open_state_for_file(&self, path: &Path) -> Result<(Arc<AppState>, WorkbookId)> {
+        self.open_state_for_file_for_operation(path, None).await
+    }
+
+    pub async fn open_state_for_file_for_operation(
+        &self,
+        path: &Path,
+        operation: Option<&str>,
+    ) -> Result<(Arc<AppState>, WorkbookId)> {
         let absolute = self.normalize_existing_file(path)?;
-        let config = Arc::new(self.build_cli_config(&absolute));
-        let state = Arc::new(AppState::new(config));
+        let mut config = self.build_cli_config(&absolute);
+        configure_canonical_components(&mut config, operation);
+        let state = Arc::new(AppState::new(Arc::new(config)));
 
         let workbook_list = state.list_workbooks(WorkbookFilter::default())?;
         let workbook_id = workbook_list
@@ -61,6 +70,24 @@ impl StatelessRuntime {
             .map(|entry| entry.workbook_id.clone())
             .ok_or_else(|| anyhow!("no workbook found at '{}'", absolute.display()))?;
         Ok((state, workbook_id))
+    }
+
+    pub fn open_unbound_state(&self) -> Result<Arc<AppState>> {
+        self.open_unbound_state_for_operation(None)
+    }
+
+    pub fn open_unbound_state_for_operation(
+        &self,
+        operation: Option<&str>,
+    ) -> Result<Arc<AppState>> {
+        let workspace_root = std::env::current_dir()?.canonicalize()?;
+        let placeholder = workspace_root.join(".asp-unbound.xlsx");
+        let mut config = self.build_cli_config(&placeholder);
+        configure_canonical_components(&mut config, operation);
+        config.workspace_root = workspace_root.clone();
+        config.screenshot_dir = workspace_root.join("screenshots");
+        config.single_workbook = None;
+        Ok(Arc::new(AppState::new(Arc::new(config))))
     }
 
     #[cfg(feature = "recalc")]
@@ -99,8 +126,8 @@ impl StatelessRuntime {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
         ServerConfig {
+            screenshot_dir: workspace_root.join("screenshots"),
             workspace_root,
-            screenshot_dir: PathBuf::from("screenshots"),
             path_mappings: Vec::new(),
             cache_capacity: 2,
             supported_extensions: vec!["xlsx".into(), "xlsm".into(), "xls".into(), "xlsb".into()],
@@ -124,4 +151,36 @@ impl StatelessRuntime {
             slim_surface: true,
         }
     }
+}
+
+fn configure_canonical_components(config: &mut ServerConfig, operation: Option<&str>) {
+    let needs_recalc = matches!(
+        operation,
+        Some(
+            "create_fork"
+                | "list_forks"
+                | "recalculate"
+                | "verify_workbook"
+                | "export_fork"
+                | "discard_fork"
+                | "get_changes"
+                | "checkpoint"
+                | "staged_change"
+        )
+    );
+    config.recalc_enabled = needs_recalc && cfg!(feature = "recalc");
+    if operation == Some("screenshot_sheet") {
+        config.recalc_enabled = native_screenshot_available();
+        config.recalc_backend = RecalcBackendKind::Libreoffice;
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc-libreoffice"))]
+fn native_screenshot_available() -> bool {
+    crate::recalc::ScreenshotExecutor::new(&crate::recalc::RecalcConfig::default()).is_available()
+}
+
+#[cfg(not(all(not(target_arch = "wasm32"), feature = "recalc-libreoffice")))]
+fn native_screenshot_available() -> bool {
+    false
 }

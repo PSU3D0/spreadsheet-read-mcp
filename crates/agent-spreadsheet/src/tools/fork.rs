@@ -6260,8 +6260,6 @@ pub async fn screenshot_sheet(
 
     let config = state.config();
     let screenshot_dir = config.screenshot_dir.clone();
-    tokio::fs::create_dir_all(&screenshot_dir).await?;
-    let output_path = screenshot_dir.join(&filename);
 
     let semaphore = state
         .screenshot_semaphore()
@@ -6273,6 +6271,8 @@ pub async fn screenshot_sheet(
         .acquire()
         .await
         .map_err(|e| anyhow!("failed to acquire screenshot permit: {}", e))?;
+    tokio::fs::create_dir_all(&screenshot_dir).await?;
+    let output_path = screenshot_dir.join(&filename);
 
     #[cfg(not(feature = "recalc-libreoffice"))]
     {

@@ -101,11 +101,27 @@ async fn live_json_rpc_tools_call_preserves_legacy_projection_and_decoding() -> 
         serde_json::to_vec(&result).expect("MCP result serializes");
     }
 
+    let manifest_stub = client
+        .call_tool(call_tool(
+            "get_manifest_stub",
+            json!({"workbook_or_fork_id":workbook_id}),
+        ))
+        .await?;
+    let manifest_stub = extract_json(&manifest_stub)?;
+    assert_eq!(manifest_stub["workbook_id"], workbook_id);
+    assert!(manifest_stub["manifest_yaml"].as_str().is_some());
+    assert!(manifest_stub["sheets"].is_array());
+    assert!(manifest_stub.get("schema_version").is_none());
+    assert_eq!(manifest_stub.as_object().unwrap().len(), 4);
+
     let malformed = client
         .call_tool(call_tool("list_sheets", json!({"workbook_or_fork_id":42})))
         .await
         .expect_err("malformed argument must fail JSON-RPC decoding");
-    assert!(malformed.to_string().contains("string"));
+    assert_eq!(
+        malformed.to_string(),
+        "Mcp error: -32602: failed to deserialize parameters: invalid type: integer `42`, expected a string"
+    );
 
     let unknown_field = client
         .call_tool(call_tool(
@@ -114,7 +130,10 @@ async fn live_json_rpc_tools_call_preserves_legacy_projection_and_decoding() -> 
         ))
         .await
         .expect_err("unknown argument must fail JSON-RPC decoding");
-    assert!(unknown_field.to_string().contains("unknown field"));
+    assert_eq!(
+        unknown_field.to_string(),
+        "Mcp error: -32602: failed to deserialize parameters: unknown field `unexpected`, expected one of `workbook_id`, `workbook_or_fork_id`, `limit`, `offset`, `include_bounds`"
+    );
 
     let missing_resource = client
         .call_tool(call_tool(
@@ -123,11 +142,9 @@ async fn live_json_rpc_tools_call_preserves_legacy_projection_and_decoding() -> 
         ))
         .await
         .expect_err("missing resource must fail");
-    assert!(
-        missing_resource
-            .to_string()
-            .contains("workbook id definitely-missing not found"),
-        "legacy error shape changed: {missing_resource}"
+    assert_eq!(
+        missing_resource.to_string(),
+        "Mcp error: -32603: workbook id definitely-missing not found"
     );
 
     let semantic = client
@@ -137,9 +154,9 @@ async fn live_json_rpc_tools_call_preserves_legacy_projection_and_decoding() -> 
         ))
         .await
         .expect_err("missing sheet must fail");
-    assert!(
-        semantic.to_string().contains("sheet Missing not found"),
-        "legacy semantic error shape changed: {semantic}"
+    assert_eq!(
+        semantic.to_string(),
+        "Mcp error: -32603: sheet Missing not found"
     );
     assert!(!semantic.to_string().contains("schema_version"));
 

@@ -1,3 +1,5 @@
+#![cfg(feature = "recalc")]
+
 use agent_spreadsheet::model::WorkbookId;
 use agent_spreadsheet::operations::{
     CanonicalErrorCode, OperationRisk, ResourceId, decode_operation, execute_operation_json,

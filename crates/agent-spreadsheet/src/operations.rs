@@ -1,5 +1,12 @@
 #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 use crate::canonical_lifecycle::*;
+#[cfg(feature = "recalc-formualizer")]
+use crate::canonical_optional::{
+    ExecuteSheetportData, ExecuteSheetportRequest, SheetportManifestData, SheetportManifestRequest,
+};
+use crate::canonical_optional::{InspectVbaData, InspectVbaRequest};
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+use crate::canonical_optional::{ScreenshotSheetData, ScreenshotSheetRequest};
 pub use crate::canonical_reads::*;
 #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 use crate::canonical_write::{WriteRequest, WriteResponseData};
@@ -119,6 +126,9 @@ pub struct RuntimeCapabilities {
     pub workbook_discovery: bool,
     pub workbook_read: bool,
     pub workbook_write: bool,
+    pub screenshot_rendering: bool,
+    pub sheetport: bool,
+    pub vba: bool,
 }
 
 impl RuntimeCapabilities {
@@ -127,6 +137,28 @@ impl RuntimeCapabilities {
             workbook_discovery: true,
             workbook_read: true,
             workbook_write: cfg!(all(not(target_arch = "wasm32"), feature = "recalc")),
+            screenshot_rendering: native_screenshot_available(),
+            sheetport: cfg!(feature = "recalc-formualizer"),
+            vba: true,
+        }
+    }
+
+    pub fn from_state(state: &AppState) -> Self {
+        #[cfg(not(all(not(target_arch = "wasm32"), feature = "recalc")))]
+        let _ = state;
+        Self {
+            workbook_discovery: true,
+            workbook_read: true,
+            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            workbook_write: state.fork_registry().is_some(),
+            #[cfg(not(all(not(target_arch = "wasm32"), feature = "recalc")))]
+            workbook_write: false,
+            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            screenshot_rendering: state.screenshot_semaphore().is_some(),
+            #[cfg(not(all(not(target_arch = "wasm32"), feature = "recalc")))]
+            screenshot_rendering: false,
+            sheetport: cfg!(feature = "recalc-formualizer"),
+            vba: true,
         }
     }
 }
@@ -198,6 +230,13 @@ pub enum SpreadsheetOperation {
     ProfileTable(ProfileTableRequest),
     SheetStatistics(SheetStatisticsRequest),
     #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    ScreenshotSheet(ScreenshotSheetRequest),
+    #[cfg(feature = "recalc-formualizer")]
+    SheetportManifest(SheetportManifestRequest),
+    #[cfg(feature = "recalc-formualizer")]
+    ExecuteSheetport(ExecuteSheetportRequest),
+    InspectVba(InspectVbaRequest),
+    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
     Write(WriteRequest),
     #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
     CreateFork(CreateForkRequest),
@@ -240,6 +279,13 @@ impl SpreadsheetOperation {
             Self::ProfileTable(_) => "profile_table",
             Self::SheetStatistics(_) => "sheet_statistics",
             #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            Self::ScreenshotSheet(_) => "screenshot_sheet",
+            #[cfg(feature = "recalc-formualizer")]
+            Self::SheetportManifest(_) => "sheetport_manifest",
+            #[cfg(feature = "recalc-formualizer")]
+            Self::ExecuteSheetport(_) => "execute_sheetport",
+            Self::InspectVba(_) => "inspect_vba",
+            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
             Self::Write(_) => "write",
             #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
             Self::CreateFork(_) => "create_fork",
@@ -281,6 +327,13 @@ impl SpreadsheetOperation {
             Self::FormulaMap(value) => Some(&value.resource_id),
             Self::ProfileTable(value) => Some(&value.resource_id),
             Self::SheetStatistics(value) => Some(&value.resource_id),
+            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            Self::ScreenshotSheet(value) => Some(&value.resource_id),
+            #[cfg(feature = "recalc-formualizer")]
+            Self::SheetportManifest(value) => value.resource_id(),
+            #[cfg(feature = "recalc-formualizer")]
+            Self::ExecuteSheetport(value) => Some(&value.resource_id),
+            Self::InspectVba(value) => Some(value.resource_id()),
             #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
             Self::Write(value) => Some(&value.resource_id),
             #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
@@ -418,11 +471,42 @@ struct DiscoveryResponseSchema<T: JsonSchema> {
     data: T,
 }
 
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct OptionalResourceResponseSchema<T: JsonSchema> {
+    schema_version: String,
+    operation: String,
+    resource_id: Option<ResourceId>,
+    revision_id: Option<String>,
+    data: T,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc-libreoffice"))]
+fn native_screenshot_available() -> bool {
+    crate::recalc::ScreenshotExecutor::new(&crate::recalc::RecalcConfig::default()).is_available()
+}
+#[cfg(not(all(not(target_arch = "wasm32"), feature = "recalc-libreoffice")))]
+fn native_screenshot_available() -> bool {
+    false
+}
+
 fn workbook_read(capabilities: &RuntimeCapabilities) -> bool {
     capabilities.workbook_read
 }
 fn workbook_discovery(capabilities: &RuntimeCapabilities) -> bool {
     capabilities.workbook_discovery
+}
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+fn screenshot_rendering(capabilities: &RuntimeCapabilities) -> bool {
+    capabilities.workbook_read && capabilities.screenshot_rendering
+}
+#[cfg(feature = "recalc-formualizer")]
+fn sheetport(capabilities: &RuntimeCapabilities) -> bool {
+    capabilities.sheetport
+}
+fn vba(capabilities: &RuntimeCapabilities) -> bool {
+    capabilities.workbook_read && capabilities.vba
 }
 #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 fn workbook_write(capabilities: &RuntimeCapabilities) -> bool {
@@ -598,6 +682,13 @@ fn discovery_output_schema<T: JsonSchema>(operation: &str) -> Value {
     set_property_const(&mut schema, "operation", operation);
     schema
 }
+#[cfg(feature = "recalc-formualizer")]
+fn optional_resource_output_schema<T: JsonSchema>(operation: &str) -> Value {
+    let mut schema = closed_schema::<OptionalResourceResponseSchema<T>>();
+    set_property_const(&mut schema, "schema_version", CANONICAL_SCHEMA_VERSION);
+    set_property_const(&mut schema, "operation", operation);
+    schema
+}
 
 macro_rules! schemas {
     ($input_fn:ident, $output_fn:ident, $request:ty, $response:ty, $name:literal) => {
@@ -726,6 +817,96 @@ schemas!(
     SheetStatisticsRequest,
     SheetStatisticsResponse,
     "sheet_statistics"
+);
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+fn screenshot_sheet_input_schema() -> Value {
+    let mut schema = closed_schema::<ScreenshotSheetRequest>();
+    schema["properties"]["range"]["x-runtime-bounds"] = json!({
+        "max_rows": 100,
+        "max_columns": 30
+    });
+    schema
+}
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+fn screenshot_sheet_output_schema() -> Value {
+    resource_output_schema::<ScreenshotSheetData>("screenshot_sheet")
+}
+#[cfg(feature = "recalc-formualizer")]
+fn sheetport_manifest_input_schema() -> Value {
+    closed_schema::<SheetportManifestRequest>()
+}
+#[cfg(feature = "recalc-formualizer")]
+fn sheetport_manifest_output_schema() -> Value {
+    optional_resource_output_schema::<SheetportManifestData>("sheetport_manifest")
+}
+#[cfg(feature = "recalc-formualizer")]
+fn apply_sheetport_value_bounds(value: &mut Value, property: Option<&str>) {
+    if let Some(object) = value.as_object_mut() {
+        if matches!(property, Some("inputs" | "results")) {
+            object.insert("maxProperties".to_string(), json!(256));
+        }
+        if object.get("type") == Some(&Value::String("object".to_string()))
+            && object
+                .get("additionalProperties")
+                .and_then(Value::as_object)
+                .and_then(|schema| schema.get("$ref"))
+                == Some(&json!("#/$defs/SheetportScalar"))
+        {
+            object.insert("maxProperties".to_string(), json!(1_000));
+        }
+        if object.get("type") == Some(&Value::String("array".to_string()))
+            && object
+                .get("items")
+                .and_then(Value::as_object)
+                .and_then(|schema| schema.get("$ref"))
+                == Some(&json!("#/$defs/SheetportScalar"))
+        {
+            object.insert("maxItems".to_string(), json!(100_000));
+        }
+        let keys = object.keys().cloned().collect::<Vec<_>>();
+        for key in keys {
+            if let Some(child) = object.get_mut(&key) {
+                apply_sheetport_value_bounds(child, Some(&key));
+            }
+        }
+    } else if let Some(array) = value.as_array_mut() {
+        for child in array {
+            apply_sheetport_value_bounds(child, property);
+        }
+    }
+}
+#[cfg(feature = "recalc-formualizer")]
+fn execute_sheetport_input_schema() -> Value {
+    let mut schema = closed_schema::<ExecuteSheetportRequest>();
+    apply_sheetport_value_bounds(&mut schema, None);
+    schema["properties"]["inputs"]["x-runtime-bounds"] = json!({
+        "max_ports": 256,
+        "max_total_cells": 100_000,
+        "max_rows_per_value": 10_000,
+        "max_fields_per_row_or_record": 1_000,
+        "max_text_bytes": 65_536
+    });
+    schema
+}
+#[cfg(feature = "recalc-formualizer")]
+fn execute_sheetport_output_schema() -> Value {
+    let mut schema = resource_output_schema::<ExecuteSheetportData>("execute_sheetport");
+    apply_sheetport_value_bounds(&mut schema, None);
+    schema["$defs"]["ExecuteSheetportData"]["properties"]["results"]["x-runtime-bounds"] = json!({
+        "max_ports": 256,
+        "max_total_cells": 100_000,
+        "max_rows_per_value": 10_000,
+        "max_fields_per_row_or_record": 1_000,
+        "max_text_bytes": 65_536
+    });
+    schema
+}
+schemas!(
+    inspect_vba_input_schema,
+    inspect_vba_output_schema,
+    InspectVbaRequest,
+    InspectVbaData,
+    "inspect_vba"
 );
 #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 fn write_input_schema() -> Value {
@@ -925,6 +1106,20 @@ const WORKBOOK_READ: CapabilityMetadata = CapabilityMetadata {
     description: "Read an already-bound workbook resource",
 };
 #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+const SCREENSHOT_RENDERING: CapabilityMetadata = CapabilityMetadata {
+    name: "screenshot_rendering",
+    description: "Render bounded workbook regions to content-addressed image artifacts",
+};
+#[cfg(feature = "recalc-formualizer")]
+const SHEETPORT: CapabilityMetadata = CapabilityMetadata {
+    name: "sheetport",
+    description: "Validate, bind, and execute portable typed SheetPort manifests",
+};
+const VBA: CapabilityMetadata = CapabilityMetadata {
+    name: "vba",
+    description: "Inspect bounded VBA project metadata and module source",
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 const WORKBOOK_WRITE: CapabilityMetadata = CapabilityMetadata {
     name: "workbook_write",
     description: "Mutate an isolated fork or session resource with revision CAS",
@@ -1114,6 +1309,45 @@ static REGISTRY: &[OperationDescriptor] = &[
         sheet_statistics_output_schema
     ),
     #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    descriptor!(
+        "screenshot_sheet",
+        "Render a bounded sheet range to a content-addressed PNG artifact without exposing a server path.",
+        SCREENSHOT_RENDERING,
+        screenshot_rendering,
+        EXPENSIVE_READ,
+        screenshot_sheet_input_schema,
+        screenshot_sheet_output_schema
+    ),
+    #[cfg(feature = "recalc-formualizer")]
+    descriptor!(
+        "sheetport_manifest",
+        "Discover, inspect, validate, normalize, or bind-check portable SheetPort manifest content.",
+        SHEETPORT,
+        sheetport,
+        BOUNDED_READ,
+        sheetport_manifest_input_schema,
+        sheetport_manifest_output_schema
+    ),
+    #[cfg(feature = "recalc-formualizer")]
+    descriptor!(
+        "execute_sheetport",
+        "Execute a portable SheetPort manifest with closed typed inputs, results, errors, and coverage.",
+        SHEETPORT,
+        sheetport,
+        EXPENSIVE_READ,
+        execute_sheetport_input_schema,
+        execute_sheetport_output_schema
+    ),
+    descriptor!(
+        "inspect_vba",
+        "Inspect a VBA project summary or bounded module source with revision-bound opaque paging.",
+        VBA,
+        vba,
+        BOUNDED_READ,
+        inspect_vba_input_schema,
+        inspect_vba_output_schema
+    ),
+    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
     OperationDescriptor {
         name: "write",
         schema_version: CANONICAL_SCHEMA_VERSION,
@@ -1129,6 +1363,7 @@ static REGISTRY: &[OperationDescriptor] = &[
         input_schema: write_input_schema,
         output_schema: write_output_schema,
     },
+    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
     OperationDescriptor {
         name: "create_fork",
         schema_version: CANONICAL_SCHEMA_VERSION,
@@ -1141,6 +1376,7 @@ static REGISTRY: &[OperationDescriptor] = &[
         input_schema: create_fork_input_schema,
         output_schema: create_fork_output_schema,
     },
+    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
     descriptor!(
         "list_forks",
         "Discover active forks without exposing server-local paths.",
@@ -1150,6 +1386,7 @@ static REGISTRY: &[OperationDescriptor] = &[
         list_forks_input_schema,
         list_forks_output_schema
     ),
+    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
     OperationDescriptor {
         name: "recalculate",
         schema_version: CANONICAL_SCHEMA_VERSION,
@@ -1165,6 +1402,7 @@ static REGISTRY: &[OperationDescriptor] = &[
         input_schema: recalculate_input_schema,
         output_schema: recalculate_output_schema,
     },
+    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
     descriptor!(
         "verify_workbook",
         "Evaluate and compare baseline and current resources with sound proof states and coverage.",
@@ -1174,6 +1412,7 @@ static REGISTRY: &[OperationDescriptor] = &[
         verify_workbook_input_schema,
         verify_workbook_output_schema
     ),
+    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
     OperationDescriptor {
         name: "export_fork",
         schema_version: CANONICAL_SCHEMA_VERSION,
@@ -1189,6 +1428,7 @@ static REGISTRY: &[OperationDescriptor] = &[
         input_schema: export_fork_input_schema,
         output_schema: export_fork_output_schema,
     },
+    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
     OperationDescriptor {
         name: "discard_fork",
         schema_version: CANONICAL_SCHEMA_VERSION,
@@ -1201,6 +1441,7 @@ static REGISTRY: &[OperationDescriptor] = &[
         input_schema: discard_fork_input_schema,
         output_schema: discard_fork_output_schema,
     },
+    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
     descriptor!(
         "get_changes",
         "Read either the canonical operation audit or a direct base-to-current net diff.",
@@ -1210,6 +1451,7 @@ static REGISTRY: &[OperationDescriptor] = &[
         get_changes_input_schema,
         get_changes_output_schema
     ),
+    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
     OperationDescriptor {
         name: "checkpoint",
         schema_version: CANONICAL_SCHEMA_VERSION,
@@ -1225,6 +1467,7 @@ static REGISTRY: &[OperationDescriptor] = &[
         input_schema: checkpoint_input_schema,
         output_schema: checkpoint_output_schema,
     },
+    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
     OperationDescriptor {
         name: "staged_change",
         schema_version: CANONICAL_SCHEMA_VERSION,
@@ -1270,6 +1513,7 @@ pub fn operations_discovery(capabilities: &RuntimeCapabilities) -> Value {
     Value::Array(
         REGISTRY
             .iter()
+            .filter(|descriptor| descriptor.is_available(capabilities))
             .map(|descriptor| descriptor.discovery_json(capabilities))
             .collect(),
     )
@@ -1390,6 +1634,40 @@ pub fn decode_operation(
             SpreadsheetOperation::SheetStatistics
         ),
         #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        "screenshot_sheet" => {
+            let request = serde_json::from_value::<ScreenshotSheetRequest>(payload)
+                .map_err(|error| CanonicalErrorEnvelope::invalid_request(name, error))?;
+            crate::canonical_optional::validate_screenshot_request(&request).map_err(|error| {
+                CanonicalErrorEnvelope::new(
+                    CanonicalErrorCode::InvalidRequest,
+                    error.to_string(),
+                    Some(name),
+                    None,
+                )
+            })?;
+            Ok(SpreadsheetOperation::ScreenshotSheet(request))
+        }
+        #[cfg(feature = "recalc-formualizer")]
+        "sheetport_manifest" => decode!(
+            payload,
+            name,
+            SheetportManifestRequest,
+            SpreadsheetOperation::SheetportManifest
+        ),
+        #[cfg(feature = "recalc-formualizer")]
+        "execute_sheetport" => decode!(
+            payload,
+            name,
+            ExecuteSheetportRequest,
+            SpreadsheetOperation::ExecuteSheetport
+        ),
+        "inspect_vba" => decode!(
+            payload,
+            name,
+            InspectVbaRequest,
+            SpreadsheetOperation::InspectVba
+        ),
+        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
         "create_fork" => decode!(
             payload,
             name,
@@ -1482,6 +1760,22 @@ pub fn decode_operation(
     }
 }
 
+fn optional_error(operation: &str, error: anyhow::Error) -> CanonicalErrorEnvelope {
+    let message = error.to_string();
+    let code = if message.starts_with("invalid request:") {
+        CanonicalErrorCode::InvalidRequest
+    } else if message.starts_with("stale cursor:") {
+        CanonicalErrorCode::StaleCursor
+    } else if message.starts_with("cursor mismatch:") {
+        CanonicalErrorCode::CursorMismatch
+    } else if message.contains("not found") {
+        CanonicalErrorCode::ResourceNotFound
+    } else {
+        CanonicalErrorCode::OperationFailed
+    };
+    CanonicalErrorEnvelope::new(code, message, Some(operation), None)
+}
+
 #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 fn lifecycle_error(operation: &str, error: anyhow::Error) -> CanonicalErrorEnvelope {
     let message = error.to_string();
@@ -1511,7 +1805,7 @@ pub async fn execute_operation(
 ) -> Result<CanonicalResponse, CanonicalErrorEnvelope> {
     let name = operation.name();
     let descriptor = operation_descriptor(name).expect("decoded operations are registered");
-    if !descriptor.is_available(&RuntimeCapabilities::native()) {
+    if !descriptor.is_available(&RuntimeCapabilities::from_state(&state)) {
         return Err(CanonicalErrorEnvelope::new(
             CanonicalErrorCode::CapabilityUnavailable,
             format!("operation '{name}' is unavailable in this runtime"),
@@ -1529,7 +1823,13 @@ pub async fn execute_operation(
             .map_err(|error| {
                 CanonicalErrorEnvelope::new(
                     CanonicalErrorCode::ResourceNotFound,
-                    error.to_string(),
+                    if name == "inspect_vba" {
+                        "VBA resource could not be opened".to_string()
+                    } else if name == "screenshot_sheet" {
+                        "screenshot resource could not be opened".to_string()
+                    } else {
+                        error.to_string()
+                    },
                     Some(name),
                     Some("$.resource_id".to_string()),
                 )
@@ -1760,6 +2060,33 @@ pub async fn execute_operation(
             )
             .await
             .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?,
+        ),
+        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        SpreadsheetOperation::ScreenshotSheet(request) => serde_json::to_value(
+            crate::canonical_optional::screenshot_sheet(state, request)
+                .await
+                .map_err(|error| optional_error(name, error))?,
+        ),
+        #[cfg(feature = "recalc-formualizer")]
+        SpreadsheetOperation::SheetportManifest(request) => serde_json::to_value(
+            crate::canonical_optional::execute_sheetport_manifest_action(state, request)
+                .await
+                .map_err(|error| optional_error(name, error))?,
+        ),
+        #[cfg(feature = "recalc-formualizer")]
+        SpreadsheetOperation::ExecuteSheetport(request) => serde_json::to_value(
+            crate::canonical_optional::execute_sheetport(state, request)
+                .await
+                .map_err(|error| optional_error(name, error))?,
+        ),
+        SpreadsheetOperation::InspectVba(request) => serde_json::to_value(
+            crate::canonical_optional::inspect_vba(
+                state,
+                request,
+                revision_id.as_deref().expect("VBA resource revision"),
+            )
+            .await
+            .map_err(|error| optional_error(name, error))?,
         ),
         #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
         SpreadsheetOperation::Write(request) => {

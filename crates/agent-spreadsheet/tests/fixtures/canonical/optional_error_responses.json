@@ -1,0 +1,11 @@
+[
+  {"case":"screenshot_sheet","response":{"schema_version":"1","error":{"code":"INVALID_REQUEST","message":"invalid request: screenshot range must be A1 or A1:B2","operation":"screenshot_sheet"}}},
+  {"case":"sheetport_manifest.candidates","response":{"schema_version":"1","error":{"code":"RESOURCE_NOT_FOUND","message":"workbook resource was not found","operation":"sheetport_manifest","path":"$.resource_id"}}},
+  {"case":"sheetport_manifest.schema","response":{"schema_version":"1","error":{"code":"CAPABILITY_UNAVAILABLE","message":"operation 'sheetport_manifest' is unavailable in this runtime","operation":"sheetport_manifest"}}},
+  {"case":"sheetport_manifest.validate","response":{"schema_version":"1","error":{"code":"INVALID_REQUEST","message":"invalid request: manifest_yaml exceeds 1048576 bytes","operation":"sheetport_manifest"}}},
+  {"case":"sheetport_manifest.normalize","response":{"schema_version":"1","error":{"code":"INVALID_REQUEST","message":"invalid request: failed to parse manifest YAML","operation":"sheetport_manifest"}}},
+  {"case":"sheetport_manifest.bind_check","response":{"schema_version":"1","error":{"code":"RESOURCE_NOT_FOUND","message":"workbook resource was not found","operation":"sheetport_manifest","path":"$.resource_id"}}},
+  {"case":"execute_sheetport","response":{"schema_version":"1","error":{"code":"INVALID_REQUEST","message":"invalid request: inputs exceeds 256 ports","operation":"execute_sheetport"}}},
+  {"case":"inspect_vba.project_summary","response":{"schema_version":"1","error":{"code":"INVALID_REQUEST","message":"invalid request: limit_modules must be between 1 and 100","operation":"inspect_vba"}}},
+  {"case":"inspect_vba.module_source","response":{"schema_version":"1","error":{"code":"CURSOR_MISMATCH","message":"cursor mismatch: VBA cursor belongs to another request","operation":"inspect_vba"}}}
+]

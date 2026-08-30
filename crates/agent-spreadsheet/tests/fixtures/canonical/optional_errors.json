@@ -1,0 +1,7 @@
+[
+  {"operation":"sheetport_manifest","payload":{"action":"path","manifest_path":"/tmp/manifest.yaml"},"code":"INVALID_REQUEST"},
+  {"operation":"sheetport_manifest","payload":{"action":"validate","manifest_yaml":"spec: fio","path":"manifest.yaml"},"code":"INVALID_REQUEST"},
+  {"operation":"execute_sheetport","payload":{"resource_id":"wb:abc","manifest_yaml":"spec: fio","inputs":{"rate":0.05}},"code":"INVALID_REQUEST"},
+  {"operation":"inspect_vba","payload":{"view":"module_source","resource_id":"wb:abc","module_name":"../Module1"},"code":"INVALID_REQUEST"},
+  {"operation":"inspect_vba","payload":{"view":"path","resource_id":"wb:abc","path":"/tmp/vbaProject.bin"},"code":"INVALID_REQUEST"}
+]

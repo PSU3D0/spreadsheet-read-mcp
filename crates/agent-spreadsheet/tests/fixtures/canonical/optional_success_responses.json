@@ -1,0 +1,145 @@
+[
+  {
+    "case": "screenshot_sheet",
+    "response": {
+      "schema_version": "1",
+      "operation": "screenshot_sheet",
+      "resource_id": "wb:fixture",
+      "revision_id": "sha256:fixture",
+      "data": {
+        "sheet_name": "Sheet1",
+        "range": "A1:C10",
+        "artifact": {
+          "handle": "artifact:sha256:fixture",
+          "hash": "sha256:fixture",
+          "bytes": 68,
+          "media_type": "image/png"
+        },
+        "duration_ms": 0
+      }
+    }
+  },
+  {
+    "case": "sheetport_manifest.candidates",
+    "response": {
+      "schema_version": "1",
+      "operation": "sheetport_manifest",
+      "resource_id": "wb:fixture",
+      "revision_id": "sha256:fixture",
+      "data": {
+        "action": "candidates",
+        "slug": "fixture",
+        "manifest_yaml": "spec: fio\n",
+        "sheets": []
+      }
+    }
+  },
+  {
+    "case": "sheetport_manifest.schema",
+    "response": {
+      "schema_version": "1",
+      "operation": "sheetport_manifest",
+      "data": {
+        "action": "schema",
+        "schema": {}
+      }
+    }
+  },
+  {
+    "case": "sheetport_manifest.validate",
+    "response": {
+      "schema_version": "1",
+      "operation": "sheetport_manifest",
+      "data": {
+        "action": "validate",
+        "valid": false,
+        "issues": [{"path": "<document>", "message": "invalid manifest"}]
+      }
+    }
+  },
+  {
+    "case": "sheetport_manifest.normalize",
+    "response": {
+      "schema_version": "1",
+      "operation": "sheetport_manifest",
+      "data": {
+        "action": "normalize",
+        "manifest_yaml": "spec: fio\n",
+        "valid": true,
+        "issues": []
+      }
+    }
+  },
+  {
+    "case": "sheetport_manifest.bind_check",
+    "response": {
+      "schema_version": "1",
+      "operation": "sheetport_manifest",
+      "resource_id": "wb:fixture",
+      "revision_id": "sha256:fixture",
+      "data": {
+        "action": "bind_check",
+        "ok": true,
+        "stage": "complete",
+        "binding_count": 2,
+        "issues": []
+      }
+    }
+  },
+  {
+    "case": "execute_sheetport",
+    "response": {
+      "schema_version": "1",
+      "operation": "execute_sheetport",
+      "resource_id": "wb:fixture",
+      "revision_id": "sha256:fixture",
+      "data": {
+        "status": "completed",
+        "results": {"total": {"kind": "number", "value": 42.0}},
+        "coverage": {
+          "state": "complete",
+          "declared_input_ports": 1,
+          "supplied_input_ports": 1,
+          "declared_output_ports": 1,
+          "returned_output_ports": 1
+        },
+        "errors": []
+      }
+    }
+  },
+  {
+    "case": "inspect_vba.project_summary",
+    "response": {
+      "schema_version": "1",
+      "operation": "inspect_vba",
+      "resource_id": "wb:fixture",
+      "revision_id": "sha256:fixture",
+      "data": {
+        "view": "project_summary",
+        "has_vba": true,
+        "code_page": 1252,
+        "sys_kind": "Win32",
+        "modules": [{"name": "Module1", "module_type": "procedural", "read_only": false, "private": false}],
+        "references": [{"kind": "registered"}],
+        "next_cursor": null
+      }
+    }
+  },
+  {
+    "case": "inspect_vba.module_source",
+    "response": {
+      "schema_version": "1",
+      "operation": "inspect_vba",
+      "resource_id": "wb:fixture",
+      "revision_id": "sha256:fixture",
+      "data": {
+        "view": "module_source",
+        "module_name": "Module1",
+        "start_line": 1,
+        "returned_lines": 1,
+        "source": "Sub Main()",
+        "next_cursor": null
+      }
+    }
+  }
+]

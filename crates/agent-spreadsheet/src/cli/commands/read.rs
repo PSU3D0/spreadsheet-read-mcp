@@ -950,10 +950,7 @@ pub async fn sheetport_manifest_candidates(
 
 #[cfg(feature = "recalc-formualizer")]
 pub fn sheetport_manifest_schema() -> Result<Value> {
-    let schema = formualizer::sheetport_spec::schema_json();
-    let schema_value: serde_json::Value =
-        serde_json::from_str(schema).context("failed to parse bundled SheetPort JSON schema")?;
-    Ok(schema_value)
+    crate::canonical_optional::sheetport_schema()
 }
 
 #[cfg(feature = "recalc-formualizer")]
@@ -963,28 +960,11 @@ pub fn sheetport_manifest_validate(manifest: PathBuf) -> Result<Value> {
         manifest.display()
     ))?;
 
-    let parsed = formualizer::sheetport_spec::Manifest::from_yaml_str(&manifest_yaml);
-    let response = match parsed {
-        Ok(manifest_obj) => match manifest_obj.validate() {
-            Ok(()) => serde_json::json!({
-                "valid": true,
-                "issues": []
-            }),
-            Err(err) => serde_json::json!({
-                "valid": false,
-                "issues": err.issues(),
-            }),
-        },
-        Err(err) => serde_json::json!({
-            "valid": false,
-            "issues": [{
-                "path": "<document>",
-                "message": err.to_string(),
-            }],
-        }),
-    };
-
-    Ok(response)
+    let issues = crate::canonical_optional::validate_manifest_content(&manifest_yaml)?;
+    Ok(serde_json::json!({
+        "valid": issues.is_empty(),
+        "issues": issues,
+    }))
 }
 
 #[cfg(feature = "recalc-formualizer")]
@@ -994,12 +974,8 @@ pub fn sheetport_manifest_normalize(manifest: PathBuf, output: Option<PathBuf>) 
         manifest.display()
     ))?;
 
-    let mut manifest_obj = formualizer::sheetport_spec::Manifest::from_yaml_str(&manifest_yaml)
-        .map_err(|err| anyhow!("failed to parse manifest YAML: {}", err))?;
-    manifest_obj.normalize();
-    let normalized_yaml = manifest_obj
-        .to_yaml()
-        .map_err(|err| anyhow!("failed to serialize normalized YAML: {}", err))?;
+    let (normalized_yaml, _) =
+        crate::canonical_optional::normalize_manifest_content(&manifest_yaml)?;
 
     if let Some(output_path) = output {
         std::fs::write(&output_path, &normalized_yaml).context(format!(
@@ -1020,59 +996,63 @@ pub fn sheetport_manifest_normalize(manifest: PathBuf, output: Option<PathBuf>) 
 
 #[cfg(feature = "recalc-formualizer")]
 pub async fn sheetport_bind_check(file: PathBuf, manifest: PathBuf) -> Result<Value> {
-    use formualizer::workbook::SpreadsheetReader;
-
     let manifest_yaml = std::fs::read_to_string(&manifest).context(format!(
         "failed to read manifest from '{}'",
         manifest.display()
     ))?;
-
-    let manifest_obj = match formualizer::sheetport_spec::Manifest::from_yaml_str(&manifest_yaml) {
-        Ok(manifest_obj) => manifest_obj,
-        Err(err) => {
+    let preflight = crate::canonical_optional::validate_manifest_content(&manifest_yaml)?;
+    if !preflight.is_empty() {
+        if preflight.len() == 1 && preflight[0].path == "<document>" {
             return Ok(serde_json::json!({
                 "ok": false,
                 "stage": "parse",
-                "error": err.to_string(),
+                "error": preflight[0].message,
             }));
         }
-    };
-
-    if let Err(err) = manifest_obj.validate() {
         return Ok(serde_json::json!({
             "ok": false,
             "stage": "validate",
-            "issues": err.issues(),
+            "issues": preflight,
         }));
     }
-
     let runtime = StatelessRuntime;
     let (state, workbook_id) = runtime.open_state_for_file(&file).await?;
-    let workbook_ctx = state.open_workbook(&workbook_id).await?;
-
-    let workbook_bytes = std::fs::read(&workbook_ctx.path)?;
-    let adapter = formualizer::workbook::UmyaAdapter::open_bytes(workbook_bytes)
-        .or_else(|_| formualizer::workbook::UmyaAdapter::open_path(&workbook_ctx.path))
-        .map_err(|e| anyhow!("failed to open workbook adapter: {}", e))?;
-
-    let workbook = formualizer::workbook::Workbook::from_reader(
-        adapter,
-        formualizer::workbook::LoadStrategy::EagerAll,
-        formualizer::workbook::WorkbookConfig::ephemeral(),
+    let response = crate::canonical_optional::bind_check_manifest_content(
+        state,
+        workbook_id.clone(),
+        &manifest_yaml,
     )
-    .map_err(|e| anyhow!("failed to load workbook: {}", e))?;
-
-    match formualizer::sheetport::SheetPortSession::new(workbook, manifest_obj) {
-        Ok(session) => Ok(serde_json::json!({
+    .await?;
+    match response {
+        crate::canonical_optional::SheetportManifestData::BindCheck {
+            ok: true,
+            binding_count,
+            ..
+        } => Ok(serde_json::json!({
             "ok": true,
             "workbook_id": workbook_id,
-            "binding_count": session.bindings().len(),
+            "binding_count": binding_count,
         })),
-        Err(err) => Ok(serde_json::json!({
+        crate::canonical_optional::SheetportManifestData::BindCheck {
+            stage: crate::canonical_optional::SheetportBindStage::Validate,
+            issues,
+            ..
+        } => Ok(serde_json::json!({
             "ok": false,
-            "stage": "bind",
-            "error": err.to_string(),
+            "stage": "validate",
+            "issues": issues,
         })),
+        crate::canonical_optional::SheetportManifestData::BindCheck { stage, issues, .. } => {
+            Ok(serde_json::json!({
+                "ok": false,
+                "stage": match stage {
+                    crate::canonical_optional::SheetportBindStage::Parse => "parse",
+                    _ => "bind",
+                },
+                "error": issues.first().map(|issue| issue.message.as_str()).unwrap_or("bind failed"),
+            }))
+        }
+        _ => unreachable!("bind-check semantic response"),
     }
 }
 
