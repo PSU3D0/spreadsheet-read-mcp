@@ -919,8 +919,7 @@ async fn row_header_projection_and_volatile_groups_preserve_canonical_capabiliti
         json!({
             "resource_id":resource_id.as_str(), "sheet_name":"Sheet1",
             "selection":{"kind":"rows","start_row":3,"row_count":1,"columns":{"kind":"letters","values":["C"]}},
-            "format":"compact", "include_formulas":true, "include_styles":true,
-            "fields":["value","formula","cached_value","stored_kind","number_format","style_tags"]
+            "format":"compact", "include_formulas":true, "include_styles":true
         }),
     )
     .await
@@ -928,8 +927,53 @@ async fn row_header_projection_and_volatile_groups_preserve_canonical_capabiliti
     let payload = &compact_details.data["blocks"][0]["payload"];
     assert_eq!(payload["projected"][0][0]["formula"], "OFFSET(A3,0,0)");
     assert_eq!(payload["projected"][0][0]["address"], "C3");
+    for field in [
+        "value",
+        "formula",
+        "cached_value",
+        "stored_kind",
+        "number_format",
+        "style_tags",
+    ] {
+        assert!(
+            payload["projected"][0][0].get(field).is_some(),
+            "missing default projected field {field}"
+        );
+    }
     assert!(payload.get("snapshots").is_none());
     assert!(payload.get("compact").is_none());
+
+    let compact_plain = execute_operation_json(
+        state.clone(),
+        "read_cells",
+        json!({
+            "resource_id":resource_id.as_str(), "sheet_name":"Sheet1",
+            "selection":{"kind":"rows","start_row":3,"row_count":1,"columns":{"kind":"letters","values":["A"]}},
+            "format":"compact"
+        }),
+    )
+    .await
+    .unwrap();
+    let plain_payload = &compact_plain.data["blocks"][0]["payload"];
+    assert!(plain_payload["compact"].is_object());
+    assert!(plain_payload.get("projected").is_none());
+    assert!(plain_payload.get("snapshots").is_none());
+
+    let compact_explicit = execute_operation_json(
+        state.clone(),
+        "read_cells",
+        json!({
+            "resource_id":resource_id.as_str(), "sheet_name":"Sheet1",
+            "selection":{"kind":"rows","start_row":3,"row_count":1,"columns":{"kind":"letters","values":["A"]}},
+            "format":"compact", "fields":["value"]
+        }),
+    )
+    .await
+    .unwrap();
+    let explicit_payload = &compact_explicit.data["blocks"][0]["payload"];
+    assert!(explicit_payload["projected"].is_array());
+    assert!(explicit_payload.get("compact").is_none());
+    assert!(explicit_payload.get("snapshots").is_none());
 
     let grid = execute_operation_json(
         state.clone(),
@@ -1173,6 +1217,158 @@ async fn read_cells_budget_uses_one_row_prefix_for_rows_and_exact_ranges() {
         }
     }
     assert_eq!(range_values, expected);
+}
+
+#[tokio::test]
+async fn detailed_compact_rows_match_the_original_trace02_request_without_duplication() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("trace02-compact-rows.xlsx");
+    let mut book = umya_spreadsheet::new_file();
+    let sheet = book.get_sheet_by_name_mut("Sheet1").unwrap();
+    sheet.set_name("Data");
+    for (column, header) in [
+        ("A", "ID"),
+        ("B", "Region"),
+        ("C", "Product"),
+        ("D", "Units"),
+        ("E", "UnitPrice"),
+        ("F", "Revenue"),
+        ("G", "Status"),
+        ("H", "Notes"),
+        ("I", "Flag"),
+        ("J", "Oversize"),
+    ] {
+        sheet.get_cell_mut(format!("{column}1")).set_value(header);
+    }
+    for row in 2..=1201 {
+        let item = row - 1;
+        let units = f64::from((item * 7) % 97 + 1);
+        let price = f64::from((item * 137) % 10_000 + 925) / 100.0;
+        let revenue = (units * price * 100.0).round() / 100.0;
+        sheet
+            .get_cell_mut(format!("A{row}"))
+            .set_value(format!("R{item:04}"));
+        sheet
+            .get_cell_mut(format!("D{row}"))
+            .set_value_number(units);
+        sheet
+            .get_cell_mut(format!("E{row}"))
+            .set_value_number(price);
+        sheet
+            .get_cell_mut(format!("F{row}"))
+            .set_formula(format!("D{row}*E{row}"))
+            .set_formula_result_default(revenue.to_string());
+        sheet.get_cell_mut(format!("H{row}")).set_value(format!(
+            "audit-row-{item:04}-{}-end-{item:04}",
+            "x".repeat(150)
+        ));
+        for column in ["E", "F"] {
+            sheet
+                .get_style_mut(format!("{column}{row}"))
+                .get_number_format_mut()
+                .set_format_code("$#,##0.00");
+        }
+    }
+    umya_spreadsheet::writer::xlsx::write(&book, &path).unwrap();
+    let (state, resource_id) = bound_path(&path).await;
+
+    let mut cursor = None;
+    let mut turns = 0_usize;
+    let mut response_bytes = 0_usize;
+    let mut row_indices = Vec::new();
+    let mut formula_count = 0_usize;
+    let mut cached_count = 0_usize;
+    let mut currency_count = 0_usize;
+    loop {
+        let mut request = json!({
+            "resource_id":resource_id.as_str(),
+            "sheet_name":"Data",
+            "selection":{
+                "kind":"rows", "start_row":2, "row_count":1200,
+                "columns":{"kind":"headers","values":["ID","UnitPrice","Revenue","Notes"],"header_row":1},
+                "include_header":true
+            },
+            "format":"compact", "include_formulas":true, "include_styles":true,
+            "page_size":500
+        });
+        if let Some(value) = cursor.take() {
+            request["cursor"] = Value::String(value);
+        }
+        let response = execute_operation_json(state.clone(), "read_cells", request)
+            .await
+            .unwrap();
+        turns += 1;
+        response_bytes += serde_json::to_vec(&response).unwrap().len();
+        let block = &response.data["blocks"][0];
+        let payload = block["payload"].as_object().unwrap();
+        assert_eq!(
+            payload.keys().map(String::as_str).collect::<HashSet<_>>(),
+            HashSet::from(["encoding", "projected"])
+        );
+        let indices = block["row_indices"].as_array().unwrap();
+        let projected = payload["projected"].as_array().unwrap();
+        assert_eq!(indices.len(), projected.len());
+        for (index, cells) in indices.iter().zip(projected) {
+            let row = index.as_u64().unwrap() as u32;
+            row_indices.push(row);
+            let cells = cells.as_array().unwrap();
+            assert_eq!(
+                cells
+                    .iter()
+                    .map(|cell| cell["address"].as_str().unwrap().to_string())
+                    .collect::<Vec<_>>(),
+                [
+                    format!("A{row}"),
+                    format!("E{row}"),
+                    format!("F{row}"),
+                    format!("H{row}")
+                ]
+            );
+            assert!(cells.iter().all(|cell| {
+                [
+                    "address",
+                    "value",
+                    "formula",
+                    "cached_value",
+                    "stored_kind",
+                    "number_format",
+                    "style_tags",
+                ]
+                .iter()
+                .all(|field| cell.get(field).is_some())
+            }));
+            assert_eq!(cells[2]["formula"], format!("D{row}*E{row}"));
+            formula_count += 1;
+            cached_count += usize::from(!cells[2]["cached_value"].is_null());
+            currency_count += cells
+                .iter()
+                .filter(|cell| {
+                    cell["style_tags"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|tag| tag == "currency")
+                })
+                .count();
+        }
+        cursor = response.data["page"]["next_cursor"]
+            .as_str()
+            .map(str::to_string);
+        if response.data["page"]["complete"].as_bool().unwrap() {
+            assert!(cursor.is_none());
+            break;
+        }
+    }
+
+    assert_eq!(row_indices, (2..=1201).collect::<Vec<_>>());
+    assert_eq!(formula_count, 1200);
+    assert_eq!(cached_count, 1200);
+    assert_eq!(currency_count, 2400);
+    assert!(turns <= 16, "detailed compact read took {turns} turns");
+    assert!(
+        (900_000..=1_100_000).contains(&response_bytes),
+        "unexpected detailed compact response cost: {response_bytes} bytes"
+    );
 }
 
 #[tokio::test]

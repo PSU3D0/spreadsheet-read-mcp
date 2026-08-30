@@ -1592,6 +1592,11 @@ pub async fn execute_read_cells(
             })?;
             let column_count = snapshots.first().map_or(0, |row| row.cells.len());
             let requested_range = format!("rows:{start_row}+{row_count}");
+            let include_snapshots =
+                include_formulas || include_styles || !request.fields.is_empty();
+            let include_projection = !request.fields.is_empty()
+                || (matches!(encoding.row_format(), SheetPageFormat::Compact)
+                    && (include_formulas || include_styles));
             let build_block = |count: usize| {
                 let emitted = &snapshots[..count];
                 let returned_end = emitted.last().map_or(current_row, |row| row.row_index);
@@ -1607,8 +1612,8 @@ pub async fn execute_read_cells(
                         &canonical_header,
                         emitted,
                         include_header,
-                        include_formulas || include_styles || !request.fields.is_empty(),
-                        !request.fields.is_empty(),
+                        include_snapshots,
+                        include_projection,
                     ),
                 }
             };
