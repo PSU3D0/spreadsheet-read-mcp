@@ -293,8 +293,21 @@ impl ScreenshotExecutor {
     }
 
     pub fn is_available(&self) -> bool {
-        self.soffice_path.exists()
+        self.soffice_path.exists() && screenshot_macro_available()
     }
+}
+
+fn screenshot_macro_available() -> bool {
+    if let Ok(root) = std::env::var("SPREADSHEET_MCP_LIBREOFFICE_USER_INSTALLATION") {
+        let root = root.trim().strip_prefix("file://").unwrap_or(root.trim());
+        if Path::new(root)
+            .join("user/basic/Standard/Module1.xba")
+            .is_file()
+        {
+            return true;
+        }
+    }
+    Path::new("/tmp/.config/libreoffice/4/user/basic/Standard/Module1.xba").is_file()
 }
 
 async fn crop_png_best_effort(path: &Path) {

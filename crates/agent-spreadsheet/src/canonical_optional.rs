@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+#[cfg(feature = "recalc-formualizer")]
 const MAX_MANIFEST_BYTES: usize = 1_048_576;
 const MAX_SHEETPORT_INPUTS: usize = 256;
 const MAX_SHEETPORT_TEXT_BYTES: usize = 65_536;
@@ -21,10 +22,15 @@ const MAX_VBA_MODULES_PER_PAGE: u32 = 100;
 const MAX_VBA_LINES_PER_PAGE: u32 = 1_000;
 const MAX_VBA_SOURCE_PAGE_BYTES: usize = 256 * 1024;
 const MAX_VBA_CURSOR_BYTES: usize = 2_048;
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 const MAX_SCREENSHOT_BYTES: usize = 16 * 1024 * 1024;
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 const MAX_SCREENSHOT_SHEET_NAME_BYTES: usize = 31;
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 const MAX_SCREENSHOT_RANGE_BYTES: usize = 32;
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 const MAX_SCREENSHOT_ROWS: u32 = 100;
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 const MAX_SCREENSHOT_COLS: u32 = 30;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -138,6 +144,7 @@ pub enum SheetportBindStage {
     Bind,
 }
 
+#[cfg(feature = "recalc-formualizer")]
 fn ensure_manifest_bound(manifest_yaml: &str) -> Result<()> {
     if manifest_yaml.len() > MAX_MANIFEST_BYTES {
         bail!("invalid request: manifest_yaml exceeds {MAX_MANIFEST_BYTES} bytes");
@@ -145,6 +152,7 @@ fn ensure_manifest_bound(manifest_yaml: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "recalc-formualizer")]
 fn issues_from_value(value: Value) -> Vec<SheetportIssue> {
     value
         .as_array()
@@ -800,6 +808,14 @@ pub async fn execute_sheetport(
         .flatten()
         .map(|(key, value)| (key.clone(), SheetportValue::from_json(value)))
         .collect::<BTreeMap<_, _>>();
+    if results.len() > MAX_SHEETPORT_INPUTS {
+        bail!("SheetPort results exceed {MAX_SHEETPORT_INPUTS} ports");
+    }
+    let mut result_cells = 0;
+    for value in results.values() {
+        validate_sheetport_value(value, &mut result_cells)
+            .map_err(|_| anyhow!("SheetPort results exceed runtime bounds"))?;
+    }
     let missing = ports
         .outputs
         .iter()
@@ -1142,6 +1158,7 @@ pub enum InspectVbaData {
         has_vba: bool,
         code_page: Option<u16>,
         sys_kind: Option<String>,
+        #[schemars(length(max = 100))]
         modules: Vec<VbaModuleSummary>,
         references: Vec<VbaReferenceSummary>,
         next_cursor: Option<String>,
@@ -1150,6 +1167,7 @@ pub enum InspectVbaData {
         module_name: String,
         start_line: u32,
         returned_lines: u32,
+        #[schemars(length(max = 262_144))]
         source: String,
         next_cursor: Option<String>,
     },

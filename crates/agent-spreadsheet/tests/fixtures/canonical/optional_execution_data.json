@@ -1,0 +1,84 @@
+{
+  "execute_sheetport.missing_required": {
+    "status": "failed",
+    "results": {},
+    "coverage": {
+      "state": "partial",
+      "declared_input_ports": 1,
+      "supplied_input_ports": 0,
+      "declared_output_ports": 0,
+      "returned_output_ports": 0
+    },
+    "errors": [
+      {
+        "code": "MISSING_REQUIRED_INPUT",
+        "message": "required input port was not supplied",
+        "port_id": "rate",
+        "constraint": {
+          "kind": "required",
+          "expected": "supplied input value",
+          "actual": "missing"
+        }
+      }
+    ]
+  },
+  "execute_sheetport.constraint_failure": {
+    "status": "failed",
+    "results": {},
+    "coverage": {
+      "state": "partial",
+      "declared_input_ports": 1,
+      "supplied_input_ports": 1,
+      "declared_output_ports": 0,
+      "returned_output_ports": 0
+    },
+    "errors": [
+      {
+        "code": "PORT_CONSTRAINT_VIOLATION",
+        "message": "a supplied port value violated its manifest constraint",
+        "port_id": null,
+        "constraint": {
+          "kind": "manifest_constraint",
+          "expected": "value satisfying the declared manifest constraint",
+          "actual": "constraint violation"
+        }
+      }
+    ]
+  },
+  "execute_sheetport.empty": {
+    "status": "completed",
+    "results": {},
+    "coverage": {
+      "state": "complete",
+      "declared_input_ports": 0,
+      "supplied_input_ports": 0,
+      "declared_output_ports": 0,
+      "returned_output_ports": 0
+    },
+    "errors": []
+  },
+  "inspect_vba.project_summary_page": {
+    "view": "project_summary",
+    "has_vba": true,
+    "code_page": 932,
+    "sys_kind": "win64",
+    "modules": [
+      {
+        "name": "ThisWorkbook",
+        "module_type": "doc_cls_designer",
+        "read_only": false,
+        "private": false
+      }
+    ],
+    "references": [],
+    "next_cursor": "<cursor>"
+  },
+  "inspect_vba.module_source_page": {
+    "view": "module_source",
+    "module_name": "ThisWorkbook",
+    "start_line": 1,
+    "returned_lines": 1,
+    "source": "Attribute VB_Name = \"ThisWorkbook\"\n",
+    "next_cursor": "<cursor>"
+  }
+}

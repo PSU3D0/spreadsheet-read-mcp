@@ -1,3 +1,5 @@
+#![cfg(feature = "recalc")]
+
 use agent_spreadsheet::canonical_write::{WriteOpStatus, WriteRequest};
 use agent_spreadsheet::operations::{CanonicalErrorCode, ResourceId, execute_operation_json};
 use agent_spreadsheet::runtime::stateless::StatelessRuntime;

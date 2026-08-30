@@ -150,42 +150,44 @@ fn registry_schemas_are_closed_typed_and_discriminated() {
         .iter()
         .map(|descriptor| descriptor.name)
         .collect::<HashSet<_>>();
-    assert_eq!(
-        names,
-        HashSet::from([
-            "list_workbooks",
-            "describe_workbook",
-            "list_sheets",
-            "sheet_overview",
-            "read_cells",
-            "inspect_cells",
-            "read_table",
-            "read_layout",
-            "export_grid",
-            "named_ranges",
-            "analyze_styles",
-            "search_values",
-            "search_formulas",
-            "formula_trace",
-            "formula_map",
-            "profile_table",
-            "sheet_statistics",
-            "screenshot_sheet",
-            "sheetport_manifest",
-            "execute_sheetport",
-            "inspect_vba",
-            "write",
-            "create_fork",
-            "list_forks",
-            "recalculate",
-            "verify_workbook",
-            "export_fork",
-            "discard_fork",
-            "get_changes",
-            "checkpoint",
-            "staged_change",
-        ])
-    );
+    #[allow(unused_mut)]
+    let mut expected = HashSet::from([
+        "list_workbooks",
+        "describe_workbook",
+        "list_sheets",
+        "sheet_overview",
+        "read_cells",
+        "inspect_cells",
+        "read_table",
+        "read_layout",
+        "export_grid",
+        "named_ranges",
+        "analyze_styles",
+        "search_values",
+        "search_formulas",
+        "formula_trace",
+        "formula_map",
+        "profile_table",
+        "sheet_statistics",
+        "inspect_vba",
+    ]);
+    #[cfg(feature = "recalc-formualizer")]
+    expected.extend(["sheetport_manifest", "execute_sheetport"]);
+    #[cfg(feature = "recalc")]
+    expected.extend([
+        "screenshot_sheet",
+        "write",
+        "create_fork",
+        "list_forks",
+        "recalculate",
+        "verify_workbook",
+        "export_fork",
+        "discard_fork",
+        "get_changes",
+        "checkpoint",
+        "staged_change",
+    ]);
+    assert_eq!(names, expected);
 
     let capabilities = RuntimeCapabilities::native();
     for descriptor in registry {
@@ -193,7 +195,7 @@ fn registry_schemas_are_closed_typed_and_discriminated() {
         if descriptor.name == "screenshot_sheet" {
             assert_eq!(
                 descriptor.is_available(&capabilities),
-                cfg!(feature = "recalc-libreoffice")
+                capabilities.screenshot_rendering
             );
         } else {
             assert!(descriptor.is_available(&capabilities));

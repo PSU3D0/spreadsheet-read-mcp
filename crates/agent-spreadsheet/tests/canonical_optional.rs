@@ -1,10 +1,16 @@
 mod support;
 
-use agent_spreadsheet::canonical_optional::{InspectVbaData, SheetportManifestData};
+use agent_spreadsheet::canonical_optional::InspectVbaData;
+#[cfg(feature = "recalc-formualizer")]
+use agent_spreadsheet::canonical_optional::SheetportManifestData;
 use agent_spreadsheet::model::WorkbookId;
 use agent_spreadsheet::operations::{
-    CanonicalErrorCode, ResourceId, RuntimeCapabilities, canonical_error_schema, decode_operation,
-    execute_operation_json, operation_descriptor, operations_discovery,
+    CanonicalErrorCode, ResourceId, RuntimeCapabilities, execute_operation_json,
+    operations_discovery,
+};
+#[cfg(feature = "recalc-formualizer")]
+use agent_spreadsheet::operations::{
+    canonical_error_schema, decode_operation, operation_descriptor,
 };
 use agent_spreadsheet::tools::{self, ListWorkbooksParams};
 use serde_json::{Value, json};
@@ -20,8 +26,20 @@ fn operation_names(value: &Value) -> Vec<String> {
         .collect()
 }
 
+fn optional_execution_golden(case: &str) -> Value {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/canonical/optional_execution_data.json");
+    let goldens: Value = serde_json::from_str(&std::fs::read_to_string(fixture).unwrap()).unwrap();
+    goldens[case].clone()
+}
+
 #[test]
 fn optional_capabilities_are_not_advertised_when_unbacked() {
+    let workspace = support::TestWorkspace::new();
+    let actual = RuntimeCapabilities::from_state(&workspace.app_state());
+    assert!(!actual.screenshot_rendering);
+    assert!(!actual.workbook_write);
+
     let none = RuntimeCapabilities::default();
     let names = operation_names(&operations_discovery(&none));
     for optional in [
@@ -41,18 +59,22 @@ fn optional_capabilities_are_not_advertised_when_unbacked() {
         ..RuntimeCapabilities::default()
     };
     let names = operation_names(&operations_discovery(&enabled));
-    for optional in ["sheetport_manifest", "execute_sheetport", "inspect_vba"] {
-        assert!(
-            names.iter().any(|name| name == optional),
-            "missing {optional}"
-        );
-    }
+    assert!(names.iter().any(|name| name == "inspect_vba"));
+    assert_eq!(
+        names.iter().any(|name| name == "sheetport_manifest"),
+        cfg!(feature = "recalc-formualizer")
+    );
+    assert_eq!(
+        names.iter().any(|name| name == "execute_sheetport"),
+        cfg!(feature = "recalc-formualizer")
+    );
     assert_eq!(
         names.iter().any(|name| name == "screenshot_sheet"),
-        cfg!(feature = "recalc-libreoffice") && std::path::Path::new("/usr/bin/soffice").exists()
+        cfg!(feature = "recalc")
     );
 }
 
+#[cfg(feature = "recalc-formualizer")]
 #[test]
 fn optional_schemas_mirror_runtime_bounds() {
     let sheetport = (operation_descriptor("execute_sheetport")
@@ -68,6 +90,24 @@ fn optional_schemas_mirror_runtime_bounds() {
     assert!(sheetport_schema.contains("\"maxItems\":10000"));
     assert!(sheetport_schema.contains("\"maxItems\":100000"));
     assert!(sheetport_schema.contains("\"maxProperties\":1000"));
+    let sheetport_bounds = json!({
+        "max_ports": 256,
+        "max_total_cells": 100_000,
+        "max_rows_per_value": 10_000,
+        "max_fields_per_row_or_record": 1_000,
+        "max_text_bytes": 65_536
+    });
+    assert_eq!(
+        sheetport["properties"]["inputs"]["x-runtime-bounds"],
+        sheetport_bounds
+    );
+    let sheetport_output = (operation_descriptor("execute_sheetport")
+        .unwrap()
+        .output_schema)();
+    assert_eq!(
+        sheetport_output["$defs"]["ExecuteSheetportData"]["properties"]["results"]["x-runtime-bounds"],
+        sheetport_bounds
+    );
 
     let screenshot = (operation_descriptor("screenshot_sheet")
         .unwrap()
@@ -76,6 +116,22 @@ fn optional_schemas_mirror_runtime_bounds() {
     assert_eq!(screenshot["properties"]["sheet_name"]["maxLength"], 31);
     assert_eq!(screenshot["properties"]["range"]["maxLength"], 32);
     assert!(screenshot["properties"]["range"]["pattern"].is_string());
+    assert_eq!(
+        screenshot["properties"]["range"]["x-runtime-bounds"],
+        json!({"max_rows": 100, "max_columns": 30})
+    );
+    let oversized_geometry = json!({
+        "resource_id": "wb:abc",
+        "sheet_name": "Sheet1",
+        "range": "A1:AE101"
+    });
+    jsonschema::validator_for(&screenshot)
+        .unwrap()
+        .validate(&oversized_geometry)
+        .expect("standard JSON Schema cannot express range geometry");
+    let error = decode_operation("screenshot_sheet", oversized_geometry)
+        .expect_err("runtime geometry validator enforces the vendor bound");
+    assert_eq!(error.error.code, CanonicalErrorCode::InvalidRequest);
 
     let vba = (operation_descriptor("inspect_vba").unwrap().input_schema)();
     assert_eq!(vba["oneOf"][0]["properties"]["limit_modules"]["minimum"], 1);
@@ -88,8 +144,16 @@ fn optional_schemas_mirror_runtime_bounds() {
         vba["oneOf"][1]["properties"]["limit_lines"]["maximum"],
         1_000
     );
+    let vba_output = (operation_descriptor("inspect_vba").unwrap().output_schema)();
+    let output_variants = &vba_output["$defs"]["InspectVbaData"]["oneOf"];
+    assert_eq!(output_variants[0]["properties"]["modules"]["maxItems"], 100);
+    assert_eq!(
+        output_variants[1]["properties"]["source"]["maxLength"],
+        262_144
+    );
 }
 
+#[cfg(feature = "recalc-formualizer")]
 #[test]
 fn optional_response_goldens_are_full_and_schema_valid() {
     let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/canonical");
@@ -122,6 +186,7 @@ fn optional_response_goldens_are_full_and_schema_valid() {
     }
 }
 
+#[cfg(feature = "recalc-formualizer")]
 #[test]
 fn optional_action_discriminants_are_closed_and_schemas_compile() {
     let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/canonical");
@@ -192,6 +257,7 @@ fn optional_action_discriminants_are_closed_and_schemas_compile() {
     assert_eq!(error.error.code, CanonicalErrorCode::InvalidRequest);
 }
 
+#[cfg(feature = "recalc-formualizer")]
 #[test]
 fn cli_binding_rules_are_action_specific_and_deterministic() {
     let portable = assert_cmd::cargo::cargo_bin_cmd!("asp")
@@ -244,6 +310,7 @@ fn cli_binding_rules_are_action_specific_and_deterministic() {
     assert_eq!(error["error"]["path"], "--bind");
 }
 
+#[cfg(feature = "recalc-formualizer")]
 #[tokio::test]
 async fn manifest_schema_validate_and_normalize_are_portable_content_actions() {
     let workspace = support::TestWorkspace::new();
@@ -298,6 +365,7 @@ async fn manifest_schema_validate_and_normalize_are_portable_content_actions() {
     assert!(!error.error.message.contains('/'));
 }
 
+#[cfg(feature = "recalc-formualizer")]
 #[tokio::test]
 async fn execute_sheetport_missing_required_inputs_is_structured_and_incomplete() {
     let workspace = support::TestWorkspace::new();
@@ -342,6 +410,10 @@ ports:
     )
     .await
     .expect("structured missing input result");
+    assert_eq!(
+        execution.data,
+        optional_execution_golden("execute_sheetport.missing_required")
+    );
     assert_eq!(execution.data["status"], "failed");
     assert_eq!(execution.data["coverage"]["state"], "partial");
     assert_eq!(execution.data["coverage"]["declared_input_ports"], 1);
@@ -357,6 +429,7 @@ ports:
     );
 }
 
+#[cfg(feature = "recalc-formualizer")]
 #[tokio::test]
 async fn execute_sheetport_constraint_failures_are_structured() {
     let workspace = support::TestWorkspace::new();
@@ -402,6 +475,10 @@ ports:
     )
     .await
     .expect("structured constraint result");
+    assert_eq!(
+        execution.data,
+        optional_execution_golden("execute_sheetport.constraint_failure")
+    );
     assert_eq!(execution.data["status"], "failed");
     assert_eq!(execution.data["coverage"]["state"], "partial");
     assert_eq!(
@@ -414,6 +491,7 @@ ports:
     );
 }
 
+#[cfg(feature = "recalc-formualizer")]
 #[tokio::test]
 async fn execute_sheetport_returns_typed_results_coverage_and_errors() {
     let workspace = support::TestWorkspace::new();
@@ -452,6 +530,10 @@ async fn execute_sheetport_returns_typed_results_coverage_and_errors() {
     )
     .await
     .expect("empty SheetPort execution");
+    assert_eq!(
+        execution.data,
+        optional_execution_golden("execute_sheetport.empty")
+    );
     assert_eq!(execution.data["status"], "completed");
     assert_eq!(execution.data["coverage"]["state"], "complete");
     assert_eq!(execution.data["coverage"]["declared_input_ports"], 0);
@@ -505,6 +587,12 @@ async fn vba_module_source_cursor_is_bounded_fingerprinted_and_revision_bound() 
     )
     .await
     .expect("project summary");
+    let mut summary_golden = summary.data.clone();
+    summary_golden["next_cursor"] = json!("<cursor>");
+    assert_eq!(
+        summary_golden,
+        optional_execution_golden("inspect_vba.project_summary_page")
+    );
     let module_name = match serde_json::from_value::<InspectVbaData>(summary.data).unwrap() {
         InspectVbaData::ProjectSummary { modules, .. } => modules[0].name.clone(),
         _ => panic!("summary branch"),
@@ -522,6 +610,12 @@ async fn vba_module_source_cursor_is_bounded_fingerprinted_and_revision_bound() 
     )
     .await
     .expect("first source page");
+    let mut source_golden = first.data.clone();
+    source_golden["next_cursor"] = json!("<cursor>");
+    assert_eq!(
+        source_golden,
+        optional_execution_golden("inspect_vba.module_source_page")
+    );
     let cursor = match serde_json::from_value::<InspectVbaData>(first.data).unwrap() {
         InspectVbaData::ModuleSource {
             returned_lines,
@@ -678,6 +772,20 @@ async fn screenshot_validation_is_invalid_request_path_free_and_does_not_precrea
     assert_eq!(invalid.error.code, CanonicalErrorCode::InvalidRequest);
     assert!(!invalid.error.message.contains('/'));
 
+    let unavailable = execute_operation_json(
+        state.clone(),
+        "screenshot_sheet",
+        json!({
+            "resource_id": resource_id.as_str(),
+            "sheet_name": "Sheet1",
+            "range": "A1:B2"
+        }),
+    )
+    .await
+    .expect_err("dispatch uses the bound state's actual capabilities");
+    assert_eq!(unavailable.error.code, CanonicalErrorCode::CapabilityUnavailable);
+    assert!(!workspace.path("screenshots").exists());
+
     let error = screenshot_sheet(
         state,
         ScreenshotSheetRequest {
@@ -713,4 +821,96 @@ async fn screenshot_rejects_symlinked_workspace_output_before_rendering() {
     .await
     .expect_err("symlink rejected");
     assert!(error.to_string().contains("real directory"));
+}
+
+#[cfg(feature = "recalc-libreoffice")]
+#[test]
+fn canonical_cli_bound_screenshot_succeeds_without_precreated_output_directory() {
+    if !std::path::Path::new("/usr/bin/soffice").exists()
+        && !std::path::Path::new("/bin/soffice").exists()
+    {
+        return;
+    }
+    let profile = tempfile::tempdir().unwrap();
+    let standard = profile.path().join("user/basic/Standard");
+    std::fs::create_dir_all(&standard).unwrap();
+    std::fs::write(
+        standard.join("Module1.xba"),
+        include_bytes!("../../../docker/libreoffice/Module1.xba"),
+    )
+    .unwrap();
+    std::fs::write(
+        standard.join("script.xlb"),
+        include_bytes!("../../../docker/libreoffice/script.xlb"),
+    )
+    .unwrap();
+    std::fs::write(
+        profile.path().join("user/registrymodifications.xcu"),
+        include_bytes!("../../../docker/libreoffice/registrymodifications.xcu"),
+    )
+    .unwrap();
+    std::fs::write(
+        profile.path().join("user/basic/script.xlc"),
+        br#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE library:libraries PUBLIC "-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "libraries.dtd">
+<library:libraries xmlns:library="http://openoffice.org/2000/library">
+ <library:library library:name="Standard" library:link="false"/>
+</library:libraries>"#,
+    )
+    .unwrap();
+
+    let discovery = assert_cmd::cargo::cargo_bin_cmd!("asp")
+        .env(
+            "SPREADSHEET_MCP_LIBREOFFICE_USER_INSTALLATION",
+            profile.path(),
+        )
+        .arg("operations")
+        .output()
+        .unwrap();
+    assert!(discovery.status.success());
+    let advertised: Value = serde_json::from_slice(&discovery.stdout).unwrap();
+    assert!(advertised.as_array().unwrap().iter().any(|operation| {
+        operation["name"] == "screenshot_sheet" && operation["available"] == true
+    }));
+
+    let workspace = support::TestWorkspace::new();
+    let workbook = workspace.create_workbook("bound-screenshot.xlsx", |book| {
+        book.get_sheet_by_name_mut("Sheet1")
+            .unwrap()
+            .get_cell_mut("A1")
+            .set_value("canonical screenshot");
+    });
+    assert!(!workspace.path("screenshots").exists());
+
+    let output = assert_cmd::cargo::cargo_bin_cmd!("asp")
+        .env(
+            "SPREADSHEET_MCP_LIBREOFFICE_USER_INSTALLATION",
+            profile.path(),
+        )
+        .args([
+            "op",
+            "screenshot_sheet",
+            "--bind",
+            workbook.to_str().unwrap(),
+            "--json",
+            r#"{"sheet_name":"Sheet1","range":"A1:B2"}"#,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["operation"], "screenshot_sheet");
+    assert_eq!(response["data"]["range"], "A1:B2");
+    assert!(
+        response["data"]["artifact"]["handle"]
+            .as_str()
+            .unwrap()
+            .starts_with("artifact:sha256:")
+    );
+    assert!(workspace.path("screenshots").is_dir());
+    assert!(workspace.path("artifacts").is_dir());
 }

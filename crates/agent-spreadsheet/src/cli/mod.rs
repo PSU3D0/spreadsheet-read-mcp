@@ -4193,19 +4193,25 @@ async fn run_machine_operation(
         }
         (MachineBindRule::Required, false) => {
             let bind = bind.as_ref().expect("required bind validated");
-            let (state, id) = runtime.open_state_for_file(bind).await.map_err(|error| {
-                CanonicalErrorEnvelope::new(
-                    CanonicalErrorCode::ResourceNotFound,
-                    error.to_string(),
-                    Some(operation),
-                    Some("--bind".to_string()),
-                )
-            })?;
+            let (state, id) = runtime
+                .open_state_for_file_for_operation(bind, Some(operation))
+                .await
+                .map_err(|error| {
+                    CanonicalErrorEnvelope::new(
+                        CanonicalErrorCode::ResourceNotFound,
+                        error.to_string(),
+                        Some(operation),
+                        Some("--bind".to_string()),
+                    )
+                })?;
             (state, Some(id), None)
         }
         (MachineBindRule::OptionalContext, false) if bind.is_some() => {
             let (state, _) = runtime
-                .open_state_for_file(bind.as_ref().expect("optional bind present"))
+                .open_state_for_file_for_operation(
+                    bind.as_ref().expect("optional bind present"),
+                    Some(operation),
+                )
                 .await
                 .map_err(|error| {
                     CanonicalErrorEnvelope::new(
@@ -4218,14 +4224,16 @@ async fn run_machine_operation(
             (state, None, None)
         }
         (MachineBindRule::OptionalContext | MachineBindRule::Forbidden, false) => (
-            runtime.open_unbound_state().map_err(|_| {
-                CanonicalErrorEnvelope::new(
-                    CanonicalErrorCode::OperationFailed,
-                    "failed to initialize the unbound canonical runtime",
-                    Some(operation),
-                    None,
-                )
-            })?,
+            runtime
+                .open_unbound_state_for_operation(Some(operation))
+                .map_err(|_| {
+                    CanonicalErrorEnvelope::new(
+                        CanonicalErrorCode::OperationFailed,
+                        "failed to initialize the unbound canonical runtime",
+                        Some(operation),
+                        None,
+                    )
+                })?,
             None,
             None,
         ),
