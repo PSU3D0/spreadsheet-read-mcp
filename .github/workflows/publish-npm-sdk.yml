@@ -21,6 +21,10 @@ jobs:
         with:
           node-version: '24'
 
+      - name: Install SDK test dependencies
+        run: npm install --ignore-scripts --package-lock=false
+        working-directory: npm/agent-spreadsheet-sdk
+
       - name: Run SDK tests
         run: npm test
         working-directory: npm/agent-spreadsheet-sdk

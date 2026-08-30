@@ -1,6 +1,6 @@
 # 48 — Canonical Operation Convergence
 
-Status: planned; next major architecture tranche.
+Status: complete for 0.14. The canonical registry/dispatcher, default MCP projection, native/WASM/SDK adapters, compatibility window, soundness fixes, and just-bash proof are landed.
 
 Design: [`docs/architecture/canonical-operation-surface.md`](../../docs/architecture/canonical-operation-surface.md)
 

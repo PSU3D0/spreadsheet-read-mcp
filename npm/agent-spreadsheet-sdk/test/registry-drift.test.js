@@ -19,6 +19,22 @@ function run(asp, args) {
   return JSON.parse(execFileSync(asp, args, { encoding: "utf8" }))
 }
 
+function cliInputSchema(descriptor) {
+  const schema = structuredClone(descriptor.input_schema)
+  const injected = ["resource_id"]
+  if (descriptor.name === "verify_workbook") injected.push("baseline_resource_id")
+  if (Array.isArray(schema.required)) {
+    schema.required = schema.required.filter((field) => !injected.includes(field))
+  }
+  for (const field of injected) {
+    if (!schema.properties?.[field]) continue
+    const flag = field === "baseline_resource_id" ? "--baseline" : "--bind"
+    schema.properties[field].description =
+      `Injected by the CLI adapter from ${flag}; omit this field from operation JSON.`
+  }
+  return schema
+}
+
 test("checked-in host-independent registry has all 31 asp operations", (t) => {
   const asp = aspBinary()
   if (!asp) {
@@ -33,7 +49,7 @@ test("checked-in host-independent registry has all 31 asp operations", (t) => {
 
   for (const descriptor of actual.operations) {
     const schema = run(asp, ["schema", descriptor.name])
-    assert.deepEqual(descriptor.input_schema, schema.input_schema, `${descriptor.name} input schema drifted`)
+    assert.deepEqual(cliInputSchema(descriptor), schema.input_schema, `${descriptor.name} CLI input projection drifted`)
     assert.deepEqual(descriptor.output_schema, schema.output_schema, `${descriptor.name} output schema drifted`)
     assert.deepEqual(actual.error_schema, schema.error_schema, `${descriptor.name} error schema drifted`)
   }

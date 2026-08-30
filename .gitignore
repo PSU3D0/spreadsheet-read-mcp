@@ -23,6 +23,8 @@ tickets/**
 !tickets/47-just-bash-extension-and-registries/**
 !tickets/48-canonical-operation-convergence/
 !tickets/48-canonical-operation-convergence/**
+!tickets/49-post-release-canonical-polish/
+!tickets/49-post-release-canonical-polish/**
 .venv/
 .pi
 ref-libs/

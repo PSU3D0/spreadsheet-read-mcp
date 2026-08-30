@@ -321,6 +321,84 @@ fn schema_and_example_commands_support_batch_and_session_discovery() {
 }
 
 #[test]
+fn canonical_schema_and_example_project_cli_adapter_bindings() {
+    let schema = run_asp(&["schema", "read_cells"]);
+    assert!(schema.status.success(), "stderr: {:?}", schema.stderr);
+    let schema = parse_stdout_json(&schema);
+    let required = schema["input_schema"]["required"]
+        .as_array()
+        .expect("required fields");
+    assert!(!required.iter().any(|field| field == "resource_id"));
+    assert!(required.iter().any(|field| field == "sheet_name"));
+    assert_eq!(
+        schema["adapter_binding"]["bind"],
+        "--bind FILE injects resource_id"
+    );
+    assert!(
+        schema["input_schema"]["properties"]["resource_id"]["description"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("omit this field")
+    );
+
+    let verify_schema = run_asp(&["schema", "verify_workbook"]);
+    assert!(
+        verify_schema.status.success(),
+        "stderr: {:?}",
+        verify_schema.stderr
+    );
+    let verify_schema = parse_stdout_json(&verify_schema);
+    let required = verify_schema["input_schema"]["required"]
+        .as_array()
+        .expect("required fields");
+    assert!(!required.iter().any(|field| field == "resource_id"));
+    assert!(!required.iter().any(|field| field == "baseline_resource_id"));
+    assert_eq!(
+        verify_schema["adapter_binding"]["baseline"],
+        "--baseline FILE injects baseline_resource_id"
+    );
+
+    let example = run_asp(&["example", "read_cells"]);
+    assert!(example.status.success(), "stderr: {:?}", example.stderr);
+    let example = parse_stdout_json(&example);
+    assert!(example.get("resource_id").is_none(), "example={example}");
+
+    let verify_example = run_asp(&["example", "verify_workbook"]);
+    assert!(
+        verify_example.status.success(),
+        "stderr: {:?}",
+        verify_example.stderr
+    );
+    let verify_example = parse_stdout_json(&verify_example);
+    assert!(
+        verify_example.get("resource_id").is_none(),
+        "example={verify_example}"
+    );
+    assert!(
+        verify_example.get("baseline_resource_id").is_none(),
+        "example={verify_example}"
+    );
+
+    let registry = run_asp(&["registry", "--all"]);
+    assert!(registry.status.success(), "stderr: {:?}", registry.stderr);
+    let registry = parse_stdout_json(&registry);
+    let read_cells = registry["operations"]
+        .as_array()
+        .expect("operations")
+        .iter()
+        .find(|descriptor| descriptor["name"] == "read_cells")
+        .expect("read_cells descriptor");
+    assert!(
+        read_cells["input_schema"]["required"]
+            .as_array()
+            .expect("canonical required fields")
+            .iter()
+            .any(|field| field == "resource_id"),
+        "host-independent registry must remain unchanged"
+    );
+}
+
+#[test]
 fn session_schema_rejects_unknown_kind_with_guidance() {
     let output = run_cli(&["schema", "session", "op", "totally.unknown"]);
     assert!(!output.status.success(), "command unexpectedly succeeded");
