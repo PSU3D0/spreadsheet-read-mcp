@@ -752,7 +752,38 @@ fn canonical_schema_and_examples_are_registry_generated_and_collision_free() {
         assert!(schema_output.status.success(), "schema {}", descriptor.name);
         let schema: Value = serde_json::from_slice(&schema_output.stdout).unwrap();
         assert_eq!(schema["operation"], descriptor.name);
-        assert_eq!(schema["input_schema"], (descriptor.input_schema)());
+        let mut expected_input = (descriptor.input_schema)();
+        let mut injected = vec!["resource_id"];
+        if descriptor.name == "verify_workbook" {
+            injected.push("baseline_resource_id");
+        }
+        if let Some(required) = expected_input
+            .get_mut("required")
+            .and_then(Value::as_array_mut)
+        {
+            required.retain(|field| !injected.iter().any(|name| field == *name));
+        }
+        if let Some(properties) = expected_input
+            .get_mut("properties")
+            .and_then(Value::as_object_mut)
+        {
+            for field in injected {
+                if let Some(property) = properties.get_mut(field).and_then(Value::as_object_mut) {
+                    let flag = if field == "baseline_resource_id" {
+                        "--baseline"
+                    } else {
+                        "--bind"
+                    };
+                    property.insert(
+                        "description".to_string(),
+                        Value::String(format!(
+                            "Injected by the CLI adapter from {flag}; omit this field from operation JSON."
+                        )),
+                    );
+                }
+            }
+        }
+        assert_eq!(schema["input_schema"], expected_input);
 
         let example_output = assert_cmd::cargo::cargo_bin_cmd!("asp")
             .args(["example", descriptor.name])
@@ -769,7 +800,7 @@ fn canonical_schema_and_examples_are_registry_generated_and_collision_free() {
                 String::from_utf8_lossy(&example_output.stderr)
             );
             let example: Value = serde_json::from_slice(&example_output.stdout).unwrap();
-            jsonschema::validator_for(&(descriptor.input_schema)())
+            jsonschema::validator_for(&expected_input)
                 .unwrap()
                 .validate(&example)
                 .unwrap_or_else(|error| {
