@@ -317,13 +317,23 @@ Legacy flat commands are still normalized to the new nested surface where practi
 When an agent is unsure of payload shape, it can ask the tool directly:
 
 ```bash
+asp operations
+asp schema read_cells
+asp example read_cells
 asp schema write batch transform
 asp example write batch transform
 asp schema session op transform.write_matrix
 asp example session op transform.write_matrix
 ```
 
-This is a core design principle: **the surface should explain itself to the agent**.
+Canonical machine calls use the same registry and dispatcher as other surfaces. Pass a workbook path only when the selected input-schema branch requires `resource_id`; the CLI injects the ephemeral binding:
+
+```bash
+asp op read_cells --bind data.xlsx --json '{"sheet_name":"Sheet1","selection":{"kind":"range","ranges":["A1:C10"]}}'
+echo '{"action":"schema"}' | asp op sheetport_manifest
+```
+
+Canonical write `mode=apply` requires exactly one of `--output <path>` or `--in-place`; preview and stage accept neither. This is a core design principle: **the surface should explain itself to the agent**.
 
 ---
 
