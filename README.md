@@ -327,7 +327,7 @@ asp schema session op transform.write_matrix
 asp example session op transform.write_matrix
 ```
 
-Canonical machine calls use the same registry and dispatcher as other surfaces. Pass a workbook path only when the selected input-schema branch requires `resource_id`; the CLI injects the ephemeral binding:
+Canonical machine calls use the same registry and dispatcher as other surfaces. `asp schema <canonical-op>` and `asp example <canonical-op>` project the native adapter contract: `resource_id` and, for verification, `baseline_resource_id` are omitted from required JSON because `--bind` and `--baseline` inject ephemeral resources. The host-independent `asp registry --all` remains unchanged.
 
 ```bash
 asp op read_cells --bind data.xlsx --json '{"sheet_name":"Sheet1","selection":{"kind":"range","ranges":["A1:C10"]}}'
@@ -335,7 +335,7 @@ asp op verify_workbook --baseline base.xlsx --bind current.xlsx --json '{}'
 echo '{"action":"schema"}' | asp op sheetport_manifest
 ```
 
-Canonical mutable CLI calls require exactly one of `--output <path>` or `--in-place`; pure write preview accepts neither. Durable fork, checkpoint, stage, and history operations are intentionally absent from stateless CLI discovery. This is a core design principle: **the surface should explain itself to the agent**.
+`--bind` reads the current workbook, while `--baseline` supplies the second workbook only for `verify_workbook`. Canonical mutable CLI calls require exactly one persistence target: `--output <path>` writes a new file or `--in-place` atomically replaces the bound file; pure preview persists nothing and accepts neither. Durable fork, checkpoint, stage, and history operations are intentionally absent from stateless CLI discovery. This is a core design principle: **the surface should explain itself to the agent**.
 
 ---
 
@@ -758,9 +758,9 @@ Setting any of the timeout/limit variables (`TOOL_TIMEOUT_MS`, `MAX_RESPONSE_BYT
 
 ## MCP tool surface
 
-The default MCP router is generated from the canonical operation registry. A write-capable baseline exposes 27 operations: 17 discovery/read/analysis operations and 10 write/lifecycle operations. Capability-backed deployments can add `screenshot_sheet`, `sheetport_manifest`, `execute_sheetport`, and `inspect_vba`, for up to 31. Read-only deployments omit write/lifecycle tools.
+The default MCP router is generated from the canonical operation registry. A write-capable baseline exposes 27 operations: 17 discovery/read/analysis operations and 10 write/lifecycle operations. Capability-backed deployments can add `screenshot_sheet`, `sheetport_manifest`, `execute_sheetport`, and `inspect_vba`, for up to 31. Nineteen canonical operations are read-only.
 
-Each tool uses the registry descriptor's closed input schema and returns the canonical `schema_version` / `operation` / `resource_id` / `revision_id` / `data` envelope. Static MCP annotations report the descriptor's worst-case risk; descriptions identify action-specific risk. `close_workbook` is excluded because cache eviction is runtime administration.
+Each tool uses the registry descriptor's closed input schema and returns the canonical `schema_version` / `operation` / `resource_id` / `revision_id` / `data` envelope. A `revision_id` identifies the complete observable resource state, not only workbook cell-content bytes: recalculation, evaluation/provenance state, or lifecycle metadata can advance it without a content edit. Clients must use the revision from the latest response envelope for compare-and-swap, cursor, and freshness decisions rather than computing or retaining a content hash. Static MCP annotations report the descriptor's worst-case risk; descriptions identify action-specific risk. `close_workbook` is excluded because cache eviction is runtime administration.
 
 For the complete operation list and contracts, see [Canonical Operation Surface](docs/architecture/canonical-operation-surface.md). To add the legacy 0.13 names for one compatibility window, set `SPREADSHEET_MCP_SLIM_SURFACE=false`; shared names use their legacy schema and envelope in compatibility mode and are registered only once.
 

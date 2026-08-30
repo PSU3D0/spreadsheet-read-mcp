@@ -1082,6 +1082,8 @@ async fn canonical_reads_reject_nonprogress_and_project_every_declared_cell_fiel
     .await
     .unwrap_err();
     assert_eq!(error.error.code, CanonicalErrorCode::RowExceedsBudget);
+    assert!(error.error.message.contains("inspect_cells"));
+    assert!(error.error.message.contains("narrow the requested range"));
 
     let inspect_error = execute_operation_json(
         state.clone(),
@@ -1095,6 +1097,13 @@ async fn canonical_reads_reject_nonprogress_and_project_every_declared_cell_fiel
     assert_eq!(
         inspect_error.error.code,
         CanonicalErrorCode::RowExceedsBudget
+    );
+    assert!(inspect_error.error.message.contains("inspect_cells"));
+    assert!(
+        inspect_error
+            .error
+            .message
+            .contains("narrow the requested ranges")
     );
 }
 

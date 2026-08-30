@@ -1456,7 +1456,7 @@ pub async fn execute_read_cells(
                             CanonicalErrorCode::RowExceedsBudget,
                             operation,
                             format!(
-                                "row {r1} cannot fit within the configured read payload budget"
+                                "row {r1} cannot fit within the configured read payload budget; narrow the requested range or use inspect_cells for targeted cells"
                             ),
                             Some("$.selection.ranges"),
                         ));
@@ -1631,7 +1631,7 @@ pub async fn execute_read_cells(
                     CanonicalErrorCode::RowExceedsBudget,
                     operation,
                     format!(
-                        "row {current_row} cannot fit within the configured read payload budget"
+                        "row {current_row} cannot fit within the configured read payload budget; narrow the requested range or use inspect_cells for targeted cells"
                     ),
                     Some("$.selection"),
                 ));
@@ -1724,7 +1724,7 @@ pub async fn execute_inspect_cells(
         return Err(canonical_error(
             CanonicalErrorCode::RowExceedsBudget,
             operation,
-            "requested cell details exceed the configured payload budget; no partial response was returned",
+            "requested inspect_cells details exceed the configured payload budget; narrow the requested ranges or targets; no partial response was returned",
             Some("$.targets"),
         ));
     }

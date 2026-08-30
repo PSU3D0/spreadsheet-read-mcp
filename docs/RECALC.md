@@ -8,6 +8,12 @@ The system allows users to create isolated copies (forks) of a spreadsheet, appl
 
 ## Core Concepts
 
+### State revisions and content hashes
+
+Canonical `revision_id` values identify the complete observable resource state, not just workbook content bytes. Recalculation can change cached formula results, evaluation coverage, freshness/provenance, or lifecycle state and therefore advance the revision even when input cells and formulas are unchanged. A content hash is useful for byte/content comparison, but it is not a concurrency token.
+
+Clients must take `revision_id`, `revision_before`, and `revision_after` from canonical response envelopes. Use those envelope revisions for compare-and-swap writes, continuation cursors, and same-revision evaluation claims; do not derive a revision from workbook bytes or reuse an older content hash after recalculation.
+
 ### 1. Forks
 A **Fork** is a temporary, writable session based on an existing `.xlsx` file.
 - Stored in `/tmp/mcp-forks/{fork_id}.xlsx`.

@@ -31,7 +31,7 @@ ASP_BINARY=../../target/debug/asp npm run generate:registry
 npm test
 ```
 
-Generation consumes `asp operations` and `asp schema <operation>`. The Node drift test compares every checked-in descriptor and schema with those commands when `ASP_BINARY`, `target/debug/asp`, or `target/release/asp` is available.
+Generation consumes the host-independent `asp registry --all` projection. The Node drift test compares every checked-in descriptor with that registry and separately verifies the adapter-projected `asp schema <operation>` output when `ASP_BINARY`, `target/debug/asp`, or `target/release/asp` is available.
 
 ## MCP
 

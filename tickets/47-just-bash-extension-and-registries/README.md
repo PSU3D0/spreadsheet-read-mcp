@@ -1,6 +1,6 @@
 # 47 — just-bash Extension & Registry Follow-ups
 
-Status: adapter implemented for 0.14 as an opt-in SDK subpath; registry follow-ups remain separate.
+Status: complete for 0.14. The opt-in SDK adapter and release acceptance gates are implemented; later distribution-registry expansion is outside this ticket.
 
 ## `agent-spreadsheet-sdk/just-bash`
 
@@ -41,5 +41,5 @@ Set and document an explicit workbook-size ceiling before loading bytes into WAS
 
 - 0.14 adapter: implemented as `agent-spreadsheet-sdk/just-bash` against just-bash 3.4.2. The generated-WASM harness covers native canonical JSON invariants, exact applied workbook bytes, semantic recalc bytes, preview purity, two-resource verification, limits, VFS-only paths, disposal, and the `js-exec` child-process bridge.
 - aqua-registry: PR opened — https://github.com/aquaproj/aqua-registry/pull/59654 (argd-scaffolded, container tests pass, dual-command files entry). Once merged, plain `mise use -g PSU3D0/agent-spreadsheet` works via the aqua backend; `ubi:` form already works and is documented.
-- Homebrew tap: LIVE — PSU3D0/homebrew-tap with agent-spreadsheet + agent-spreadsheet-mcp formulas at 0.13.0, install/test verified on linuxbrew. Remaining: automate formula bumps from release.yml (needs a tap-scoped PAT or GitHub App secret).
-- winget/scoop: still open.
+- Homebrew tap: LIVE — PSU3D0/homebrew-tap with agent-spreadsheet + agent-spreadsheet-mcp formulas at 0.13.0, install/test verified on linuxbrew. Formula-bump automation requires a tap-scoped PAT or GitHub App secret and is tracked outside the completed adapter scope.
+- winget/scoop: deferred beyond the completed 0.14 adapter scope.

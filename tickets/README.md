@@ -50,7 +50,8 @@ The roadmap below is organized to improve the **near-term user experience** whil
 | [45-headless-proof-strategic](./45-headless-proof-strategic/README.md) | strategic | structural model, dependency-cone verification, contract-driven automation |
 | [46-docs-site-and-skills-library](./46-docs-site-and-skills-library/README.md) | next | unified docs home and tested agent skills library |
 | [47-just-bash-extension-and-registries](./47-just-bash-extension-and-registries/README.md) | next | minimal just-bash adapter after canonical convergence; distribution registries |
-| [48-canonical-operation-convergence](./48-canonical-operation-convergence/README.md) | next | one operation registry/dispatcher across CLI, MCP, WASM, SDK, and adapters |
+| [48-canonical-operation-convergence](./48-canonical-operation-convergence/README.md) | complete | one operation registry/dispatcher across CLI, MCP, WASM, SDK, and adapters |
+| [49-post-release-canonical-polish](./49-post-release-canonical-polish/README.md) | next | ranked follow-up polish after the 0.14 canonical release |
 
 ## Planning principles
 
@@ -90,9 +91,10 @@ In this roadmap, design docs are attached for items such as:
 4. Tranche 44 SDK/MCP ergonomics projected from the canonical registry
 5. Skills/docs refresh (ticket 46)
 6. Minimal just-bash adapter (ticket 47)
+7. Post-release canonical polish (ticket 49)
 
 ### Long-term moat lane
-7. Tranche 45
+8. Tranche 45
 
 ## Acceptance outcome for this roadmap
 

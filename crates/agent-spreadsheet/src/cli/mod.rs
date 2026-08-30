@@ -4219,7 +4219,7 @@ fn canonical_operation_example(
             Some("adapter".to_string()),
         ));
     }
-    let schema = (descriptor.input_schema)();
+    let schema = project_cli_input_schema(operation, (descriptor.input_schema)());
     Ok(example_from_schema(
         &schema,
         &schema,
@@ -4229,6 +4229,66 @@ fn canonical_operation_example(
             crate::operations::AdapterBindingKind::SingleMutable
         ),
     ))
+}
+
+fn project_cli_input_schema(operation: &str, mut schema: Value) -> Value {
+    let mut injected = vec!["resource_id"];
+    if operation == "verify_workbook" {
+        injected.push("baseline_resource_id");
+    }
+    if let Some(required) = schema.get_mut("required").and_then(Value::as_array_mut) {
+        required.retain(|field| !injected.iter().any(|name| field == *name));
+    }
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        for field in injected {
+            if let Some(property) = properties.get_mut(field).and_then(Value::as_object_mut) {
+                let flag = if field == "baseline_resource_id" {
+                    "--baseline"
+                } else {
+                    "--bind"
+                };
+                property.insert(
+                    "description".to_string(),
+                    Value::String(format!(
+                        "Injected by the CLI adapter from {flag}; omit this field from operation JSON."
+                    )),
+                );
+            }
+        }
+    }
+    schema
+}
+
+fn canonical_cli_operation_schema(
+    operation: &str,
+) -> Result<Value, crate::operations::CanonicalErrorEnvelope> {
+    let mut projection = crate::operations::operation_schema(operation)?;
+    let input = projection
+        .get_mut("input_schema")
+        .map(Value::take)
+        .unwrap_or(Value::Null);
+    projection["input_schema"] = project_cli_input_schema(operation, input);
+
+    let mut binding = serde_json::Map::new();
+    binding.insert(
+        "bind".to_string(),
+        Value::String("--bind FILE injects resource_id".to_string()),
+    );
+    if operation == "verify_workbook" {
+        binding.insert(
+            "baseline".to_string(),
+            Value::String("--baseline FILE injects baseline_resource_id".to_string()),
+        );
+    }
+    binding.insert(
+        "persistence".to_string(),
+        Value::String(
+            "Mutating operations use --output PATH or --in-place; preview persists nothing."
+                .to_string(),
+        ),
+    );
+    projection["adapter_binding"] = Value::Object(binding);
+    Ok(projection)
 }
 
 fn normalize_canonical_discoverability_argv(mut argv: Vec<OsString>) -> Vec<OsString> {
@@ -4782,7 +4842,7 @@ pub async fn run() -> Result<()> {
                     ResolvedDiscoverabilityCommand::Legacy(command) => run_schema_command(command)
                         .unwrap_or_else(|error| emit_error_and_exit(error)),
                     ResolvedDiscoverabilityCommand::Canonical(operation) => {
-                        crate::operations::operation_schema(&operation)
+                        canonical_cli_operation_schema(&operation)
                             .unwrap_or_else(|error| emit_canonical_error_and_exit(error))
                     }
                 };
