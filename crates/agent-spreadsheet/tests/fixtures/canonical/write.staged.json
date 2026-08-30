@@ -8,7 +8,10 @@
     "revision_before": "rev-before",
     "diff": {
       "change_count": 0,
-      "changes": []
+      "changes": [],
+      "exact": true,
+      "precision": "exact_baseline_to_result",
+      "effects": []
     },
     "impact": {
       "op_kinds": [

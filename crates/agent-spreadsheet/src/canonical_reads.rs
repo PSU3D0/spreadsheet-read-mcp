@@ -1214,6 +1214,7 @@ fn rows_payload_from_snapshots(
     include_projection: bool,
 ) -> ReadCellsPayload {
     let format = encoding.row_format();
+    let detailed_compact = matches!(format, SheetPageFormat::Compact) && include_projection;
     ReadCellsPayload {
         encoding,
         rows: None,
@@ -1222,9 +1223,10 @@ fn rows_payload_from_snapshots(
         dense: None,
         csv: None,
         rows_keyed: None,
-        snapshots: (matches!(format, SheetPageFormat::Full) || include_snapshots)
+        snapshots: (!detailed_compact
+            && (matches!(format, SheetPageFormat::Full) || include_snapshots))
             .then(|| rows.to_vec()),
-        compact: matches!(format, SheetPageFormat::Compact)
+        compact: (matches!(format, SheetPageFormat::Compact) && !detailed_compact)
             .then(|| tools::build_compact_payload(header, rows, include_header)),
         values_only: matches!(format, SheetPageFormat::ValuesOnly)
             .then(|| tools::build_values_only_payload(header, rows, include_header)),
@@ -1339,7 +1341,7 @@ pub async fn execute_read_cells(
             )
         })
     });
-    let calculation = state
+    let imported_calculation = state
         .open_workbook(&workbook_id)
         .await
         .map_err(|error| {
@@ -1351,6 +1353,7 @@ pub async fn execute_read_cells(
             )
         })?
         .calculation_metadata();
+    let calculation = state.calculation_metadata(&workbook_id, revision_id, imported_calculation);
     let mut blocks = Vec::new();
     let mut rows_returned = 0_usize;
     let mut cells_returned = 0_usize;
@@ -1687,10 +1690,12 @@ pub async fn execute_read_cells(
 pub async fn execute_inspect_cells(
     state: Arc<AppState>,
     request: InspectCellsRequest,
+    revision_id: &str,
 ) -> Result<InspectCellsResponse, CanonicalErrorEnvelope> {
     let operation = "inspect_cells";
-    let response = tools::inspect_cells_semantic(
-        state,
+    let workbook_id = request.resource_id.to_workbook_id();
+    let mut response = tools::inspect_cells_semantic(
+        state.clone(),
         tools::InspectCellsParams {
             workbook_or_fork_id: request.resource_id.to_workbook_id(),
             sheet_name: request.sheet_name,
@@ -1708,6 +1713,8 @@ pub async fn execute_inspect_cells(
             None,
         )
     })?;
+    response.calculation =
+        state.calculation_metadata(&workbook_id, revision_id, response.calculation);
     if response.truncated {
         return Err(canonical_error(
             CanonicalErrorCode::RowExceedsBudget,
@@ -1960,16 +1967,16 @@ pub async fn execute_search_formulas(
             && let Err(message) = validate_formula(&matched.formula)
         {
             if policy == FormulaParsePolicy::Fail {
-                    return Err(canonical_error(
-                        CanonicalErrorCode::OperationFailed,
-                        operation,
-                        format!(
-                            "formula parse failed at {}!{}: {message}",
-                            matched.sheet_name, matched.address
-                        ),
-                        None,
-                    ));
-                }
+                return Err(canonical_error(
+                    CanonicalErrorCode::OperationFailed,
+                    operation,
+                    format!(
+                        "formula parse failed at {}!{}: {message}",
+                        matched.sheet_name, matched.address
+                    ),
+                    None,
+                ));
+            }
             diagnostics.record_error(
                 &matched.sheet_name,
                 &matched.address,
@@ -2611,7 +2618,6 @@ pub async fn execute_profile_table(
         request.range = Some(range_string(c1, r1, c2, r2));
     }
     let sample_mode = request.sample_mode.unwrap_or(SampleMode::Distributed);
-    let sample_size = request.sample_size.unwrap_or(10);
     let selector_kind = if request.table_name.is_some() {
         "table"
     } else if request.region_id.is_some() {
@@ -2666,8 +2672,8 @@ pub async fn execute_profile_table(
     .to_string();
     let bounds = resolved.bounds;
     let header_row = resolved.header_row;
+    let rows_scanned = resolved.rows_scanned;
     let response = resolved.response;
-    let rows_scanned = response.row_count.min(sample_size);
     let complete = rows_scanned >= response.row_count;
     Ok(ProfileTableData {
         workbook_id: response.workbook_id,

@@ -919,16 +919,17 @@ async fn row_header_projection_and_volatile_groups_preserve_canonical_capabiliti
         json!({
             "resource_id":resource_id.as_str(), "sheet_name":"Sheet1",
             "selection":{"kind":"rows","start_row":3,"row_count":1,"columns":{"kind":"letters","values":["C"]}},
-            "format":"compact", "include_formulas":true, "include_styles":true
+            "format":"compact", "include_formulas":true, "include_styles":true,
+            "fields":["value","formula","cached_value","stored_kind","number_format","style_tags"]
         }),
     )
     .await
     .unwrap();
-    assert_eq!(
-        compact_details.data["blocks"][0]["payload"]["snapshots"][0]["cells"][0]["formula"],
-        "OFFSET(A3,0,0)"
-    );
-    assert!(compact_details.data["blocks"][0]["payload"]["compact"].is_object());
+    let payload = &compact_details.data["blocks"][0]["payload"];
+    assert_eq!(payload["projected"][0][0]["formula"], "OFFSET(A3,0,0)");
+    assert_eq!(payload["projected"][0][0]["address"], "C3");
+    assert!(payload.get("snapshots").is_none());
+    assert!(payload.get("compact").is_none());
 
     let grid = execute_operation_json(
         state.clone(),
@@ -1242,6 +1243,8 @@ async fn profile_table_reports_resolved_region_bounds_and_header() {
     let mut table = umya_spreadsheet::structs::Table::new("SourceTable", ("A5", "B15"));
     table.set_display_name("SourceTable");
     sheet.add_table(table);
+    sheet.get_cell_mut("F5").set_value("Total");
+    sheet.get_cell_mut("F6").set_value("needle-outside-table");
     umya_spreadsheet::writer::xlsx::write(&book, &path).unwrap();
     let (state, resource_id) = bound_path(&path).await;
 
@@ -1297,7 +1300,7 @@ async fn profile_table_reports_resolved_region_bounds_and_header() {
     );
 
     let table_profile = execute_operation_json(
-        state,
+        state.clone(),
         "profile_table",
         json!({
             "resource_id":resource_id.as_str(), "sheet_name":"Sheet1",
@@ -1317,6 +1320,42 @@ async fn profile_table_reports_resolved_region_bounds_and_header() {
         table_profile.data["source"]["header_provenance"],
         "table_definition"
     );
+    assert_eq!(table_profile.data["coverage"]["rows_scanned"], 2);
+    assert_eq!(table_profile.data["coverage"]["rows_in_scope"], 10);
+    assert_eq!(table_profile.data["coverage"]["complete"], false);
+    let amount = table_profile.data["column_types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|column| column["name"] == "Amount")
+        .unwrap();
+    assert_eq!(amount["distinct"], 2);
+
+    let scoped = execute_operation_json(
+        state.clone(),
+        "search_values",
+        json!({
+            "resource_id":resource_id.as_str(), "sheet_name":"Sheet1",
+            "table_name":"SourceTable", "query":"needle-outside-table", "match_mode":"exact"
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(scoped.data["match_count"], 0);
+
+    let header = execute_operation_json(
+        state,
+        "search_values",
+        json!({
+            "resource_id":resource_id.as_str(), "sheet_name":"Sheet1",
+            "table_name":"SourceTable", "query":"Amount", "match_mode":"exact",
+            "search_headers_only":true
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(header.data["match_count"], 1);
+    assert_eq!(header.data["matches"][0]["address"], "B5");
 }
 
 #[tokio::test]
@@ -1369,6 +1408,50 @@ async fn profile_table_normalizes_explicit_a1_and_rejects_malformed_across_surfa
     assert_eq!(dispatcher["error"]["operation"], "profile_table");
     assert_eq!(dispatcher["error"]["path"], "$.range");
     assert_eq!(dispatcher["error"]["message"], "invalid range: not-a-range");
+}
+
+#[tokio::test]
+async fn formula_map_address_sort_is_natural_and_stable_across_cursor_pages() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("formula-map-address-order.xlsx");
+    let mut book = umya_spreadsheet::new_file();
+    let sheet = book.get_sheet_by_name_mut("Sheet1").unwrap();
+    for (address, formula) in [
+        ("A10", "SUM(10,1)"),
+        ("A2", "MAX(2,1)"),
+        ("Z1", "MIN(1,0)"),
+        ("B1", "ABS(-1)"),
+    ] {
+        sheet.get_cell_mut(address).set_formula(formula);
+    }
+    umya_spreadsheet::writer::xlsx::write(&book, &path).unwrap();
+    let (state, resource_id) = bound_path(&path).await;
+    let mut cursor = None;
+    let mut addresses = Vec::new();
+    loop {
+        let mut request = json!({
+            "resource_id":resource_id.as_str(), "sheet_name":"Sheet1",
+            "sort_by":"address", "summary_only":false, "include_addresses":true, "limit":2
+        });
+        if let Some(value) = cursor {
+            request["cursor"] = Value::String(value);
+        }
+        let page = execute_operation_json(state.clone(), "formula_map", request)
+            .await
+            .unwrap();
+        addresses.extend(
+            page.data["groups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|group| group["addresses"][0].as_str().unwrap().to_string()),
+        );
+        cursor = page.data["next_cursor"].as_str().map(str::to_string);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(addresses, ["B1", "Z1", "A2", "A10"]);
 }
 
 #[tokio::test]

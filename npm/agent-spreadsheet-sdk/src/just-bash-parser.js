@@ -76,6 +76,23 @@ function exampleFromSchema(schema, root = schema, name) {
   return name || "value"
 }
 
+function projectAdapterSchema(descriptor) {
+  const inputSchema = JSON.parse(JSON.stringify(descriptor.input_schema))
+  const injected = ["resource_id"]
+  if (descriptor.name === "verify_workbook") injected.push("baseline_resource_id")
+  if (Array.isArray(inputSchema.required)) {
+    inputSchema.required = inputSchema.required.filter((field) => !injected.includes(field))
+  }
+  for (const field of injected) {
+    if (inputSchema.properties?.[field]) {
+      const flag = field === "baseline_resource_id" ? "--baseline" : "--bind"
+      inputSchema.properties[field].description =
+        `Injected by the just-bash adapter from ${flag}; omit this field from operation JSON.`
+    }
+  }
+  return inputSchema
+}
+
 function discover(args, availableOperations) {
   if (args.length === 1 && args[0] === "operations") {
     return registry.operations
@@ -88,13 +105,20 @@ function discover(args, availableOperations) {
     if (!descriptor) throw canonicalError(
       "UNKNOWN_OPERATION", `unknown operation '${args[1]}'`, args[1], "$.operation"
     )
-    if (args[0] === "example") return exampleFromSchema(descriptor.input_schema)
+    if (args[0] === "example") return exampleFromSchema(projectAdapterSchema(descriptor))
     return {
       schema_version: descriptor.schema_version,
       name: descriptor.name,
-      input_schema: descriptor.input_schema,
+      input_schema: projectAdapterSchema(descriptor),
       output_schema: descriptor.output_schema,
-      error_schema: registry.error_schema
+      error_schema: registry.error_schema,
+      adapter_binding: {
+        bind: "--bind VFS_PATH injects resource_id",
+        baseline: descriptor.name === "verify_workbook"
+          ? "--baseline VFS_PATH injects baseline_resource_id"
+          : undefined,
+        persistence: "Mutating operations use --output VFS_PATH or --in-place."
+      }
     }
   }
   return null

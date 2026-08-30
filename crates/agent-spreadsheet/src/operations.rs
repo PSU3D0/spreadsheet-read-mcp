@@ -2223,14 +2223,20 @@ pub async fn execute_operation(
             )
             .await?,
         ),
-        SpreadsheetOperation::InspectCells(request) => {
-            serde_json::to_value(execute_inspect_cells(state, request).await?)
-        }
-        SpreadsheetOperation::ReadTable(request) => serde_json::to_value(
-            tools::read_table_semantic(
+        SpreadsheetOperation::InspectCells(request) => serde_json::to_value(
+            execute_inspect_cells(
                 state,
+                request,
+                revision_id.as_deref().expect("read resource revision"),
+            )
+            .await?,
+        ),
+        SpreadsheetOperation::ReadTable(request) => {
+            let workbook_id = request.resource_id.to_workbook_id();
+            let mut response = tools::read_table_semantic(
+                state.clone(),
                 tools::ReadTableParams {
-                    workbook_or_fork_id: request.resource_id.to_workbook_id(),
+                    workbook_or_fork_id: workbook_id.clone(),
                     sheet_name: request.sheet_name,
                     table_name: request.table_name,
                     region_id: request.region_id,
@@ -2250,8 +2256,14 @@ pub async fn execute_operation(
                 },
             )
             .await
-            .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?,
-        ),
+            .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?;
+            response.calculation = state.calculation_metadata(
+                &workbook_id,
+                revision_id.as_deref().expect("read resource revision"),
+                response.calculation,
+            );
+            serde_json::to_value(response)
+        }
         SpreadsheetOperation::ReadLayout(request) => {
             let response = tools::layout_page(
                 state,

@@ -78,10 +78,13 @@ From a repository checkout, run `node scripts/run-generated-wasm-integration.js`
 
 ## just-bash
 
-The optional `agent-spreadsheet-sdk/just-bash` subpath registers one trusted host command over the generated WASM binding. Install `just-bash` explicitly; it is an optional peer so the core SDK does not pull the sandbox and its runtimes into other applications. just-bash 3.4.2 requires Node.js 20.18.1 or newer.
+The optional `agent-spreadsheet-sdk/just-bash` subpath registers one trusted host command over the generated WASM binding. Install `just-bash` explicitly; it is an optional peer so the core SDK does not pull the sandbox and its runtimes into other applications. just-bash 3.4.2 requires Node.js 20.18.1 or newer. Use an ESM host (`.mjs` or `"type":"module"`) when enabling its `js-exec` bridge: the upstream 3.4.2 CommonJS export fails that bridge with `Invalid URL`. CommonJS remains supported for ordinary custom-command execution when `js-exec` is not used.
 
 ```js
-const { Bash } = require("just-bash")
+import { createRequire } from "node:module"
+import { Bash } from "just-bash"
+
+const require = createRequire(import.meta.url)
 const { createAspCommand } = require("agent-spreadsheet-sdk/just-bash")
 
 const bash = new Bash({

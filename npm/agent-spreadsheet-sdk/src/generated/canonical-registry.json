@@ -13450,11 +13450,24 @@
               "changes": {
                 "items": true,
                 "type": "array"
+              },
+              "effects": {
+                "items": true,
+                "type": "array"
+              },
+              "exact": {
+                "type": "boolean"
+              },
+              "precision": {
+                "type": "string"
               }
             },
             "required": [
               "change_count",
-              "changes"
+              "exact",
+              "precision",
+              "changes",
+              "effects"
             ],
             "type": "object"
           },

@@ -16,6 +16,7 @@ use crate::workbook::WorkbookContext;
 use anyhow::Result;
 use lru::LruCache;
 use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
@@ -24,6 +25,7 @@ pub struct AppState {
     config: Arc<ServerConfig>,
     repository: Arc<dyn WorkbookRepository>,
     cache: RwLock<LruCache<WorkbookId, Arc<WorkbookContext>>>,
+    calculation_ledger: RwLock<HashMap<(WorkbookId, String), crate::model::EvaluationCoverage>>,
     #[cfg(feature = "recalc")]
     fork_registry: Option<Arc<ForkRegistry>>,
     #[cfg(feature = "recalc")]
@@ -59,6 +61,7 @@ impl AppState {
             config,
             repository,
             cache: RwLock::new(LruCache::new(capacity)),
+            calculation_ledger: RwLock::new(HashMap::new()),
             #[cfg(feature = "recalc")]
             fork_registry: components.fork_registry,
             #[cfg(feature = "recalc")]
@@ -87,6 +90,7 @@ impl AppState {
             config,
             repository,
             cache: RwLock::new(LruCache::new(capacity)),
+            calculation_ledger: RwLock::new(HashMap::new()),
             #[cfg(feature = "recalc")]
             fork_registry: components.fork_registry,
             #[cfg(feature = "recalc")]
@@ -135,6 +139,40 @@ impl AppState {
     #[cfg(feature = "recalc")]
     pub fn screenshot_semaphore(&self) -> Option<&GlobalScreenshotLock> {
         self.screenshot_semaphore.as_ref()
+    }
+
+    pub fn record_calculation(
+        &self,
+        workbook_id: &WorkbookId,
+        revision_id: &str,
+        mut coverage: crate::model::EvaluationCoverage,
+    ) {
+        coverage.revision_id = revision_id.to_string();
+        self.calculation_ledger
+            .write()
+            .insert((workbook_id.clone(), revision_id.to_string()), coverage);
+    }
+
+    pub fn invalidate_calculation(&self, workbook_id: &WorkbookId) {
+        self.calculation_ledger
+            .write()
+            .retain(|(resource, _), _| resource != workbook_id);
+    }
+
+    pub fn calculation_metadata(
+        &self,
+        workbook_id: &WorkbookId,
+        revision_id: &str,
+        fallback: crate::model::CalculationMetadata,
+    ) -> crate::model::CalculationMetadata {
+        self.calculation_ledger
+            .read()
+            .get(&(workbook_id.clone(), revision_id.to_string()))
+            .map(|coverage| crate::model::CalculationMetadata {
+                state: coverage.state(),
+                revision_id: revision_id.to_string(),
+            })
+            .unwrap_or(fallback)
     }
 
     pub fn list_workbooks(&self, filter: WorkbookFilter) -> Result<WorkbookListResponse> {

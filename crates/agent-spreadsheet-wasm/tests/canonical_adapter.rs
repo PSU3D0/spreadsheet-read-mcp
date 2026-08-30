@@ -284,6 +284,59 @@ async fn recalculate_persists_f1_coverage_and_verify_binds_two_sessions() {
         "formualizer"
     );
     assert_ne!(recalculated["revision_id"], revision);
+    let recalculated_revision = recalculated["revision_id"].as_str().unwrap();
+    for (operation, params) in [
+        (
+            "read_cells",
+            json!({"sheet_name":"Sheet1","selection":{"kind":"range","ranges":["A1:C1"]}}),
+        ),
+        (
+            "inspect_cells",
+            json!({"sheet_name":"Sheet1","targets":["A1"]}),
+        ),
+        (
+            "read_table",
+            json!({"sheet_name":"Sheet1","range":"A1:C3","limit":2}),
+        ),
+    ] {
+        let read: Value = serde_json::from_str(
+            &api.execute_operation(&partial_id, operation, &params.to_string())
+                .await
+                .expect("post-recalc read"),
+        )
+        .unwrap();
+        assert_eq!(
+            read["data"]["calculation"]["revision_id"],
+            recalculated_revision
+        );
+        assert_eq!(read["data"]["calculation"]["state"], "errors_found");
+    }
+    api.execute_operation(
+        &partial_id,
+        "write",
+        &json!({
+            "expected_revision": recalculated_revision,
+            "mode":"apply",
+            "ops":[{"kind":"set_cells","sheet_name":"Sheet1","cells":{"A1":{"kind":"value","value":99}}}]
+        }).to_string(),
+    )
+    .await
+    .expect("write invalidates coverage");
+    let after_write: Value = serde_json::from_str(
+        &api.execute_operation(
+            &partial_id,
+            "read_cells",
+            &json!({"sheet_name":"Sheet1","selection":{"kind":"range","ranges":["A1"]}})
+                .to_string(),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert_ne!(
+        after_write["data"]["calculation"]["revision_id"],
+        recalculated_revision
+    );
 
     let base_bytes = include_bytes!("../../agent-spreadsheet/tests/fixtures/f1/baseline.xlsx");
     let baseline_id = api.create_session(base_bytes).expect("baseline session");

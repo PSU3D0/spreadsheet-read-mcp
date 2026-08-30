@@ -100,7 +100,7 @@ test("actual just-bash executes canonical reads from JSON stdin using only its V
   assert.deepEqual(Array.from(await bash.fs.readFileBuffer("/book.xlsx")), [1, 2, 3])
 })
 
-test("registry discovery, schema, and examples are checked-in generic projections", async () => {
+test("registry discovery stays canonical while schema and examples project adapter bindings", async () => {
   const { bindings } = mockBindings()
   const bash = new Bash({ customCommands: [createAspCommand({ bindings })] })
 
@@ -112,8 +112,15 @@ test("registry discovery, schema, and examples are checked-in generic projection
   const schema = parseJsonOutput(await bash.exec("asp schema read_cells"))
   assert.equal(schema.name, "read_cells")
   assert.equal(schema.input_schema.title, "ReadCellsRequest")
+  assert.ok(!schema.input_schema.required.includes("resource_id"))
+  assert.match(schema.input_schema.properties.resource_id.description, /--bind/)
+  assert.match(schema.adapter_binding.bind, /--bind/)
+  const verifySchema = parseJsonOutput(await bash.exec("asp schema verify_workbook"))
+  assert.ok(!verifySchema.input_schema.required.includes("resource_id"))
+  assert.ok(!verifySchema.input_schema.required.includes("baseline_resource_id"))
+  assert.match(verifySchema.adapter_binding.baseline, /--baseline/)
   const example = parseJsonOutput(await bash.exec("asp example list_sheets"))
-  assert.match(example.resource_id, /^session:/)
+  assert.equal(example.resource_id, undefined)
 
   const restricted = mockBindings().bindings
   delete restricted.exportWorkbook
