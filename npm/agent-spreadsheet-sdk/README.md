@@ -76,6 +76,28 @@ The binding returns a typed `session:` resource ID. The adapter passes that exac
 
 From a repository checkout, run `node scripts/run-generated-wasm-integration.js` to build the actual wasm-bindgen Node package with `wasm-pack` and exercise SDK read, write, recalculate, verify, export, and disposal end to end. This repository-only harness is intentionally not part of the published package.
 
+## just-bash
+
+The optional `agent-spreadsheet-sdk/just-bash` subpath registers one trusted host command over the generated WASM binding. Install `just-bash` explicitly; it is an optional peer so the core SDK does not pull the sandbox and its runtimes into other applications. just-bash 3.4.2 requires Node.js 20.18.1 or newer.
+
+```js
+const { Bash } = require("just-bash")
+const { createAspCommand } = require("agent-spreadsheet-sdk/just-bash")
+
+const bash = new Bash({
+  files: { "/workbook.xlsx": workbookBytes },
+  customCommands: [createAspCommand({ bindings: wasmBindings })]
+})
+const result = await bash.exec(
+  "asp op read_cells --bind /workbook.xlsx",
+  { stdin: JSON.stringify({ sheet_name: "Sheet1", selection: { kind: "range", ranges: ["A1:C10"] } }) }
+)
+```
+
+The command accepts only `asp op <operation> [--bind VFS_PATH] [--baseline VFS_PATH] [--json JSON] [--output VFS_PATH|--in-place]`. It reads and writes workbook bytes only through `ctx.fs`, injects the exact typed `session:` IDs returned by WASM, and disposes every ephemeral session. Preview never exports. Apply and recalculate require exactly one output target and use an adjacent VFS temporary file plus `mv`.
+
+The defaults match WASM's 64 MiB workbook and 1 MiB parameter ceilings. Override them with `maxWorkbookBytes` and `maxParamsBytes`; stat and payload limits are checked before creating a WASM session. `asp operations`, `asp schema <operation>`, and `asp example <operation>` are generic projections of the checked-in canonical registry. With `javascript: true`, `js-exec` can call `asp` through its `child_process.execSync` or `spawnSync` bridge without another tool projection.
+
 ## Capabilities and errors
 
 `backend.getCapabilities().operations` is the authoritative supported operation list. Compatibility booleans such as `supportsVerification` are derived from that list rather than independently configured. Resource capabilities (`resourceBinding`, `resourceExport`) are derived from real adapter bindings.

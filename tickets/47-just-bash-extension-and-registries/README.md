@@ -1,12 +1,12 @@
 # 47 — just-bash Extension & Registry Follow-ups
 
-Status: planned. The extension is opt-in; registry work follows the first release that ships archives and checksums.
+Status: adapter implemented for 0.14 as an opt-in SDK subpath; registry follow-ups remain separate.
 
-## `@agent-spreadsheet/just-bash`
+## `agent-spreadsheet-sdk/just-bash`
 
 **Dependency:** complete [ticket 48](../48-canonical-operation-convergence/README.md) first. The adapter is a proof of the canonical operation boundary, not a place to design another spreadsheet surface.
 
-Build an opt-in extension package that registers one `asp` custom command in [vercel-labs/just-bash](https://github.com/vercel-labs/just-bash). just-bash is a pure-TypeScript Bash interpreter for agents: commands cannot spawn native processes and operate against a virtual filesystem.
+The opt-in `agent-spreadsheet-sdk/just-bash` export registers one `asp` custom command in [vercel-labs/just-bash](https://github.com/vercel-labs/just-bash). Keeping the adapter in the existing SDK avoids a new package and publisher while the optional `just-bash` peer keeps its sandbox dependencies out of core SDK installs. just-bash is a pure-TypeScript Bash interpreter for agents and commands operate against a virtual filesystem.
 
 The command supports only the canonical machine protocol:
 
@@ -30,7 +30,7 @@ Set and document an explicit workbook-size ceiling before loading bytes into WAS
 
 ## Acceptance gate
 
-- `@agent-spreadsheet/just-bash` is explicitly installed and registered rather than bundled into just-bash core.
+- `agent-spreadsheet-sdk/just-bash` is explicitly registered with an installed optional `just-bash` peer rather than bundled into just-bash core.
 - The command uses only the SDK canonical dispatcher/embedded WASM backend and the just-bash virtual filesystem.
 - The adapter has no independent operation taxonomy or operation-specific argument parsing.
 - Native `asp op` JSON goldens contract-test the TypeScript shim.
@@ -39,6 +39,7 @@ Set and document an explicit workbook-size ceiling before loading bytes into WAS
 
 ## Status updates (2026-08-29)
 
+- 0.14 adapter: implemented as `agent-spreadsheet-sdk/just-bash` against just-bash 3.4.2. The generated-WASM harness covers native canonical JSON invariants, exact applied workbook bytes, semantic recalc bytes, preview purity, two-resource verification, limits, VFS-only paths, disposal, and the `js-exec` child-process bridge.
 - aqua-registry: PR opened — https://github.com/aquaproj/aqua-registry/pull/59654 (argd-scaffolded, container tests pass, dual-command files entry). Once merged, plain `mise use -g PSU3D0/agent-spreadsheet` works via the aqua backend; `ubi:` form already works and is documented.
 - Homebrew tap: LIVE — PSU3D0/homebrew-tap with agent-spreadsheet + agent-spreadsheet-mcp formulas at 0.13.0, install/test verified on linuxbrew. Remaining: automate formula bumps from release.yml (needs a tap-scoped PAT or GitHub App secret).
 - winget/scoop: still open.

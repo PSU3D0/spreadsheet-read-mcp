@@ -47,6 +47,20 @@ asp write batch rules workbook.xlsx --ops @rules_ops.json --in-place
 asp write formulas replace workbook.xlsx Sheet1 --find '$64' --replace '$65' --dry-run
 ```
 
+## Canonical machine mode and just-bash
+
+In automation hosts, including the optional `agent-spreadsheet-sdk/just-bash` adapter, use the canonical machine protocol rather than a human command alias:
+
+```bash
+asp op list_sheets --bind /workbook.xlsx --json '{}'
+asp op write --bind /workbook.xlsx --json '{"expected_revision":"<revision>","mode":"preview","ops":[...]}'
+asp op write --bind /workbook.xlsx --output /result.xlsx --json '{"expected_revision":"<same-revision>","mode":"apply","ops":[...]}'
+asp op recalculate --bind /result.xlsx --in-place --json '{"expected_revision":"<result-revision>"}'
+asp op verify_workbook --bind /result.xlsx --baseline /workbook.xlsx --json '{}'
+```
+
+Use `asp operations`, `asp schema write`, and `asp example write` for registry-backed discovery. Paths in just-bash are VFS paths; do not assume host filesystem access. Preview is pure and takes no output flag, while apply and recalculate require exactly one of `--output` or `--in-place`.
+
 ## Exact payload conventions
 
 ### Most batch commands

@@ -25,7 +25,8 @@ if (build.status !== 0) process.exit(build.status || 1)
 
 const test = spawnSync(process.execPath, [
   "--test",
-  path.join(packageRoot, "test", "wasm-integration.test.js")
+  path.join(packageRoot, "test", "wasm-integration.test.js"),
+  path.join(packageRoot, "test", "just-bash-integration.test.js")
 ], {
   cwd: packageRoot,
   env: { ...process.env, AGENT_SPREADSHEET_WASM_PACKAGE: outputDirectory },

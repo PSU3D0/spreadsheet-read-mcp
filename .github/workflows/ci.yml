@@ -116,6 +116,7 @@ jobs:
 
       - name: Run SDK tests and generated WASM integration
         run: |
+          npm install --ignore-scripts --package-lock=false
           npm test
           node scripts/run-generated-wasm-integration.js
           npm pack --dry-run

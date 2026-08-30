@@ -20,6 +20,11 @@
     "wasm"
   ],
   "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./just-bash": "./src/just-bash.js",
+    "./package.json": "./package.json"
+  },
   "files": [
     "src",
     "scripts/generate-canonical-registry.js",
@@ -28,6 +33,17 @@
   "scripts": {
     "generate:registry": "node scripts/generate-canonical-registry.js",
     "test": "node --test"
+  },
+  "peerDependencies": {
+    "just-bash": "^3.4.2"
+  },
+  "peerDependenciesMeta": {
+    "just-bash": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "just-bash": "3.4.2"
   },
   "engines": {
     "node": ">=18"
