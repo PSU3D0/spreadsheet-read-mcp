@@ -268,6 +268,7 @@ pub fn compare_workbooks(
     )
 }
 
+#[allow(clippy::too_many_arguments)] // Public parity API keeps both sides explicit.
 pub fn compare_workbooks_with_coverage(
     baseline_label: impl Into<String>,
     current_label: impl Into<String>,

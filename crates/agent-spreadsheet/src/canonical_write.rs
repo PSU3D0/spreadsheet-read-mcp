@@ -399,6 +399,7 @@ fn default_footer_policy() -> AppendFooterPolicy {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)] // Closed public schema union; boxing changes generated schema shape.
 pub enum WriteOp {
     SetCells(SetCellsOp),
     Structure(CanonicalStructureOp),
@@ -1094,9 +1095,9 @@ fn validate_request(request: &WriteRequest) -> Result<()> {
                     max_width_chars,
                 } => {
                     if min_width_chars
-                        .is_some_and(|value| !value.is_finite() || value < 0.0 || value > 255.0)
+                        .is_some_and(|value| !value.is_finite() || !(0.0..=255.0).contains(&value))
                         || max_width_chars
-                            .is_some_and(|value| !value.is_finite() || value < 0.0 || value > 255.0)
+                            .is_some_and(|value| !value.is_finite() || !(0.0..=255.0).contains(&value))
                         || matches!((min_width_chars, max_width_chars), (Some(min), Some(max)) if min > max)
                     {
                         return Err(invalid(
