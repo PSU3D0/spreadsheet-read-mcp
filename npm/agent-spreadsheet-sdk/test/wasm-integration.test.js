@@ -69,6 +69,16 @@ test("SDK drives the generated wasm-bindgen Node package", {
     assert.equal(verified.resource_id, resourceId)
     assert.equal(verified.data.proof_status, "differences_found")
 
+    const legacyVerified = await backend.verifyWorkbook({
+      currentResourceId: resourceId,
+      baselineResourceId,
+      targets: ["Sheet1!A1"],
+      targetsOnly: true
+    })
+    assert.equal(legacyVerified.proof_status, "differences_found")
+    assert.equal(legacyVerified.operation, undefined)
+    assert.equal(legacyVerified.data, undefined)
+
     const exported = await backend.exportWorkbook({ resource_id: resourceId })
     assert.ok(exported instanceof Uint8Array)
     assert.ok(exported.byteLength > 0)

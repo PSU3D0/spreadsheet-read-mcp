@@ -333,9 +333,11 @@ for (const kind of ["MCP", "WASM"]) {
       assert.deepEqual(await backend[method](legacyInput), { marker: `${kind}:${operation}` }, method)
       const call = calls.at(-1)
       assert.equal(call.operation, operation, method)
-      assert.equal(call.input.resource_id, kind === "WASM" && expectedResourceId?.startsWith("wb:")
-        ? expectedResourceId.replace(/^wb:/, "session:")
-        : expectedResourceId, method)
+      const wasmResourceId = method === "verifyWorkbook"
+        ? expectedResourceId?.replace(/^fork:/, "session:")
+        : expectedResourceId?.replace(/^wb:/, "session:")
+      assert.equal(call.input.resource_id,
+        kind === "WASM" ? wasmResourceId : expectedResourceId, method)
     }
   })
 
@@ -367,6 +369,43 @@ for (const kind of ["MCP", "WASM"]) {
     }
   })
 }
+
+test("legacy verification preserves typed identities and prefixes bare IDs per backend", async () => {
+  for (const kind of ["MCP", "WASM"]) {
+    const calls = []
+    const invoke = async (operation, input) => {
+      calls.push({ operation, input })
+      return envelope(operation, input.resource_id, { proof_status: "verified" })
+    }
+    const backend = kind === "MCP"
+      ? new McpBackend({ supportedOperations: ["verify_workbook"], transport: { invoke } })
+      : new WasmBackend({
+          bindings: {
+            operations: () => ["verify_workbook"],
+            executeOperation: async (_resourceId, operation, params) => JSON.stringify(
+              await invoke(operation, JSON.parse(params))
+            )
+          }
+        })
+
+    for (const prefix of ["wb", "fork", "session"]) {
+      assert.deepEqual(await backend.verifyWorkbook({
+        currentResourceId: `${prefix}:current`,
+        baselineResourceId: `${prefix}:baseline`
+      }), { proof_status: "verified" })
+      assert.equal(calls.at(-1).input.resource_id, `${prefix}:current`)
+      assert.equal(calls.at(-1).input.baseline_resource_id, `${prefix}:baseline`)
+    }
+
+    assert.deepEqual(await backend.verifyWorkbook({
+      currentResourceId: "current",
+      baselineResourceId: "baseline"
+    }), { proof_status: "verified" })
+    const expectedPrefix = kind === "WASM" ? "session" : "fork"
+    assert.equal(calls.at(-1).input.resource_id, `${expectedPrefix}:current`)
+    assert.equal(calls.at(-1).input.baseline_resource_id, `${expectedPrefix}:baseline`)
+  }
+})
 
 test("legacy write methods compile to canonical write operations", async () => {
   let received

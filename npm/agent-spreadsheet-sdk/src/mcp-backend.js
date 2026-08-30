@@ -125,12 +125,13 @@ function nameWrite(backend, input, kind) {
   }
 }
 
-function verifyInput(_backend, input) {
+function verifyInput(backend, input) {
   const current = input.currentResourceId || input.current_resource_id || input.currentWorkbookOrForkId || input.current_workbook_or_fork_id || input.currentId || input.current_id
   const baseline = input.baselineResourceId || input.baseline_resource_id || input.baselineWorkbookOrForkId || input.baseline_workbook_or_fork_id || input.baselineId || input.baseline_id
+  const prefix = backend.kind === "wasm" ? "session" : "fork"
   return {
-    resource_id: /^(wb|fork):/.test(current || "") ? current : `fork:${current}`,
-    baseline_resource_id: /^(wb|fork):/.test(baseline || "") ? baseline : `fork:${baseline}`,
+    resource_id: /^(wb|fork|session):/.test(current || "") ? current : `${prefix}:${current}`,
+    baseline_resource_id: /^(wb|fork|session):/.test(baseline || "") ? baseline : `${prefix}:${baseline}`,
     targets: input.targets || [],
     sheet_name: input.sheetName || input.sheet_name,
     include_named_range_deltas: input.includeNamedRangeDeltas ?? input.include_named_range_deltas,
