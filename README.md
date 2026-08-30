@@ -746,6 +746,7 @@ Every setting is available as a CLI flag (`agent-spreadsheet-mcp --help`), an en
 | `SPREADSHEET_MCP_MAX_CELLS` | `10000` | Max cells per tool payload before truncation |
 | `SPREADSHEET_MCP_MAX_ITEMS` | `500` | Max items per tool payload before truncation |
 | `SPREADSHEET_MCP_OUTPUT_PROFILE` | `token_dense` | Output profile for tool responses (`token_dense` or `verbose`) |
+| `SPREADSHEET_MCP_SLIM_SURFACE` | `true` | Canonical-only router; set `false` to add legacy 0.13 tool names |
 | `SPREADSHEET_MCP_SCREENSHOT_DIR` | `<workspace_root>/screenshots` | Directory to write screenshot PNGs |
 | `SPREADSHEET_MCP_PATH_MAP` | none | Path mapping(s) `INTERNAL=CLIENT` to include client-visible paths in responses (comma-separated; useful for Docker volume mounts) |
 
@@ -755,63 +756,11 @@ Setting any of the timeout/limit variables (`TOOL_TIMEOUT_MS`, `MAX_RESPONSE_BYT
 
 ## MCP tool surface
 
-### Read and discovery
-- `list_workbooks`
-- `describe_workbook`
-- `list_sheets`
-- `workbook_summary`
-- `sheet_overview`
-- `sheet_page`
-- `read_table`
-- `range_values`
-- `inspect_cells` — detail-view for up to 25 individual cells with full metadata (value, formula, style, number format)
-- `layout_page` — render a sheet range with layout semantics (column widths, borders, merges) as JSON and optionally an ASCII grid
-- `grid_export` — export a range as a rich grid payload with per-cell values, formulas, number formats, styles, column sizes, and merges
-- `named_ranges`
-- `sheet_styles`
-- `workbook_style_summary`
-- `close_workbook` — evict a workbook from cache
+The default MCP router is generated from the canonical operation registry. A write-capable baseline exposes 27 operations: 17 discovery/read/analysis operations and 10 write/lifecycle operations. Capability-backed deployments can add `screenshot_sheet`, `sheetport_manifest`, `execute_sheetport`, and `inspect_vba`, for up to 31. Read-only deployments omit write/lifecycle tools.
 
-### Search and analysis
-- `find_value`
-- `find_formula`
-- `sheet_formula_map`
-- `formula_trace`
-- `scan_volatiles`
-- `table_profile`
-- `sheet_statistics`
-- `get_manifest_stub`
-- `execute_manifest` — execute a SheetPort manifest with JSON inputs
+Each tool uses the registry descriptor's closed input schema and returns the canonical `schema_version` / `operation` / `resource_id` / `revision_id` / `data` envelope. Static MCP annotations report the descriptor's worst-case risk; descriptions identify action-specific risk. `close_workbook` is excluded because cache eviction is runtime administration.
 
-### Verification
-- `verify_workbook` — compare baseline/current workbook or fork ids and report target proof plus new/resolved/preexisting errors; the summary-first proof step after `recalculate`
-
-### Stateful write and recalc
-- fork lifecycle
-- checkpoints
-- `edit_batch`
-- `transform_batch`
-- `style_batch`
-- `grid_import` — import a rich grid payload (values, formulas, styles, formats, column sizes, merges)
-- `apply_formula_pattern`
-- `structure_batch`
-- `column_size_batch`
-- `sheet_layout_batch`
-- `rules_batch`
-- `define_name` / `update_name` / `delete_name` — manage named ranges in a fork
-- `replace_in_formulas` — find and replace text in formula bodies only, plain text or regex, preview or apply
-- `recalculate`
-- `get_edits` — list all edits applied to a fork
-- `get_changeset`
-- `save_fork`
-- staged-change management
-- `screenshot_sheet`
-
-### VBA inspection
-- `vba_project_summary`
-- `vba_module_source`
-
----
+For the complete operation list and contracts, see [Canonical Operation Surface](docs/architecture/canonical-operation-surface.md). To add the legacy 0.13 names for one compatibility window, set `SPREADSHEET_MCP_SLIM_SURFACE=false`; shared names use their legacy schema and envelope in compatibility mode and are registered only once.
 
 ## JS SDK
 

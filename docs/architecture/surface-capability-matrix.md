@@ -1,6 +1,6 @@
 # Surface Capability Matrix (CLI / MCP / WASM / SDK)
 
-Status: active migration baseline (canonical registry Wave 3D optional capability surface)
+Status: active migration baseline (Wave 4 canonical MCP adapter)
 Owner: Tranche 35 (tickets/35-js-surface-migration)
 
 This matrix is the planning baseline for cross-surface migration.
@@ -84,6 +84,22 @@ Boundary contract: `docs/architecture/surface-boundary-rules.md`
 
 | MCP tool | CLI equivalent | Classification | Core projection target | WASM target | Notes | Implementation module path | Parity test owner |
 |---|---|---:|---|---:|---|---|---|
+| `read_cells` | `read cells`/`read page` | ALL | `operations.read_cells` | mvp | Canonical correlated exact/projected read | `crates/agent-spreadsheet-mcp/src/canonical_router.rs` | `crates/agent-spreadsheet-mcp/tests/canonical_projection.rs` |
+| `read_layout` | `read layout` | ALL | `operations.read_layout` | mvp | Canonical bounded lossy layout read | `crates/agent-spreadsheet-mcp/src/canonical_router.rs` | `crates/agent-spreadsheet-mcp/tests/canonical_projection.rs` |
+| `export_grid` | `read export --format grid` | ALL | `operations.export_grid` | mvp | Canonical coordinate-preserving grid export | `crates/agent-spreadsheet-mcp/src/canonical_router.rs` | `crates/agent-spreadsheet-mcp/tests/canonical_projection.rs` |
+| `analyze_styles` | _(none direct)_ | ALL | `operations.analyze_styles` | later | Canonical workbook/sheet scoped style analysis | `crates/agent-spreadsheet-mcp/src/canonical_router.rs` | `crates/agent-spreadsheet-mcp/tests/canonical_projection.rs` |
+| `search_values` | `analyze find-value` | ALL | `operations.search_values` | mvp | Canonical scoped value/label search | `crates/agent-spreadsheet-mcp/src/canonical_router.rs` | `crates/agent-spreadsheet-mcp/tests/canonical_projection.rs` |
+| `search_formulas` | `analyze find-formula`/`scan-volatiles` | ALL | `operations.search_formulas` | mvp | Canonical formula search and classification | `crates/agent-spreadsheet-mcp/src/canonical_router.rs` | `crates/agent-spreadsheet-mcp/tests/canonical_projection.rs` |
+| `formula_map` | `analyze formula-map` | ALL | `operations.formula_map` | mvp | Canonical formula topology map | `crates/agent-spreadsheet-mcp/src/canonical_router.rs` | `crates/agent-spreadsheet-mcp/tests/canonical_projection.rs` |
+| `profile_table` | `analyze table-profile` | ALL | `operations.profile_table` | mvp | Canonical table profiling | `crates/agent-spreadsheet-mcp/src/canonical_router.rs` | `crates/agent-spreadsheet-mcp/tests/canonical_projection.rs` |
+| `sheetport_manifest` | `sheetport manifest ...` | ALL | `operations.sheetport_manifest` | later | Capability-gated canonical SheetPort manifest actions | `crates/agent-spreadsheet-mcp/src/canonical_router.rs` | `crates/agent-spreadsheet-mcp/tests/canonical_projection.rs` |
+| `execute_sheetport` | `sheetport run` | ALL | `operations.execute_sheetport` | later | Capability-gated canonical SheetPort execution | `crates/agent-spreadsheet-mcp/src/canonical_router.rs` | `crates/agent-spreadsheet-mcp/tests/canonical_projection.rs` |
+| `inspect_vba` | _(none)_ | SHARED_PARTIAL | `operations.inspect_vba` | later | Capability-gated canonical VBA views | `crates/agent-spreadsheet-mcp/src/canonical_router.rs` | `crates/agent-spreadsheet-mcp/tests/canonical_projection.rs` |
+| `write` | `write ...` | ALL | `operations.write` | later | Canonical preview/stage/apply mutation batch | `crates/agent-spreadsheet-mcp/src/canonical_router.rs` | `crates/agent-spreadsheet-mcp/tests/canonical_projection.rs` |
+| `export_fork` | _(none)_ | MCP_ONLY | `operations.export_fork` | n/a | Canonical revision-bound fork export | `crates/agent-spreadsheet-mcp/src/canonical_router.rs` | `crates/agent-spreadsheet-mcp/tests/canonical_projection.rs` |
+| `get_changes` | `verify diff` (partial overlap) | SHARED_PARTIAL | `operations.get_changes` | later | Canonical operation audit or net diff | `crates/agent-spreadsheet-mcp/src/canonical_router.rs` | `crates/agent-spreadsheet-mcp/tests/canonical_projection.rs` |
+| `checkpoint` | _(none)_ | MCP_ONLY | `operations.checkpoint` | n/a | Canonical checkpoint action union | `crates/agent-spreadsheet-mcp/src/canonical_router.rs` | `crates/agent-spreadsheet-mcp/tests/canonical_projection.rs` |
+| `staged_change` | _(none)_ | MCP_ONLY | `operations.staged_change` | n/a | Canonical staged-bundle action union | `crates/agent-spreadsheet-mcp/src/canonical_router.rs` | `crates/agent-spreadsheet-mcp/tests/canonical_projection.rs` |
 | `list_workbooks` | _(none)_ | MCP_ONLY | `adapter-mcp.workspace.list_workbooks` | n/a | Workspace/repository concern | `crates/agent-spreadsheet/src/tools/mod.rs::list_workbooks` | `crates/agent-spreadsheet-mcp/tests/server_smoke.rs` |
 | `describe_workbook` | `read workbook` | ALL | `core.read.describe_workbook` | mvp | Shared read primitive | `crates/agent-spreadsheet/src/tools/mod.rs::describe_workbook` | `crates/agent-spreadsheet-mcp/tests/server_smoke.rs` |
 | `workbook_summary` | _(none direct)_ | SHARED_PARTIAL | `core.analysis.workbook_summary` | later | Candidate future CLI command | `crates/agent-spreadsheet/src/tools/mod.rs::workbook_summary` | `crates/agent-spreadsheet-mcp/tests/server_smoke.rs` |
@@ -110,7 +126,7 @@ Boundary contract: `docs/architecture/surface-boundary-rules.md`
 | `workbook_style_summary` | _(none)_ | SHARED_PARTIAL | `core.analysis.workbook_style_summary` | later | Candidate future CLI/WASM surface | `crates/agent-spreadsheet/src/tools/mod.rs::workbook_style_summary` | `crates/agent-spreadsheet-mcp/tests/unit_workbook_style_summary_recalc.rs` |
 | `get_manifest_stub` | `sheetport manifest candidates` | SHARED_PARTIAL | `core.sheetport.manifest_stub` | later | Shared semantic target | `crates/agent-spreadsheet/src/tools/mod.rs::get_manifest_stub` | `crates/agent-spreadsheet-mcp/tests/server_smoke.rs` |
 | `execute_manifest` | `sheetport run`/`run-manifest` | ALL | `core.sheetport.execute_manifest` | later | Shared semantic target | `crates/agent-spreadsheet/src/tools/mod.rs::execute_manifest` | `crates/agent-spreadsheet-mcp/tests/server_smoke.rs` |
-| `close_workbook` | _(none)_ | MCP_ONLY | `adapter-mcp.session.close_workbook` | n/a | MCP resource lifecycle | `crates/agent-spreadsheet/src/tools/mod.rs::close_workbook` | `crates/agent-spreadsheet-mcp/tests/server_smoke.rs` |
+| `close_workbook` | _(none)_ | MCP_ONLY | `adapter-mcp.session.close_workbook` | n/a | Legacy 0.13 compat only; removed from canonical/default surface | `crates/agent-spreadsheet-mcp/src/server.rs` | `crates/agent-spreadsheet-mcp/tests/unit_mutate_batch.rs` |
 | `vba_project_summary` | _(none)_ | SHARED_PARTIAL | `core.vba.project_summary` | later | Parser/runtime constraints for WASM | `crates/agent-spreadsheet/src/tools/vba.rs::vba_project_summary` | `crates/agent-spreadsheet-mcp/tests/unit_vba.rs` |
 | `vba_module_source` | _(none)_ | SHARED_PARTIAL | `core.vba.module_source` | later | Same | `crates/agent-spreadsheet/src/tools/vba.rs::vba_module_source` | `crates/agent-spreadsheet-mcp/tests/unit_vba.rs` |
 | `create_fork` | _(none)_ | MCP_ONLY | `adapter-mcp.fork.create` | n/a | MCP orchestration | `crates/agent-spreadsheet/src/tools/fork.rs::create_fork` | `crates/agent-spreadsheet-mcp/tests/fork_workflow.rs` |
@@ -145,7 +161,7 @@ Boundary contract: `docs/architecture/surface-boundary-rules.md`
 
 ## C) Canonical registry migration status
 
-Wave 3A registers the canonical discovery/read/search/analysis surface. Wave 3B adds `write`, Wave 3C adds lifecycle/history/proof, and Wave 3D adds capability-gated rendering, SheetPort, and VBA operations. None of these waves changes the default MCP router. `asp operations`, `asp schema <operation>`, and `asp op <operation>` derive lookup and schemas from the registry.
+Wave 3A registers the canonical discovery/read/search/analysis surface. Wave 3B adds `write`, Wave 3C adds lifecycle/history/proof, and Wave 3D adds capability-gated rendering, SheetPort, and VBA operations. Wave 4 makes the descriptor-derived canonical router the default MCP surface; `SPREADSHEET_MCP_SLIM_SURFACE=false` adds the legacy 0.13 compatibility names and preserves legacy behavior for shared names. `asp operations`, `asp schema <operation>`, `asp op <operation>`, and MCP derive lookup and schemas from the registry.
 
 | Canonical operation | Existing compatibility projection | Dispatcher implementation | Capability | Risk |
 |---|---|---|---|---|
@@ -177,7 +193,7 @@ Wave 3A registers the canonical discovery/read/search/analysis surface. Wave 3B 
 
 Canonical responses use the versioned operation envelope and state reads carry `revision_id`. Value-bearing reads expose calculation state. Merged responses echo branch discriminants. Checked-in full JSON fixtures cover every branch, action, and view, including deterministic screenshot artifact tokens.
 
-Compatibility projections are only routed through the dispatcher when the legacy response can be reconstructed without loss. `range_values`/`sheet_page`, workbook summaries, layout/grid, style summaries, and formula-search variants remain separate compatibility implementations rather than claiming false response parity. Existing write and lifecycle tools retain their response/error projections while sharing the canonical state and family implementations where response compatibility permits. Canonical export keeps path-oriented CLI/MCP/WASM concerns in adapters. No default MCP router switch is authorized in Wave 3A, Wave 3B, or Wave 3C.
+Compatibility projections are only routed through the dispatcher when the legacy response can be reconstructed without loss. `range_values`/`sheet_page`, workbook summaries, layout/grid, style summaries, and formula-search variants remain separate compatibility implementations rather than claiming false response parity. Existing write and lifecycle tools retain their response/error projections while sharing the canonical state and family implementations where response compatibility permits. Canonical export keeps path-oriented CLI/MCP/WASM concerns in adapters. Wave 4 authorizes the canonical MCP default while preserving the 0.13 router only in explicit compatibility mode.
 
 ---
 

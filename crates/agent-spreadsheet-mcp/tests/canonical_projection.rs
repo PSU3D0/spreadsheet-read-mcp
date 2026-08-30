@@ -1,9 +1,13 @@
+use agent_spreadsheet::operations::{
+    RuntimeCapabilities, operation_descriptor, operation_registry,
+};
 use anyhow::Result;
 use rmcp::{
     ServiceExt,
     transport::{ConfigureCommandExt, TokioChildProcess},
 };
 use serde_json::json;
+use std::collections::HashSet;
 use std::process::Stdio;
 use tokio::process::Command;
 
@@ -12,7 +16,7 @@ mod support;
 use support::mcp::{call_tool, extract_json};
 
 #[tokio::test(flavor = "multi_thread")]
-async fn live_json_rpc_tools_call_preserves_legacy_projection_and_decoding() -> Result<()> {
+async fn live_json_rpc_projects_every_available_canonical_descriptor() -> Result<()> {
     let workspace = support::TestWorkspace::new();
     workspace.create_workbook("canonical.xlsx", |book| {
         let sheet = book.get_sheet_by_name_mut("Sheet1").unwrap();
@@ -30,6 +34,10 @@ async fn live_json_rpc_tools_call_preserves_legacy_projection_and_decoding() -> 
                 "stdio",
                 "--workspace-root",
                 root.to_str().expect("UTF-8 workspace"),
+                "--recalc-enabled",
+                "--recalc-backend",
+                "formualizer",
+                "--vba-enabled",
             ]);
         }),
     )
@@ -37,128 +45,162 @@ async fn live_json_rpc_tools_call_preserves_legacy_projection_and_decoding() -> 
     .spawn()?;
     let client = ().serve(transport).await?;
 
-    let workbooks = client
-        .call_tool(call_tool("list_workbooks", json!({})))
-        .await?;
-    let workbooks = extract_json(&workbooks)?;
-    let workbook_id = workbooks["workbooks"][0]["workbook_id"]
-        .as_str()
-        .expect("workbook id");
+    let tools = client.list_all_tools().await?;
+    let mut capabilities = RuntimeCapabilities::native();
+    capabilities.screenshot_rendering = false;
+    capabilities.vba = true;
+    let expected = operation_registry()
+        .iter()
+        .filter(|descriptor| descriptor.is_available(&capabilities))
+        .map(|descriptor| descriptor.name)
+        .collect::<HashSet<_>>();
+    let actual = tools
+        .iter()
+        .map(|tool| tool.name.as_ref())
+        .collect::<HashSet<_>>();
+    assert_eq!(actual, expected);
+    assert_eq!(actual.len(), 30);
+    assert!(!actual.contains("close_workbook"));
 
-    let cases = [
-        (
-            "list_sheets",
-            json!({"workbook_or_fork_id":workbook_id,"include_bounds":true}),
-        ),
-        (
-            "sheet_overview",
-            json!({"workbook_or_fork_id":workbook_id,"sheet_name":"Sheet1"}),
-        ),
-        (
-            "read_table",
-            json!({
-                "workbook_or_fork_id":workbook_id,
-                "sheet_name":"Sheet1",
-                "range":"A1:B2",
-                "format":"values"
-            }),
-        ),
-        (
-            "inspect_cells",
-            json!({"workbook_or_fork_id":workbook_id,"sheet_name":"Sheet1","targets":["A1","B2"]}),
-        ),
-        ("named_ranges", json!({"workbook_or_fork_id":workbook_id})),
-        (
-            "find_value",
-            json!({"workbook_or_fork_id":workbook_id,"query":"Alpha"}),
-        ),
-        (
-            "formula_trace",
-            json!({"workbook_or_fork_id":workbook_id,"sheet_name":"Sheet1","cell_address":"B2","direction":"precedents"}),
-        ),
-        (
-            "sheet_formula_map",
-            json!({"workbook_or_fork_id":workbook_id,"sheet_name":"Sheet1"}),
-        ),
-        (
-            "table_profile",
-            json!({"workbook_or_fork_id":workbook_id,"sheet_name":"Sheet1"}),
-        ),
-        (
-            "sheet_statistics",
-            json!({"workbook_or_fork_id":workbook_id,"sheet_name":"Sheet1"}),
-        ),
-    ];
-    for (tool, arguments) in cases {
-        let result = client.call_tool(call_tool(tool, arguments)).await?;
-        assert_ne!(result.is_error, Some(true), "{tool} returned a tool error");
-        let value = extract_json(&result)?;
-        assert_eq!(value["workbook_id"], workbook_id);
+    for tool in &tools {
+        let descriptor = operation_descriptor(&tool.name).expect("canonical descriptor");
+        assert_eq!(tool.schema_as_json_value(), (descriptor.input_schema)());
         assert!(
-            value.get("schema_version").is_none(),
-            "legacy MCP is data-only"
+            tool.output_schema.is_none(),
+            "output schema must stay stripped"
         );
-        serde_json::to_vec(&result).expect("MCP result serializes");
+        assert!(
+            tool.description
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Risk"),
+            "{} description must explain risk",
+            tool.name
+        );
+        let annotations = tool.annotations.as_ref().expect("risk annotations");
+        let expected_read_only =
+            descriptor.risk_ceiling == agent_spreadsheet::operations::OperationRisk::Low;
+        let expected_destructive = matches!(
+            descriptor.risk_ceiling,
+            agent_spreadsheet::operations::OperationRisk::High
+                | agent_spreadsheet::operations::OperationRisk::Destructive
+        );
+        assert_eq!(annotations.read_only_hint, Some(expected_read_only));
+        assert_eq!(annotations.destructive_hint, Some(expected_destructive));
+        assert_eq!(annotations.open_world_hint, Some(false));
+
+        let result = client.call_tool(call_tool(&tool.name, json!({}))).await?;
+        let envelope = extract_json(&result)?;
+        assert_eq!(envelope["schema_version"], "1", "{} envelope", tool.name);
+        if result.is_error == Some(true) {
+            assert_eq!(envelope["error"]["operation"], tool.name.as_ref());
+        } else {
+            assert_eq!(envelope["operation"], tool.name.as_ref());
+        }
     }
 
-    let manifest_stub = client
+    let list = client
+        .call_tool(call_tool("list_workbooks", json!({})))
+        .await?;
+    assert_ne!(list.is_error, Some(true));
+    let list = extract_json(&list)?;
+    let resource_id = list["data"]["workbooks"][0]["resource_id"]
+        .as_str()
+        .expect("canonical resource id");
+    assert!(resource_id.starts_with("wb:"));
+
+    let sheets = client
         .call_tool(call_tool(
-            "get_manifest_stub",
-            json!({"workbook_or_fork_id":workbook_id}),
+            "list_sheets",
+            json!({"resource_id":resource_id,"include_bounds":true}),
         ))
         .await?;
-    let manifest_stub = extract_json(&manifest_stub)?;
-    assert_eq!(manifest_stub["workbook_id"], workbook_id);
-    assert!(manifest_stub["manifest_yaml"].as_str().is_some());
-    assert!(manifest_stub["sheets"].is_array());
-    assert!(manifest_stub.get("schema_version").is_none());
-    assert_eq!(manifest_stub.as_object().unwrap().len(), 4);
+    assert_ne!(sheets.is_error, Some(true));
+    let sheets = extract_json(&sheets)?;
+    assert_eq!(sheets["operation"], "list_sheets");
+    assert_eq!(sheets["resource_id"], resource_id);
+    assert!(sheets["revision_id"].is_string());
+    assert_eq!(sheets["data"]["sheets"][0]["name"], "Sheet1");
 
     let malformed = client
-        .call_tool(call_tool("list_sheets", json!({"workbook_or_fork_id":42})))
-        .await
-        .expect_err("malformed argument must fail JSON-RPC decoding");
-    assert_eq!(
-        malformed.to_string(),
-        "Mcp error: -32602: failed to deserialize parameters: invalid type: integer `42`, expected a string"
+        .call_tool(call_tool("list_sheets", json!({"resource_id":42})))
+        .await?;
+    assert_eq!(malformed.is_error, Some(true));
+    let malformed = extract_json(&malformed)?;
+    assert_eq!(malformed["schema_version"], "1");
+    assert_eq!(malformed["error"]["code"], "INVALID_REQUEST");
+    assert_eq!(malformed["error"]["operation"], "list_sheets");
+
+    let list_bytes = serde_json::to_vec(&tools)?.len();
+    let baseline_tools = tools
+        .iter()
+        .filter(|tool| {
+            !matches!(
+                tool.name.as_ref(),
+                "sheetport_manifest" | "execute_sheetport" | "inspect_vba"
+            )
+        })
+        .collect::<Vec<_>>();
+    let baseline_bytes = serde_json::to_vec(&baseline_tools)?.len();
+    assert_eq!(baseline_tools.len(), 27);
+    eprintln!(
+        "canonical baseline: 27 tools/{baseline_bytes} bytes; capability-backed: {}/{} bytes",
+        tools.len(),
+        list_bytes
+    );
+    assert!(
+        list_bytes < 71 * 1024,
+        "canonical tools/list projection is {list_bytes} bytes"
     );
 
-    let unknown_field = client
-        .call_tool(call_tool(
-            "list_sheets",
-            json!({"workbook_or_fork_id":workbook_id,"unexpected":true}),
-        ))
-        .await
-        .expect_err("unknown argument must fail JSON-RPC decoding");
-    assert_eq!(
-        unknown_field.to_string(),
-        "Mcp error: -32602: failed to deserialize parameters: unknown field `unexpected`, expected one of `workbook_id`, `workbook_or_fork_id`, `limit`, `offset`, `include_bounds`"
-    );
+    client.cancel().await?;
+    Ok(())
+}
 
-    let missing_resource = client
-        .call_tool(call_tool(
-            "list_sheets",
-            json!({"workbook_or_fork_id":"definitely-missing"}),
-        ))
-        .await
-        .expect_err("missing resource must fail");
-    assert_eq!(
-        missing_resource.to_string(),
-        "Mcp error: -32603: workbook id definitely-missing not found"
-    );
+#[tokio::test(flavor = "multi_thread")]
+async fn live_compat_router_preserves_legacy_shared_routes() -> Result<()> {
+    let workspace = support::TestWorkspace::new();
+    workspace.create_workbook("compat.xlsx", |_| {});
+    let root = workspace.root().to_path_buf();
+    let (transport, _stderr) = TokioChildProcess::builder(
+        Command::new(env!("CARGO_BIN_EXE_agent-spreadsheet-mcp")).configure(move |command| {
+            command.args([
+                "--transport",
+                "stdio",
+                "--workspace-root",
+                root.to_str().expect("UTF-8 workspace"),
+                "--recalc-enabled",
+                "--recalc-backend",
+                "formualizer",
+                "--slim-surface=false",
+            ]);
+        }),
+    )
+    .stderr(Stdio::piped())
+    .spawn()?;
+    let client = ().serve(transport).await?;
 
-    let semantic = client
-        .call_tool(call_tool(
-            "sheet_overview",
-            json!({"workbook_or_fork_id":workbook_id,"sheet_name":"Missing"}),
-        ))
-        .await
-        .expect_err("missing sheet must fail");
-    assert_eq!(
-        semantic.to_string(),
-        "Mcp error: -32603: sheet Missing not found"
-    );
-    assert!(!semantic.to_string().contains("schema_version"));
+    let tools = client.list_all_tools().await?;
+    let names = tools
+        .iter()
+        .map(|tool| tool.name.as_ref())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"close_workbook"));
+    assert!(names.contains(&"mutate_batch"));
+    assert!(names.contains(&"read_cells"));
+    assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
+
+    let list = client
+        .call_tool(call_tool("list_workbooks", json!({"include_paths":false})))
+        .await?;
+    assert_ne!(list.is_error, Some(true));
+    let list = extract_json(&list)?;
+    assert!(list["workbooks"].is_array());
+    assert!(list.get("schema_version").is_none());
+
+    let canonical_only = client.call_tool(call_tool("read_cells", json!({}))).await?;
+    assert_eq!(canonical_only.is_error, Some(true));
+    assert_eq!(extract_json(&canonical_only)?["schema_version"], "1");
 
     client.cancel().await?;
     Ok(())

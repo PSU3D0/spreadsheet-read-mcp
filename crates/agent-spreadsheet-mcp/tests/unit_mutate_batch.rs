@@ -532,64 +532,113 @@ async fn edit_batch_preview_stages_and_does_not_mutate() -> Result<()> {
     Ok(())
 }
 
-const SUBSUMED_TOOLS: &[&str] = &[
-    "transform_batch",
-    "structure_batch",
-    "rules_batch",
-    "style_batch",
-    "sheet_layout_batch",
-    "column_size_batch",
+const LEGACY_013_TOOLS: &[&str] = &[
     "apply_formula_pattern",
+    "apply_staged_change",
+    "checkpoint_fork",
+    "close_workbook",
+    "column_size_batch",
+    "create_fork",
+    "define_name",
+    "delete_checkpoint",
+    "delete_name",
+    "describe_workbook",
+    "discard_fork",
+    "discard_staged_change",
+    "edit_batch",
+    "execute_manifest",
+    "find_formula",
+    "find_value",
+    "formula_trace",
+    "get_changeset",
+    "get_edits",
+    "get_manifest_stub",
+    "grid_export",
+    "grid_import",
+    "inspect_cells",
+    "layout_page",
+    "list_checkpoints",
+    "list_forks",
+    "list_sheets",
+    "list_staged_changes",
+    "list_workbooks",
+    "mutate_batch",
+    "named_ranges",
+    "range_values",
+    "read_table",
+    "recalculate",
     "replace_in_formulas",
+    "restore_checkpoint",
+    "rules_batch",
+    "save_fork",
+    "scan_volatiles",
+    "screenshot_sheet",
+    "sheet_formula_map",
+    "sheet_layout_batch",
+    "sheet_overview",
+    "sheet_page",
+    "sheet_statistics",
+    "sheet_styles",
+    "structure_batch",
+    "style_batch",
+    "table_profile",
+    "transform_batch",
+    "update_name",
+    "vba_module_source",
+    "vba_project_summary",
+    "verify_workbook",
+    "workbook_style_summary",
+    "workbook_summary",
 ];
 
 #[test]
-fn slim_surface_default_hides_subsumed_tools() {
+fn slim_surface_is_exactly_the_available_canonical_registry() {
+    use agent_spreadsheet::operations::{RuntimeCapabilities, operation_registry};
+
     let workspace = support::TestWorkspace::new();
     let config = workspace.config_with(|cfg| {
         cfg.recalc_enabled = true;
-        // default from config parsing is slim_surface=true; assert the support
-        // default matches production default
         assert!(cfg.slim_surface);
     });
-    let server = SpreadsheetServer::from_state(support::app_state_with_config(config));
-    let names = server.tool_names();
+    let state = support::app_state_with_config(config);
+    let mut capabilities = RuntimeCapabilities::from_state(&state);
+    capabilities.vba = false;
+    let mut expected = operation_registry()
+        .iter()
+        .filter(|descriptor| descriptor.is_available(&capabilities))
+        .map(|descriptor| descriptor.name.to_string())
+        .collect::<Vec<_>>();
+    let server = SpreadsheetServer::from_state(state);
+    let mut names = server.tool_names();
+    expected.sort();
+    names.sort();
 
-    assert!(names.iter().any(|n| n == "mutate_batch"));
-    assert!(names.iter().any(|n| n == "edit_batch"));
-    for tool in SUBSUMED_TOOLS {
-        assert!(
-            !names.iter().any(|n| n == tool),
-            "slim surface must not register '{tool}'"
-        );
-    }
+    assert_eq!(names, expected);
+    assert!(!names.iter().any(|name| name == "close_workbook"));
+    assert!(!names.iter().any(|name| name == "mutate_batch"));
 }
 
 #[test]
-fn compat_mode_registers_subsumed_tools() {
+fn compat_mode_registers_every_013_tool_without_duplicate_names() {
     let workspace = support::TestWorkspace::new();
     let config = workspace.config_with(|cfg| {
         cfg.recalc_enabled = true;
+        cfg.vba_enabled = true;
         cfg.slim_surface = false;
     });
     let server = SpreadsheetServer::from_state(support::app_state_with_config(config));
     let names = server.tool_names();
 
-    assert!(names.iter().any(|n| n == "mutate_batch"));
-    for tool in SUBSUMED_TOOLS {
+    for tool in LEGACY_013_TOOLS {
         assert!(
-            names.iter().any(|n| n == tool),
-            "compat mode must register '{tool}'"
+            names.iter().any(|name| name == tool),
+            "compat mode must register legacy tool '{tool}'"
         );
     }
-
-    // And slim mode strictly reduces the surface.
-    let slim_config = workspace.config_with(|cfg| {
-        cfg.recalc_enabled = true;
-    });
-    let slim_server = SpreadsheetServer::from_state(support::app_state_with_config(slim_config));
+    let unique = names.iter().collect::<std::collections::HashSet<_>>();
     assert_eq!(
-        slim_server.tool_names().len(),
-        names.len() - SUBSUMED_TOOLS.len()
+        unique.len(),
+        names.len(),
+        "router must not double-register names"
     );
 }

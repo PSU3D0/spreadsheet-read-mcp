@@ -36,6 +36,12 @@ MATRIX_MD = Path(
         str(REPO_ROOT / "docs/architecture/surface-capability-matrix.md"),
     )
 )
+CANONICAL_OPERATIONS_RS = Path(
+    os.environ.get(
+        "SURFACE_CANONICAL_OPERATIONS_RS",
+        str(REPO_ROOT / "crates/agent-spreadsheet/src/operations.rs"),
+    )
+)
 
 VALID_CLASSIFICATIONS = {"ALL", "CLI_ONLY", "MCP_ONLY", "SHARED_PARTIAL"}
 VALID_WASM_TARGETS = {"mvp", "later", "n/a", "host-owned", "⛔/optional"}
@@ -145,13 +151,24 @@ def discover_cli_commands(cli_source: str) -> set[str]:
 
 
 def discover_mcp_tools(server_source: str) -> set[str]:
-    # Server tool handlers are declared with #[tool(name = "...")].
+    # Compatibility handlers are static attributes; the default MCP router is
+    # projected dynamically from the canonical registry.
     tool_blocks = re.findall(r"#\[tool\((.*?)\)\]", server_source, flags=re.S)
     discovered: set[str] = set()
     for block in tool_blocks:
         match = re.search(r"\bname\s*=\s*\"([a-z0-9_]+)\"", block)
         if match:
             discovered.add(match.group(1))
+
+    if "canonical_tool_router" in server_source:
+        operations = CANONICAL_OPERATIONS_RS.read_text(encoding="utf-8")
+        registry = operations.split("static REGISTRY:", 1)[1].split(
+            "pub fn operation_registry", 1
+        )[0]
+        discovered.update(
+            re.findall(r"descriptor!\(\s*\"([a-z0-9_]+)\"", registry)
+        )
+        discovered.update(re.findall(r"\bname:\s*\"([a-z0-9_]+)\"", registry))
     return discovered
 
 

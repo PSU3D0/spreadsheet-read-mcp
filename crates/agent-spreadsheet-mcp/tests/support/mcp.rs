@@ -11,9 +11,9 @@ use tokio::process::Command;
 
 use super::{TestWorkspace, docker::ensure_image};
 
-pub fn call_tool(name: &'static str, args: Value) -> CallToolRequestParam {
+pub fn call_tool(name: &str, args: Value) -> CallToolRequestParam {
     CallToolRequestParam {
-        name: name.into(),
+        name: name.to_string().into(),
         arguments: args.as_object().cloned(),
     }
 }
@@ -110,6 +110,7 @@ impl McpTestClient {
                     "--transport".into(),
                     "stdio".into(),
                     "--recalc-enabled".into(),
+                    "--slim-surface=false".into(),
                     "--workspace-root".into(),
                     "/data".into(),
                 ]);
