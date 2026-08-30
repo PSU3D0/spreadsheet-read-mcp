@@ -1,226 +1,83 @@
 # agent-spreadsheet-sdk
 
-**`agent-spreadsheet-sdk` is the JavaScript integration layer for agent-spreadsheet — the tool interaction service for agent-based spreadsheet work.**
-
-It lets one application target multiple spreadsheet backends behind a consistent API:
-- **MCP backend** for remote/stateful workflows
-- **WASM/session backend** for embedded or in-process workflows
-
-The goal is not “another transport wrapper.”
-The goal is **one app-facing spreadsheet interaction model** for agent systems.
-
----
-
-## Install
+Backend adapters for the agent-spreadsheet canonical operation protocol.
 
 ```bash
-npm i agent-spreadsheet-sdk
+npm install agent-spreadsheet-sdk
 ```
 
-Node: `>=18`
+Node.js 18 or newer is required.
 
----
+## Canonical dispatch
 
-## What this SDK normalizes
-
-- shared method names across backends
-- tolerance for common input aliases (`camelCase` / `snake_case`)
-- top-level output normalization
-- capability checks for backend-specific flows
-- typed errors for unsupported features and backend failures
-
----
-
-## Backends
-
-### `McpBackend`
-Use when your app talks to a running `agent-spreadsheet-mcp` server or MCP client transport.
-
-Best for:
-- multi-turn agent workflows
-- remote/stateful spreadsheet execution
-- fork lifecycle and staged changes
-
-### `WasmBackend`
-Use when your app embeds a WASM/session runtime.
-
-Best for:
-- local/in-process execution
-- browser or embedded app scenarios
-- session-oriented workflows without MCP transport
-
----
-
-## Quick start
+Both backends expose the same primary API and return the canonical envelope unchanged:
 
 ```js
 const { McpBackend, WasmBackend } = require("agent-spreadsheet-sdk")
 
-const mcp = new McpBackend({ transport: myMcpTransport })
-const wasm = new WasmBackend({ bindings: myWasmBindings })
-
-async function sharedReadFlow(backend, ctx) {
-  const workbook = await backend.describeWorkbook(ctx)
-  const sheets = await backend.listSheets(ctx)
-  const overview = await backend.sheetOverview({ ...ctx, sheetName: sheets[0] })
-  const page = await backend.sheetPage({
-    ...ctx,
-    sheetName: sheets[0],
-    startRow: 1,
-    pageSize: 50,
-    format: "compact"
-  })
-
-  return { workbook, sheets, overview, page }
-}
+const result = await backend.execute("read_cells", {
+  resource_id: "wb:workbook-1",
+  sheet_name: "Revenue",
+  selection: { kind: "range", ranges: ["A1:F50"] }
+})
 ```
 
-Typical context identity:
-- MCP: `{ workbookId: "..." }`
-- WASM/session: `{ sessionId: "..." }`
-- higher-level helper code may use `{ contextId: "..." }`
+Convenience methods are installed from the checked-in canonical registry. For example, `read_cells` provides `readCells(input)`. Use `execute` when operation names are dynamic.
 
----
+The Rust operation registry remains the taxonomy and schema source of truth. `src/generated/canonical-registry.json` is generated, not independently authored:
 
-## Shared methods
-
-### Read / inspection
-- `describeWorkbook(input)`
-- `listSheets(input)`
-- `sheetOverview(input)`
-- `namedRanges(input)`
-- `rangeValues(input)`
-- `readTable(input)`
-- `sheetPage(input)`
-- `findValue(input)`
-- `gridExport(input)`
-
-### Write
-- `transformBatch(input)`
-
-### Verification helpers
-- `verifyWorkbook(input)`
-- `verifyTargets(input)`
-- `verifyErrors(input)`
-
-### Backend-specific lifecycle
-- MCP-oriented: `createFork`, `listForks`, `saveFork`, `discardFork`, staged-change methods
-- WASM/session-oriented: `createSession`, `exportWorkbook`, `disposeSession`
-
-Always branch on capabilities before using backend-specific methods.
-
----
-
-## Capability model
-
-```js
-const caps = backend.getCapabilities()
-
-if (caps.supportsForkLifecycle) {
-  // MCP path
-}
-
-if (caps.supportsVerification) {
-  // verifyWorkbook / verifyTargets / verifyErrors
-}
-
-if (caps.supportsSessionLifecycle) {
-  // WASM/session path
-}
+```bash
+ASP_BINARY=../../target/debug/asp npm run generate:registry
+npm test
 ```
 
-Unsupported backend-specific calls throw `CapabilityError` with code:
-- `UNSUPPORTED_CAPABILITY`
+Generation consumes `asp operations` and `asp schema <operation>`. The Node drift test compares every checked-in descriptor and schema with those commands when `ASP_BINARY`, `target/debug/asp`, or `target/release/asp` is available.
 
-This is a feature, not a footgun: **capabilities are the contract for mixed-backend safety**.
-
----
-
-## Error model
-
-SDK exports:
-- `SpreadsheetSdkError`
-- `CapabilityError`
-- `BackendOperationError`
-
-Common normalized codes:
-- `INVALID_ARGUMENT`
-- `INVALID_RESPONSE`
-- `UNSUPPORTED_CAPABILITY`
-- backend-provided machine codes when available
-
----
-
-## MCP transport contract
-
-`McpBackend` accepts either:
-- a generic `invoke(operation, params)` transport
-- or transport objects with per-operation methods
-
-Example:
+## MCP
 
 ```js
 const backend = new McpBackend({
   transport: {
-    async invoke(operation, params) {
-      return client.callTool(operation, params)
+    invoke(operation, input) {
+      return mcpClient.callTool(operation, input)
     }
-  }
+  },
+  operations: ["describe_workbook", "read_cells", "write"]
 })
 ```
 
----
+`operations` should contain the server's advertised canonical operations. When omitted, MCP defaults to the generated native registry for compatibility. A transport may instead implement methods named after canonical operations.
 
-## WASM bindings contract
+## WASM
 
-`WasmBackend` expects bindings shaped like:
-- `createSession`
-- `describeWorkbook`
-- `namedRanges`
-- `sheetOverview`
-- `listSheets`
-- `rangeValues`
-- `findValue`
-- `readTable`
-- `sheetPage`
-- `gridExport`
-- `transformBatch`
-- `exportWorkbook`
-- `disposeSession`
+WASM capabilities are explicit: no canonical operation is advertised unless `executeOperation` exists and `operations` (or `bindings.supportedOperations`) declares it.
 
-These map to the in-repo `agent-spreadsheet-wasm` work.
+```js
+const backend = new WasmBackend({
+  bindings: wasmBindings,
+  operations: ["describe_workbook", "read_cells"]
+})
 
----
+const { resource_id } = await backend.bindWorkbook({ workbookBytes })
+const result = await backend.execute("describe_workbook", { resource_id })
+```
 
-## When to use this SDK
+The WASM JSON binding contract is:
 
-Use `agent-spreadsheet-sdk` when you are building:
-- an app that may swap between MCP and embedded execution
-- a higher-level agent workflow system that should not care about transport details
-- a UI or service that needs one normalized spreadsheet interaction model
+```text
+executeOperation(sessionId, operationName, paramsJson) -> resultJson
+```
 
-Use the CLI directly when you only need shell/file workflows.
-Use MCP directly when your system already lives entirely inside an MCP runtime.
+The adapter strips the `session:` prefix for the binding, serializes only for transport, and parses the returned JSON. It does not reshape canonical responses. Resource binding, byte export, and session disposal remain adapter-specific.
 
----
+## Capabilities and errors
 
-## Release lanes
+`backend.getCapabilities().operations` is the authoritative supported operation list. Compatibility booleans such as `supportsVerification` are derived from that list rather than independently configured. Resource capabilities (`resourceBinding`, `resourceExport`) are derived from real adapter bindings.
 
-This package is published from `sdk-vX.Y.Z` tags.
+Unsupported calls throw `CapabilityError` with code `UNSUPPORTED_CAPABILITY`. Canonical success and error envelopes, including revision and proof metadata, pass through without response normalization. Transport rejections also remain unchanged.
 
-Dist-tag policy:
-- stable -> `latest`
-- `-rc.N` -> `rc`
-- `-beta.N` -> `beta`
-- `-alpha.N` -> `alpha`
+## Deprecated compatibility methods
 
----
+The 0.13 method names remain as compatibility projections where they compile directly to a canonical operation. They translate legacy inputs, call `execute`, and return the canonical envelope's `data` field. Examples include `rangeValues` -> `read_cells`, `findValue` -> `search_values`, and batch/name helpers -> `write`.
 
-## Related packages
-
-- `agent-spreadsheet` — npm CLI wrapper
-- `agent-spreadsheet` — Rust semantic core
-- `agent-spreadsheet-mcp` — MCP server
-- `agent-spreadsheet-wasm` — in-repo WASM-facing crate
-
-Repo: <https://github.com/PSU3D0/agent-spreadsheet>
+New code should use canonical inputs with `execute` or the canonical convenience methods. Backend-specific lifecycle methods (`createSession`, `exportWorkbook`, and `disposeSession`) remain available for WASM resource handling.

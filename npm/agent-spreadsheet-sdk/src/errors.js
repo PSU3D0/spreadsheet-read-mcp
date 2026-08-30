@@ -27,7 +27,7 @@ class SpreadsheetSdkError extends Error {
 
 class CapabilityError extends SpreadsheetSdkError {
   /**
-   * @param {{ backend: string, capability: string, method?: string }} params
+   * @param {{ backend: string, capability: string, method?: string, operation?: string }} params
    */
   constructor(params) {
     super(
@@ -35,9 +35,9 @@ class CapabilityError extends SpreadsheetSdkError {
       {
         code: "UNSUPPORTED_CAPABILITY",
         backend: params.backend,
-        operation: params.method,
+        operation: params.operation || params.method,
         capability: params.capability,
-        details: { method: params.method }
+        details: { method: params.method, operation: params.operation }
       }
     )
     this.name = "CapabilityError"
