@@ -33,7 +33,8 @@
   ],
   "scripts": {
     "generate:registry": "node scripts/generate-canonical-registry.js",
-    "test": "node --test"
+    "test": "node --test",
+    "test:browser": "node scripts/run-generated-wasm-browser.js"
   },
   "peerDependencies": {
     "just-bash": "^3.4.2"
@@ -44,7 +45,8 @@
     }
   },
   "devDependencies": {
-    "just-bash": "3.4.2"
+    "just-bash": "3.4.2",
+    "playwright-core": "1.62.1"
   },
   "engines": {
     "node": ">=18"
