@@ -170,6 +170,10 @@ fn registry_schemas_are_closed_typed_and_discriminated() {
             "formula_map",
             "profile_table",
             "sheet_statistics",
+            "screenshot_sheet",
+            "sheetport_manifest",
+            "execute_sheetport",
+            "inspect_vba",
             "write",
             "create_fork",
             "list_forks",
@@ -186,7 +190,14 @@ fn registry_schemas_are_closed_typed_and_discriminated() {
     let capabilities = RuntimeCapabilities::native();
     for descriptor in registry {
         assert_eq!(descriptor.schema_version, "1");
-        assert!(descriptor.is_available(&capabilities));
+        if descriptor.name == "screenshot_sheet" {
+            assert_eq!(
+                descriptor.is_available(&capabilities),
+                cfg!(feature = "recalc-libreoffice")
+            );
+        } else {
+            assert!(descriptor.is_available(&capabilities));
+        }
         assert_eq!(
             descriptor.risk_ceiling,
             match descriptor.name {

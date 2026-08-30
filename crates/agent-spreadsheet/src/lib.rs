@@ -1,6 +1,7 @@
 pub mod analysis;
 #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 pub mod canonical_lifecycle;
+pub mod canonical_optional;
 pub mod canonical_reads;
 #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 pub mod canonical_write;

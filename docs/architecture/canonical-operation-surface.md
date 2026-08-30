@@ -210,7 +210,7 @@ These action unions are appropriate because they operate on one resource identit
 
 ### Optional capability groups
 
-These operations are registered only when their backing capability is enabled:
+These operations are registered only when their backing capability is enabled. The Wave 3D registry uses separate `screenshot_rendering`, `sheetport`, and `vba` predicates; discovery omits unavailable operations rather than advertising a callable stub.
 
 | Operation | Capability |
 |---|---|

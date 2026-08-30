@@ -1,0 +1,364 @@
+mod support;
+
+use agent_spreadsheet::canonical_optional::{InspectVbaData, SheetportManifestData};
+use agent_spreadsheet::model::WorkbookId;
+use agent_spreadsheet::operations::{
+    CanonicalErrorCode, ResourceId, RuntimeCapabilities, decode_operation, execute_operation_json,
+    operation_descriptor, operations_discovery,
+};
+use agent_spreadsheet::tools::{self, ListWorkbooksParams};
+use serde_json::{Value, json};
+use std::io::Write;
+use std::path::PathBuf;
+
+fn operation_names(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .expect("discovery array")
+        .iter()
+        .filter_map(|entry| entry["name"].as_str().map(str::to_string))
+        .collect()
+}
+
+#[test]
+fn optional_capabilities_are_not_advertised_when_unbacked() {
+    let none = RuntimeCapabilities::default();
+    let names = operation_names(&operations_discovery(&none));
+    for optional in [
+        "screenshot_sheet",
+        "sheetport_manifest",
+        "execute_sheetport",
+        "inspect_vba",
+    ] {
+        assert!(!names.iter().any(|name| name == optional));
+    }
+
+    let enabled = RuntimeCapabilities {
+        workbook_read: true,
+        screenshot_rendering: true,
+        sheetport: true,
+        vba: true,
+        ..RuntimeCapabilities::default()
+    };
+    let names = operation_names(&operations_discovery(&enabled));
+    for optional in [
+        "screenshot_sheet",
+        "sheetport_manifest",
+        "execute_sheetport",
+        "inspect_vba",
+    ] {
+        assert!(
+            names.iter().any(|name| name == optional),
+            "missing {optional}"
+        );
+    }
+}
+
+#[test]
+fn optional_action_discriminants_are_closed_and_schemas_compile() {
+    let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/canonical");
+    let actions: Value = serde_json::from_str(
+        &std::fs::read_to_string(fixture_root.join("optional_actions.json")).unwrap(),
+    )
+    .unwrap();
+    for action in actions.as_array().unwrap() {
+        decode_operation(
+            action["operation"].as_str().unwrap(),
+            action["payload"].clone(),
+        )
+        .expect("golden optional action");
+    }
+    let errors: Value = serde_json::from_str(
+        &std::fs::read_to_string(fixture_root.join("optional_errors.json")).unwrap(),
+    )
+    .unwrap();
+    for error_case in errors.as_array().unwrap() {
+        let error = decode_operation(
+            error_case["operation"].as_str().unwrap(),
+            error_case["payload"].clone(),
+        )
+        .expect_err("golden optional decode error");
+        assert_eq!(
+            serde_json::to_value(error.error.code).unwrap(),
+            error_case["code"]
+        );
+    }
+
+    for operation in [
+        "screenshot_sheet",
+        "sheetport_manifest",
+        "execute_sheetport",
+        "inspect_vba",
+    ] {
+        let descriptor = operation_descriptor(operation).expect("optional descriptor");
+        jsonschema::validator_for(&(descriptor.input_schema)()).expect("valid input schema");
+        jsonschema::validator_for(&(descriptor.output_schema)()).expect("valid output schema");
+    }
+
+    for action in [
+        "candidates",
+        "schema",
+        "validate",
+        "normalize",
+        "bind_check",
+    ] {
+        let payload = match action {
+            "candidates" => json!({"action":action,"resource_id":"wb:abc"}),
+            "bind_check" => json!({
+                "action":action,
+                "resource_id":"wb:abc",
+                "manifest_yaml":"spec: fio"
+            }),
+            "validate" | "normalize" => {
+                json!({"action":action,"manifest_yaml":"spec: fio"})
+            }
+            _ => json!({"action":action}),
+        };
+        decode_operation("sheetport_manifest", payload).expect(action);
+    }
+    let error = decode_operation("sheetport_manifest", json!({"action":"load_path"}))
+        .expect_err("unknown closed action");
+    assert_eq!(error.error.code, CanonicalErrorCode::InvalidRequest);
+    let error = decode_operation("inspect_vba", json!({"view":"file","resource_id":"wb:abc"}))
+        .expect_err("unknown closed view");
+    assert_eq!(error.error.code, CanonicalErrorCode::InvalidRequest);
+}
+
+#[tokio::test]
+async fn manifest_schema_validate_and_normalize_are_portable_content_actions() {
+    let workspace = support::TestWorkspace::new();
+    let state = workspace.app_state();
+
+    let schema = execute_operation_json(
+        state.clone(),
+        "sheetport_manifest",
+        json!({"action":"schema"}),
+    )
+    .await
+    .expect("schema action");
+    assert!(schema.resource_id.is_none());
+    let schema_envelope = serde_json::to_value(&schema).unwrap();
+    let output_schema = (operation_descriptor("sheetport_manifest")
+        .unwrap()
+        .output_schema)();
+    jsonschema::validator_for(&output_schema)
+        .unwrap()
+        .validate(&schema_envelope)
+        .expect("schema action output matches registry schema");
+    assert!(matches!(
+        serde_json::from_value::<SheetportManifestData>(schema.data).unwrap(),
+        SheetportManifestData::Schema { .. }
+    ));
+
+    let invalid = execute_operation_json(
+        state.clone(),
+        "sheetport_manifest",
+        json!({"action":"validate","manifest_yaml":"spec: fio"}),
+    )
+    .await
+    .expect("validation result");
+    match serde_json::from_value::<Value>(invalid.data).unwrap() {
+        Value::Object(value) => {
+            assert_eq!(value["action"], "validate");
+            assert_eq!(value["valid"], false);
+            assert!(!value["issues"].as_array().unwrap().is_empty());
+        }
+        _ => panic!("validation object"),
+    }
+
+    let oversized = "x".repeat(1_048_577);
+    let error = execute_operation_json(
+        state,
+        "sheetport_manifest",
+        json!({"action":"normalize","manifest_yaml":oversized}),
+    )
+    .await
+    .expect_err("bounded manifest");
+    assert_eq!(error.error.code, CanonicalErrorCode::InvalidRequest);
+    assert!(!error.error.message.contains('/'));
+}
+
+#[tokio::test]
+async fn execute_sheetport_returns_typed_results_coverage_and_errors() {
+    let workspace = support::TestWorkspace::new();
+    workspace.create_workbook("empty.xlsx", |_| {});
+    let state = workspace.app_state();
+    let list = tools::list_workbooks(
+        state.clone(),
+        ListWorkbooksParams {
+            slug_prefix: None,
+            folder: None,
+            path_glob: None,
+            limit: None,
+            offset: None,
+            include_paths: Some(false),
+        },
+    )
+    .await
+    .unwrap();
+    let resource_id = ResourceId::bind_workbook(&list.workbooks[0].workbook_id).unwrap();
+    let candidates = execute_operation_json(
+        state.clone(),
+        "sheetport_manifest",
+        json!({"action":"candidates","resource_id":resource_id.as_str()}),
+    )
+    .await
+    .expect("candidate manifest");
+    let manifest_yaml = candidates.data["manifest_yaml"].as_str().unwrap();
+    let execution = execute_operation_json(
+        state,
+        "execute_sheetport",
+        json!({
+            "resource_id":resource_id.as_str(),
+            "manifest_yaml":manifest_yaml,
+            "inputs":{}
+        }),
+    )
+    .await
+    .expect("empty SheetPort execution");
+    assert_eq!(execution.data["status"], "completed");
+    assert_eq!(execution.data["coverage"]["state"], "complete");
+    assert_eq!(execution.data["coverage"]["declared_input_ports"], 0);
+    assert_eq!(execution.data["coverage"]["declared_output_ports"], 0);
+    assert_eq!(execution.data["results"], json!({}));
+    assert_eq!(execution.data["errors"], json!([]));
+}
+
+async fn vba_state() -> (
+    support::TestWorkspace,
+    std::sync::Arc<agent_spreadsheet::state::AppState>,
+    WorkbookId,
+    ResourceId,
+    PathBuf,
+) {
+    let workspace = support::TestWorkspace::new();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../agent-spreadsheet-mcp/tests/test_files/vba_minimal.xlsm");
+    let path = workspace.copy_workbook(&fixture, "macro.xlsm");
+    let state = workspace.app_state();
+    let list = tools::list_workbooks(
+        state.clone(),
+        ListWorkbooksParams {
+            slug_prefix: None,
+            folder: None,
+            path_glob: None,
+            limit: None,
+            offset: None,
+            include_paths: Some(false),
+        },
+    )
+    .await
+    .expect("list macro workbook");
+    let workbook_id = list.workbooks[0].workbook_id.clone();
+    let resource_id = ResourceId::bind_workbook(&workbook_id).unwrap();
+    (workspace, state, workbook_id, resource_id, path)
+}
+
+#[tokio::test]
+async fn vba_module_source_cursor_is_bounded_fingerprinted_and_revision_bound() {
+    let (workspace, state, workbook_id, resource_id, path) = vba_state().await;
+    let summary = execute_operation_json(
+        state.clone(),
+        "inspect_vba",
+        json!({
+            "view":"project_summary",
+            "resource_id":resource_id.as_str(),
+            "limit_modules":1,
+            "include_references":false
+        }),
+    )
+    .await
+    .expect("project summary");
+    let module_name = match serde_json::from_value::<InspectVbaData>(summary.data).unwrap() {
+        InspectVbaData::ProjectSummary { modules, .. } => modules[0].name.clone(),
+        _ => panic!("summary branch"),
+    };
+
+    let first = execute_operation_json(
+        state.clone(),
+        "inspect_vba",
+        json!({
+            "view":"module_source",
+            "resource_id":resource_id.as_str(),
+            "module_name":module_name,
+            "limit_lines":1
+        }),
+    )
+    .await
+    .expect("first source page");
+    let cursor = match serde_json::from_value::<InspectVbaData>(first.data).unwrap() {
+        InspectVbaData::ModuleSource {
+            returned_lines,
+            next_cursor,
+            source,
+            ..
+        } => {
+            assert_eq!(returned_lines, 1);
+            assert_eq!(source.lines().count(), 1);
+            next_cursor.expect("more source")
+        }
+        _ => panic!("source branch"),
+    };
+    assert!(!cursor.contains(&module_name));
+
+    let mismatch = execute_operation_json(
+        state.clone(),
+        "inspect_vba",
+        json!({
+            "view":"module_source",
+            "resource_id":resource_id.as_str(),
+            "module_name":"DifferentModule",
+            "limit_lines":1,
+            "cursor":cursor
+        }),
+    )
+    .await
+    .expect_err("request fingerprint mismatch");
+    assert_eq!(mismatch.error.code, CanonicalErrorCode::CursorMismatch);
+
+    state.close_workbook(&workbook_id).unwrap();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .unwrap()
+        .write_all(b"\0")
+        .unwrap();
+    let stale_state = workspace.app_state();
+    let stale = execute_operation_json(
+        stale_state,
+        "inspect_vba",
+        json!({
+            "view":"module_source",
+            "resource_id":resource_id.as_str(),
+            "module_name":module_name,
+            "limit_lines":1,
+            "cursor":cursor
+        }),
+    )
+    .await
+    .expect_err("revision-bound cursor");
+    assert_eq!(stale.error.code, CanonicalErrorCode::StaleCursor);
+}
+
+#[cfg(all(unix, feature = "recalc"))]
+#[tokio::test]
+async fn screenshot_rejects_symlinked_workspace_output_before_rendering() {
+    use agent_spreadsheet::canonical_optional::{ScreenshotSheetRequest, screenshot_sheet};
+    use std::os::unix::fs::symlink;
+
+    let workspace = support::TestWorkspace::new();
+    let outside = tempfile::tempdir().unwrap();
+    symlink(outside.path(), workspace.path("screenshots")).unwrap();
+    let state = workspace.app_state();
+    let error = screenshot_sheet(
+        state,
+        ScreenshotSheetRequest {
+            resource_id: serde_json::from_value(json!("wb:abc")).unwrap(),
+            sheet_name: "Sheet1".to_string(),
+            range: None,
+        },
+    )
+    .await
+    .expect_err("symlink rejected");
+    assert!(error.to_string().contains("real directory"));
+}

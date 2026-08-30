@@ -1,0 +1,11 @@
+[
+  {"operation":"screenshot_sheet","payload":{"resource_id":"wb:abc","sheet_name":"Sheet1","range":"A1:C10"}},
+  {"operation":"sheetport_manifest","payload":{"action":"candidates","resource_id":"wb:abc"}},
+  {"operation":"sheetport_manifest","payload":{"action":"schema"}},
+  {"operation":"sheetport_manifest","payload":{"action":"validate","manifest_yaml":"spec: fio"}},
+  {"operation":"sheetport_manifest","payload":{"action":"normalize","manifest_yaml":"spec: fio"}},
+  {"operation":"sheetport_manifest","payload":{"action":"bind_check","resource_id":"wb:abc","manifest_yaml":"spec: fio"}},
+  {"operation":"execute_sheetport","payload":{"resource_id":"wb:abc","manifest_yaml":"spec: fio","inputs":{"rate":{"kind":"number","value":0.05}}}},
+  {"operation":"inspect_vba","payload":{"view":"project_summary","resource_id":"wb:abc","limit_modules":25}},
+  {"operation":"inspect_vba","payload":{"view":"module_source","resource_id":"wb:abc","module_name":"ThisWorkbook","limit_lines":100}}
+]

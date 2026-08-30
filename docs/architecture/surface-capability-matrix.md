@@ -1,6 +1,6 @@
 # Surface Capability Matrix (CLI / MCP / WASM / SDK)
 
-Status: active migration baseline (canonical registry Wave 3B additive write surface)
+Status: active migration baseline (canonical registry Wave 3D optional capability surface)
 Owner: Tranche 35 (tickets/35-js-surface-migration)
 
 This matrix is the planning baseline for cross-surface migration.
@@ -59,12 +59,12 @@ Boundary contract: `docs/architecture/surface-boundary-rules.md`
 | `write batch sheet-layout` | `sheet_layout_batch` | ALL | `core.write.sheet_layout_batch` | later | Shared write primitive | `crates/agent-spreadsheet/src/cli/commands/write.rs::sheet_layout_batch` | `crates/agent-spreadsheet/tests/core_runtime_parity.rs` |
 | `write batch rules` | `rules_batch` | ALL | `core.write.rules_batch` | later | Shared write primitive | `crates/agent-spreadsheet/src/cli/commands/write.rs::rules_batch` | `crates/agent-spreadsheet/tests/core_runtime_parity.rs` |
 | `write formulas replace` | `replace_in_formulas` | ALL | `core.write.replace_in_formulas` | later | Formula-only find/replace with dry-run | `crates/agent-spreadsheet/src/cli/commands/write.rs::replace_in_formulas` | `crates/agent-spreadsheet/tests/unit_replace_in_formulas.rs` |
-| `sheetport manifest candidates` | `get_manifest_stub` | SHARED_PARTIAL | `core.sheetport.manifest_stub` | later | Naming differs | `crates/agent-spreadsheet/src/cli/commands/read.rs::sheetport_manifest_candidates` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
-| `sheetport manifest schema` | _(none today)_ | CLI_ONLY | `adapter-cli.sheetport_schema` | n/a | Local schema print UX | `crates/agent-spreadsheet/src/cli/commands/read.rs::sheetport_manifest_schema` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
-| `sheetport manifest validate` | _(none today)_ | CLI_ONLY | `adapter-cli.sheetport_validate_yaml` | n/a | Local manifest file validation | `crates/agent-spreadsheet/src/cli/commands/read.rs::sheetport_manifest_validate` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
-| `sheetport manifest normalize` | _(none today)_ | CLI_ONLY | `adapter-cli.sheetport_normalize_yaml` | n/a | Local file transform concern | `crates/agent-spreadsheet/src/cli/commands/read.rs::sheetport_manifest_normalize` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
-| `sheetport bind-check` | _(none direct)_ | SHARED_PARTIAL | `core.sheetport.bind_check` | later | Could be unified later | `crates/agent-spreadsheet/src/cli/commands/read.rs::sheetport_bind_check` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
-| `sheetport run` | `execute_manifest` | ALL | `core.sheetport.execute_manifest` | later | Shared core semantics expected | `crates/agent-spreadsheet/src/cli/commands/read.rs::sheetport_run` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
+| `sheetport manifest candidates` | `get_manifest_stub` | ALL | `canonical_optional.sheetport_manifest` | later | Legacy aliases share canonical candidate semantics | `crates/agent-spreadsheet/src/cli/commands/read.rs::sheetport_manifest_candidates` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
+| `sheetport manifest schema` | `sheetport_manifest` | ALL | `canonical_optional.sheetport_schema` | later | CLI only owns printing; schema semantics are core | `crates/agent-spreadsheet/src/cli/commands/read.rs::sheetport_manifest_schema` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
+| `sheetport manifest validate` | `sheetport_manifest` | ALL | `canonical_optional.validate_manifest_content` | later | CLI owns file input; core validates portable content | `crates/agent-spreadsheet/src/cli/commands/read.rs::sheetport_manifest_validate` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
+| `sheetport manifest normalize` | `sheetport_manifest` | ALL | `canonical_optional.normalize_manifest_content` | later | CLI owns file output; core normalizes portable content | `crates/agent-spreadsheet/src/cli/commands/read.rs::sheetport_manifest_normalize` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
+| `sheetport bind-check` | `sheetport_manifest` | ALL | `canonical_optional.bind_check_manifest_content` | later | Legacy CLI response remains compatible | `crates/agent-spreadsheet/src/cli/commands/read.rs::sheetport_bind_check` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
+| `sheetport run` | `execute_manifest` | ALL | `canonical_optional.execute_sheetport` | later | Canonical layer adds typed values and explicit coverage/errors | `crates/agent-spreadsheet/src/cli/commands/read.rs::sheetport_run` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
 | `workbook recalculate` | `recalculate` | SHARED_PARTIAL | `core.recalc.recalculate` | later | Backend constraints in WASM | `crates/agent-spreadsheet/src/cli/commands/recalc.rs::recalculate` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
 | `verify proof` | `verify_workbook` | SHARED_PARTIAL | `core.verify.compare_workbooks` | later | Shared proof contract across CLI + MCP; current inputs are file paths in CLI vs workbook/fork ids in MCP; SDK exposes MCP helpers while WASM parity is later | `crates/agent-spreadsheet/src/cli/commands/verify.rs::verify` | `crates/agent-spreadsheet/tests/cli_integration.rs` |
 | `write append` | `write` (`append_rows`) | ALL | `core.write_planner.apply_append_rows` | later | Core owns region/footer append policy and canonical enums; CLI parses file/row inputs and projects plans | `crates/agent-spreadsheet/src/core/write_planner.rs` | `crates/agent-spreadsheet/tests/canonical_write.rs` |
@@ -145,7 +145,7 @@ Boundary contract: `docs/architecture/surface-boundary-rules.md`
 
 ## C) Canonical registry migration status
 
-Wave 3A registers the complete canonical discovery/read/search/analysis surface. Wave 3B additively registers canonical `write`. Wave 3C registers the native lifecycle/history/proof operations in the core registry. None of these waves changes the default MCP router. `asp operations`, `asp schema <operation>`, and `asp op <operation>` derive lookup and schemas from the registry.
+Wave 3A registers the canonical discovery/read/search/analysis surface. Wave 3B adds `write`, Wave 3C adds lifecycle/history/proof, and Wave 3D adds capability-gated rendering, SheetPort, and VBA operations. None of these waves changes the default MCP router. `asp operations`, `asp schema <operation>`, and `asp op <operation>` derive lookup and schemas from the registry.
 
 | Canonical operation | Existing compatibility projection | Dispatcher implementation | Capability | Risk |
 |---|---|---|---|---|
@@ -170,6 +170,10 @@ Wave 3A registers the complete canonical discovery/read/search/analysis surface.
 | `get_changes` | legacy `get_edits`/`get_changeset` remain unchanged | honest `view.kind` union: stored canonical operation audit or direct fork-base net diff | `workbook_write` | low |
 | `checkpoint` | four legacy checkpoint tools remain unchanged | action union with CAS mutations; atomic restore reports removed operations/stages and retained/invalidated checkpoints | `workbook_write` | destructive ceiling; request-aware low/moderate/high/destructive |
 | `staged_change` | three legacy staging tools remain unchanged | action union; canonical bundles bind applicability to base content revision, replay through the write dispatcher, and are consumed only after success | `workbook_write` | destructive ceiling; request-aware low/moderate/destructive |
+| `screenshot_sheet` | legacy MCP screenshot tool remains unchanged | bounded LibreOffice render persisted as a content-addressed PNG handle; workspace and symlink checks prevent path escape and the response exposes no server path | `screenshot_rendering` | low |
+| `sheetport_manifest` | legacy CLI hierarchy and `get_manifest_stub` remain unchanged | closed candidates/schema/validate/normalize/bind_check action union over portable manifest content | `sheetport` | low |
+| `execute_sheetport` | legacy `sheetport run` and `execute_manifest` remain unchanged | closed typed values with declared/returned port coverage and structured result errors | `sheetport` | low |
+| `inspect_vba` | legacy VBA summary/source tools remain unchanged | closed project_summary/module_source views with bounded pages and revision/request-bound opaque cursors; stream names, debug bodies, and paths are omitted | `vba` | low |
 
 Canonical responses use the versioned operation envelope and state reads carry `revision_id`. Value-bearing reads expose calculation state. Merged responses echo branch discriminants. Checked-in full JSON fixtures cover both branches of `describe_workbook`, `read_cells`, `analyze_styles`, and `search_formulas`, plus every unbranched operation.
 
