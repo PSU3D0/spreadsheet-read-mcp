@@ -125,6 +125,8 @@ def discover_cli_commands(cli_source: str) -> set[str]:
         commands.add("operations")
     if "Op" in top_level:
         commands.add("op")
+    if "Registry" in top_level:
+        commands.add("registry --all")
     if "Schema" in top_level:
         commands.add("schema")
     if "Example" in top_level:
@@ -166,7 +168,7 @@ def discover_mcp_tools(server_source: str) -> set[str]:
             "pub fn operation_registry", 1
         )[0]
         discovered.update(
-            re.findall(r"descriptor!\(\s*\"([a-z0-9_]+)\"", registry)
+            re.findall(r"descriptor(?:_adapters)?!\(\s*\"([a-z0-9_]+)\"", registry)
         )
         discovered.update(re.findall(r"\bname:\s*\"([a-z0-9_]+)\"", registry))
     return discovered

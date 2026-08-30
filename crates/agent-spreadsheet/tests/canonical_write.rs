@@ -216,6 +216,94 @@ fn asp_op_write_previews_and_applies_non_empty_pattern_and_gradient_fills() {
 }
 
 #[test]
+fn human_table_append_matches_canonical_write_bytes_and_rich_detail() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input.xlsx");
+    let human_output = temp.path().join("human.xlsx");
+    let canonical_output = temp.path().join("canonical.xlsx");
+    let rows_path = temp.path().join("rows.json");
+    let mut book = umya_spreadsheet::new_file();
+    let sheet = book.get_sheet_by_name_mut("Sheet1").unwrap();
+    sheet.get_cell_mut("C1").set_value("Name");
+    sheet.get_cell_mut("D1").set_value("Amount");
+    sheet.get_cell_mut("C2").set_value("Alice");
+    sheet.get_cell_mut("D2").set_value_number(10.0);
+    sheet.get_cell_mut("C3").set_value("Bob");
+    sheet.get_cell_mut("D3").set_value_number(20.0);
+    sheet.get_cell_mut("C4").set_value("Total");
+    sheet.get_cell_mut("D4").set_formula("SUM(D2:D3)");
+    let mut table = umya_spreadsheet::structs::Table::new("SalesTable", ("C1", "D4"));
+    table.set_display_name("SalesTable");
+    sheet.add_table(table);
+    umya_spreadsheet::writer::xlsx::write(&book, &input).unwrap();
+    std::fs::write(&rows_path, r#"{"rows":[["Cara",30]]}"#).unwrap();
+
+    let human = assert_cmd::cargo::cargo_bin_cmd!("asp")
+        .args([
+            "append-region",
+            input.to_str().unwrap(),
+            "--sheet",
+            "Sheet1",
+            "--table-name",
+            "SalesTable",
+            "--rows",
+            &format!("@{}", rows_path.display()),
+            "--output",
+            human_output.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        human.status.success(),
+        "{}",
+        String::from_utf8_lossy(&human.stderr)
+    );
+    let human_json: Value = serde_json::from_slice(&human.stdout).unwrap();
+
+    let payload = json!({
+        "expected_revision":hash_file_sha256_hex(&input).unwrap(),
+        "mode":"apply",
+        "ops":[{
+            "kind":"append_rows",
+            "sheet_name":"Sheet1",
+            "table_name":"SalesTable",
+            "rows":[[{"v":"Cara"},{"v":30}]],
+            "footer_policy":"auto"
+        }]
+    });
+    let canonical = run_asp_write(&input, &payload, Some(&canonical_output));
+    assert!(
+        canonical.status.success(),
+        "{}",
+        String::from_utf8_lossy(&canonical.stderr)
+    );
+    let canonical_json: Value = serde_json::from_slice(&canonical.stdout).unwrap();
+    let detail = &canonical_json["data"]["results"][0]["detail"];
+
+    assert_eq!(
+        std::fs::read(&human_output).unwrap(),
+        std::fs::read(&canonical_output).unwrap()
+    );
+    for field in [
+        "target_kind",
+        "table_name",
+        "region_bounds",
+        "footer_row",
+        "insert_at_row",
+        "target_anchor",
+        "target_range",
+        "confidence",
+        "warnings",
+    ] {
+        assert_eq!(
+            human_json[field], detail[field],
+            "rich detail field {field}"
+        );
+    }
+    assert_eq!(detail["target_anchor"], "C4");
+}
+
+#[test]
 fn asp_op_write_rejects_unknown_pattern_fill_fields() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("input.xlsx");

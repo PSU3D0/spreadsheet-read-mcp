@@ -317,7 +317,8 @@ Legacy flat commands are still normalized to the new nested surface where practi
 When an agent is unsure of payload shape, it can ask the tool directly:
 
 ```bash
-asp operations
+asp operations                  # CLI-supported runtime subset
+asp registry --all              # complete host-independent registry + schemas
 asp schema read_cells
 asp example read_cells
 asp schema write batch transform
@@ -330,10 +331,11 @@ Canonical machine calls use the same registry and dispatcher as other surfaces. 
 
 ```bash
 asp op read_cells --bind data.xlsx --json '{"sheet_name":"Sheet1","selection":{"kind":"range","ranges":["A1:C10"]}}'
+asp op verify_workbook --baseline base.xlsx --bind current.xlsx --json '{}'
 echo '{"action":"schema"}' | asp op sheetport_manifest
 ```
 
-Canonical write `mode=apply` requires exactly one of `--output <path>` or `--in-place`; preview and stage accept neither. This is a core design principle: **the surface should explain itself to the agent**.
+Canonical mutable CLI calls require exactly one of `--output <path>` or `--in-place`; pure write preview accepts neither. Durable fork, checkpoint, stage, and history operations are intentionally absent from stateless CLI discovery. This is a core design principle: **the surface should explain itself to the agent**.
 
 ---
 

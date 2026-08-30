@@ -369,7 +369,12 @@ pub enum ImportAndHelperOp {
     CloneRow {
         sheet_name: String,
         source_row: u32,
-        insert_at: u32,
+        #[serde(default)]
+        before: Option<u32>,
+        #[serde(default)]
+        after: Option<u32>,
+        #[serde(default)]
+        insert_at: Option<u32>,
         #[serde(default = "default_clone_count")]
         count: u32,
         #[serde(default)]
@@ -382,7 +387,12 @@ pub enum ImportAndHelperOp {
     CloneRowBand {
         sheet_name: String,
         source_rows: String,
-        insert_at: u32,
+        #[serde(default)]
+        before: Option<u32>,
+        #[serde(default)]
+        after: Option<u32>,
+        #[serde(default)]
+        insert_at: Option<u32>,
         #[serde(default = "default_repeat")]
         repeat: u32,
         #[serde(default)]
@@ -907,31 +917,46 @@ fn validate_request(request: &WriteRequest) -> Result<()> {
             }
             WriteOp::ImportAndHelper(ImportAndHelperOp::CloneRow {
                 source_row,
+                before,
+                after,
                 insert_at,
                 count,
                 ..
-            }) if *source_row == 0
-                || *insert_at == 0
-                || *count == 0
-                || insert_at.saturating_add(*count) > 1_048_577 =>
-            {
-                return Err(invalid("clone row fields exceed XLSX bounds"));
+            }) => {
+                let anchors = [*before, *after, *insert_at];
+                let selected = anchors.into_iter().flatten().collect::<Vec<_>>();
+                if *source_row == 0
+                    || *count == 0
+                    || selected.len() != 1
+                    || selected[0] == 0
+                    || selected[0].saturating_add(*count) > 1_048_577
+                {
+                    return Err(invalid(
+                        "clone row fields exceed XLSX bounds or do not select exactly one anchor",
+                    ));
+                }
             }
             WriteOp::ImportAndHelper(ImportAndHelperOp::CloneRowBand {
+                before,
+                after,
                 insert_at,
                 repeat,
                 source_rows,
                 ..
             }) => {
-                if *insert_at == 0 || *repeat == 0 {
-                    return Err(invalid("insert_at and repeat must be positive"));
+                let anchors = [*before, *after, *insert_at];
+                let selected = anchors.into_iter().flatten().collect::<Vec<_>>();
+                if selected.len() != 1 || selected[0] == 0 || *repeat == 0 {
+                    return Err(invalid(
+                        "exactly one positive clone anchor and repeat are required",
+                    ));
                 }
                 validate_row_range(source_rows).map_err(|error| invalid(&error.to_string()))?;
                 let (start, end) = source_rows.split_once(':').expect("validated row range");
                 let band = end.parse::<u32>().expect("validated end")
                     - start.parse::<u32>().expect("validated start")
                     + 1;
-                if insert_at
+                if selected[0]
                     .checked_add(band.saturating_mul(*repeat))
                     .is_none_or(|end| end > 1_048_577)
                 {
@@ -1096,8 +1121,9 @@ fn validate_request(request: &WriteRequest) -> Result<()> {
                 } => {
                     if min_width_chars
                         .is_some_and(|value| !value.is_finite() || !(0.0..=255.0).contains(&value))
-                        || max_width_chars
-                            .is_some_and(|value| !value.is_finite() || !(0.0..=255.0).contains(&value))
+                        || max_width_chars.is_some_and(|value| {
+                            !value.is_finite() || !(0.0..=255.0).contains(&value)
+                        })
                         || matches!((min_width_chars, max_width_chars), (Some(min), Some(max)) if min > max)
                     {
                         return Err(invalid(
@@ -1744,6 +1770,8 @@ pub(crate) fn apply_write_op_to_file(
         WriteOp::ImportAndHelper(ImportAndHelperOp::CloneRow {
             sheet_name,
             source_row,
+            before,
+            after,
             insert_at,
             count,
             expand_adjacent_sums,
@@ -1753,6 +1781,8 @@ pub(crate) fn apply_write_op_to_file(
             path,
             sheet_name,
             *source_row,
+            *before,
+            *after,
             *insert_at,
             *count,
             *expand_adjacent_sums,
@@ -1762,6 +1792,8 @@ pub(crate) fn apply_write_op_to_file(
         WriteOp::ImportAndHelper(ImportAndHelperOp::CloneRowBand {
             sheet_name,
             source_rows,
+            before,
+            after,
             insert_at,
             repeat,
             expand_adjacent_sums,
@@ -1771,6 +1803,8 @@ pub(crate) fn apply_write_op_to_file(
             path,
             sheet_name,
             source_rows,
+            *before,
+            *after,
             *insert_at,
             *repeat,
             *expand_adjacent_sums,

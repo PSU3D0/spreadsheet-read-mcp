@@ -1,9 +1,86 @@
 {
-  "generated_by": "asp operations + asp schema <operation>",
-  "schema_version": "1",
+  "error_schema": {
+    "$defs": {
+      "CanonicalError": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "$ref": "#/$defs/CanonicalErrorCode"
+          },
+          "message": {
+            "type": "string"
+          },
+          "operation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "CanonicalErrorCode": {
+        "enum": [
+          "UNKNOWN_OPERATION",
+          "INVALID_REQUEST",
+          "CAPABILITY_UNAVAILABLE",
+          "RESOURCE_NOT_FOUND",
+          "OPERATION_FAILED",
+          "STALE_CURSOR",
+          "CURSOR_MISMATCH",
+          "ROW_EXCEEDS_BUDGET",
+          "REVISION_CONFLICT"
+        ],
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+      "error": {
+        "$ref": "#/$defs/CanonicalError"
+      },
+      "schema_version": {
+        "const": "1",
+        "type": "string"
+      }
+    },
+    "required": [
+      "schema_version",
+      "error"
+    ],
+    "title": "CanonicalErrorEnvelope",
+    "type": "object"
+  },
   "operations": [
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "none",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "none",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "none",
+          "persistence": "none",
+          "support_status": "unsupported"
+        }
+      },
       "capability": {
         "description": "Discover workbook resources available to this runtime",
         "name": "workbook_discovery"
@@ -15,9 +92,6 @@
         "class": "cheap"
       },
       "description": "Discover workbook resources available to this runtime.",
-      "name": "list_workbooks",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -72,6 +146,7 @@
         "title": "ListWorkbooksRequest",
         "type": "object"
       },
+      "name": "list_workbooks",
       "output_schema": {
         "$defs": {
           "BackendCaps": {
@@ -257,10 +332,28 @@
         ],
         "title": "DiscoveryResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "single_read",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        }
+      },
       "capability": {
         "description": "Read an already-bound workbook resource",
         "name": "workbook_read"
@@ -274,9 +367,6 @@
         "class": "bounded"
       },
       "description": "Return cheap exact workbook metadata, with an opt-in derived summary.",
-      "name": "describe_workbook",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "DescribeInclude": {
@@ -348,6 +438,7 @@
         "title": "DescribeWorkbookRequest",
         "type": "object"
       },
+      "name": "describe_workbook",
       "output_schema": {
         "$defs": {
           "BackendCaps": {
@@ -835,10 +926,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "single_read",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        }
+      },
       "capability": {
         "description": "Read an already-bound workbook resource",
         "name": "workbook_read"
@@ -850,9 +959,6 @@
         "class": "cheap"
       },
       "description": "List sheets in a bound workbook resource with optional bounds.",
-      "name": "list_sheets",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "ResourceId": {
@@ -900,6 +1006,7 @@
         "title": "ListSheetsRequest",
         "type": "object"
       },
+      "name": "list_sheets",
       "output_schema": {
         "$defs": {
           "ResourceId": {
@@ -1042,10 +1149,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "single_read",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        }
+      },
       "capability": {
         "description": "Read an already-bound workbook resource",
         "name": "workbook_read"
@@ -1059,9 +1184,6 @@
         "class": "bounded"
       },
       "description": "Detect regions, headers, bounds, and notable structure for one sheet.",
-      "name": "sheet_overview",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "ResourceId": {
@@ -1113,6 +1235,7 @@
         "title": "SheetOverviewRequest",
         "type": "object"
       },
+      "name": "sheet_overview",
       "output_schema": {
         "$defs": {
           "DetectedRegion": {
@@ -1324,10 +1447,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "single_read",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        }
+      },
       "capability": {
         "description": "Read an already-bound workbook resource",
         "name": "workbook_read"
@@ -1341,9 +1482,6 @@
         "class": "bounded"
       },
       "description": "Read correlated exact ranges or projected row windows with revision-bound continuation.",
-      "name": "read_cells",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "CanonicalReadPage": {
@@ -1627,6 +1765,7 @@
         "title": "ReadCellsRequest",
         "type": "object"
       },
+      "name": "read_cells",
       "output_schema": {
         "$defs": {
           "CalculationMetadata": {
@@ -2467,10 +2606,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "single_read",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        }
+      },
       "capability": {
         "description": "Read an already-bound workbook resource",
         "name": "workbook_read"
@@ -2484,9 +2641,6 @@
         "class": "bounded"
       },
       "description": "Inspect bounded sparse cells with values, formulas, formats, styles, and calculation state.",
-      "name": "inspect_cells",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "ResourceId": {
@@ -2536,6 +2690,7 @@
         "title": "InspectCellsRequest",
         "type": "object"
       },
+      "name": "inspect_cells",
       "output_schema": {
         "$defs": {
           "CalculationMetadata": {
@@ -2859,10 +3014,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "single_read",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        }
+      },
       "capability": {
         "description": "Read an already-bound workbook resource",
         "name": "workbook_read"
@@ -2876,9 +3049,6 @@
         "class": "bounded"
       },
       "description": "Read a header-aware table or detected region with filtering and paging.",
-      "name": "read_table",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "CanonicalTableFilter": {
@@ -3125,6 +3295,7 @@
         "title": "ReadTableRequest",
         "type": "object"
       },
+      "name": "read_table",
       "output_schema": {
         "$defs": {
           "CalculationMetadata": {
@@ -3431,10 +3602,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "single_read",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        }
+      },
       "capability": {
         "description": "Read an already-bound workbook resource",
         "name": "workbook_read"
@@ -3448,9 +3637,6 @@
         "class": "bounded"
       },
       "description": "Read a deliberately lossy bounded display/layout projection.",
-      "name": "read_layout",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "LayoutMode": {
@@ -3544,6 +3730,7 @@
         "title": "ReadLayoutRequest",
         "type": "object"
       },
+      "name": "read_layout",
       "output_schema": {
         "$defs": {
           "LayoutCellBorders": {
@@ -3799,10 +3986,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "single_read",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        }
+      },
       "capability": {
         "description": "Read an already-bound workbook resource",
         "name": "workbook_read"
@@ -3816,9 +4021,6 @@
         "class": "bounded"
       },
       "description": "Export cell content and explicit formatting with coordinates, merges, formats, and styles; implicit presentation defaults are excluded.",
-      "name": "export_grid",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "ResourceId": {
@@ -3865,6 +4067,7 @@
         "title": "ExportGridRequest",
         "type": "object"
       },
+      "name": "export_grid",
       "output_schema": {
         "$defs": {
           "AlignmentPatch": {
@@ -4458,10 +4661,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "single_read",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        }
+      },
       "capability": {
         "description": "Read an already-bound workbook resource",
         "name": "workbook_read"
@@ -4473,9 +4694,6 @@
         "class": "cheap"
       },
       "description": "List workbook- and sheet-scoped named items.",
-      "name": "named_ranges",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "ResourceId": {
@@ -4512,6 +4730,7 @@
         "title": "NamedRangesRequest",
         "type": "object"
       },
+      "name": "named_ranges",
       "output_schema": {
         "$defs": {
           "NamedItemKind": {
@@ -4642,10 +4861,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "single_read",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        }
+      },
       "capability": {
         "description": "Read an already-bound workbook resource",
         "name": "workbook_read"
@@ -4660,9 +4897,6 @@
         "class": "expensive"
       },
       "description": "Analyze style patterns at explicit workbook or sheet scope.",
-      "name": "analyze_styles",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "AnalyzeStylesLimits": {
@@ -4880,6 +5114,7 @@
         "title": "AnalyzeStylesRequest",
         "type": "object"
       },
+      "name": "analyze_styles",
       "output_schema": {
         "$defs": {
           "AlignmentDescriptor": {
@@ -5634,10 +5869,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "single_read",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        }
+      },
       "capability": {
         "description": "Read an already-bound workbook resource",
         "name": "workbook_read"
@@ -5652,9 +5905,6 @@
         "class": "expensive"
       },
       "description": "Search values while preserving label, direction, region, table, type, header, and context modes.",
-      "name": "search_values",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "FindContext": {
@@ -5870,6 +6120,7 @@
         "title": "SearchValuesRequest",
         "type": "object"
       },
+      "name": "search_values",
       "output_schema": {
         "$defs": {
           "CellValue": {
@@ -6179,10 +6430,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "single_read",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        }
+      },
       "capability": {
         "description": "Read an already-bound workbook resource",
         "name": "workbook_read"
@@ -6197,9 +6466,6 @@
         "class": "expensive"
       },
       "description": "Search formula cells or grouped classifications, including actual volatile function names.",
-      "name": "search_formulas",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "FormulaContextRequest": {
@@ -6501,6 +6767,7 @@
         "title": "SearchFormulasRequest",
         "type": "object"
       },
+      "name": "search_formulas",
       "output_schema": {
         "$defs": {
           "CellSnapshot": {
@@ -7024,10 +7291,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "single_read",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        }
+      },
       "capability": {
         "description": "Read an already-bound workbook resource",
         "name": "workbook_read"
@@ -7042,9 +7327,6 @@
         "class": "expensive"
       },
       "description": "Trace bounded precedents or dependents from one formula target.",
-      "name": "formula_trace",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "FormulaParsePolicy": {
@@ -7150,6 +7432,7 @@
         "title": "FormulaTraceRequest",
         "type": "object"
       },
+      "name": "formula_trace",
       "output_schema": {
         "$defs": {
           "CellValue": {
@@ -7690,10 +7973,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "single_read",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        }
+      },
       "capability": {
         "description": "Read an already-bound workbook resource",
         "name": "workbook_read"
@@ -7708,9 +8009,6 @@
         "class": "expensive"
       },
       "description": "Map sheet formula topology and repeated formula groups.",
-      "name": "formula_map",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "FormulaParsePolicy": {
@@ -7835,6 +8133,7 @@
         "title": "FormulaMapRequest",
         "type": "object"
       },
+      "name": "formula_map",
       "output_schema": {
         "$defs": {
           "FormulaGroup": {
@@ -8048,10 +8347,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "single_read",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        }
+      },
       "capability": {
         "description": "Read an already-bound workbook resource",
         "name": "workbook_read"
@@ -8066,9 +8383,6 @@
         "class": "expensive"
       },
       "description": "Profile tabular columns, types, distributions, samples, and data quality.",
-      "name": "profile_table",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "ResourceId": {
@@ -8168,6 +8482,7 @@
         "title": "ProfileTableRequest",
         "type": "object"
       },
+      "name": "profile_table",
       "output_schema": {
         "$defs": {
           "CellValue": {
@@ -8535,10 +8850,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "single_read",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        }
+      },
       "capability": {
         "description": "Read an already-bound workbook resource",
         "name": "workbook_read"
@@ -8553,9 +8886,6 @@
         "class": "expensive"
       },
       "description": "Compute bounded sheet-level statistics.",
-      "name": "sheet_statistics",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "ResourceId": {
@@ -8598,6 +8928,7 @@
         "title": "SheetStatisticsRequest",
         "type": "object"
       },
+      "name": "sheet_statistics",
       "output_schema": {
         "$defs": {
           "CellValue": {
@@ -8833,10 +9164,197 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "single_read",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "unsupported"
+        }
+      },
+      "capability": {
+        "description": "Render bounded workbook regions to content-addressed image artifacts",
+        "name": "screenshot_rendering"
+      },
+      "cost": {
+        "bounded_by": [
+          "sheets",
+          "cells",
+          "items",
+          "payload_bytes"
+        ],
+        "class": "expensive"
+      },
+      "description": "Render a bounded sheet range to a content-addressed PNG artifact without exposing a server path.",
+      "input_schema": {
+        "$defs": {
+          "ResourceId": {
+            "maxLength": 256,
+            "minLength": 4,
+            "pattern": "^(wb|fork|session):[A-Za-z0-9][A-Za-z0-9_-]{0,243}$",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "range": {
+            "default": null,
+            "maxLength": 32,
+            "pattern": "^[A-Za-z]{1,3}[1-9][0-9]{0,6}(:[A-Za-z]{1,3}[1-9][0-9]{0,6})?$",
+            "type": [
+              "string",
+              "null"
+            ],
+            "x-runtime-bounds": {
+              "max_columns": 30,
+              "max_rows": 100
+            }
+          },
+          "resource_id": {
+            "$ref": "#/$defs/ResourceId"
+          },
+          "sheet_name": {
+            "maxLength": 31,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "resource_id",
+          "sheet_name"
+        ],
+        "title": "ScreenshotSheetRequest",
+        "type": "object"
+      },
+      "name": "screenshot_sheet",
+      "output_schema": {
+        "$defs": {
+          "ArtifactHandle": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "handle": {
+                "type": "string"
+              },
+              "hash": {
+                "type": "string"
+              },
+              "media_type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "handle",
+              "hash",
+              "bytes",
+              "media_type"
+            ],
+            "type": "object"
+          },
+          "ResourceId": {
+            "maxLength": 256,
+            "minLength": 4,
+            "pattern": "^(wb|fork|session):[A-Za-z0-9][A-Za-z0-9_-]{0,243}$",
+            "type": "string"
+          },
+          "ScreenshotSheetData": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact": {
+                "$ref": "#/$defs/ArtifactHandle"
+              },
+              "duration_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "range": {
+                "type": "string"
+              },
+              "sheet_name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "sheet_name",
+              "range",
+              "artifact",
+              "duration_ms"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ScreenshotSheetData"
+          },
+          "operation": {
+            "const": "screenshot_sheet",
+            "type": "string"
+          },
+          "resource_id": {
+            "$ref": "#/$defs/ResourceId"
+          },
+          "revision_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "operation",
+          "resource_id",
+          "revision_id",
+          "data"
+        ],
+        "title": "ResourceResponseSchema",
+        "type": "object"
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
+    },
+    {
+      "adapters": {
+        "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "single_read",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "unsupported"
+        }
+      },
       "capability": {
         "description": "Validate, bind, and execute portable typed SheetPort manifests",
         "name": "sheetport"
@@ -8850,9 +9368,6 @@
         "class": "bounded"
       },
       "description": "Discover, inspect, validate, normalize, or bind-check portable SheetPort manifest content.",
-      "name": "sheetport_manifest",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "ResourceId": {
@@ -8963,6 +9478,7 @@
         ],
         "title": "SheetportManifestRequest"
       },
+      "name": "sheetport_manifest",
       "output_schema": {
         "$defs": {
           "ManifestSheetStub": {
@@ -9208,10 +9724,28 @@
         ],
         "title": "OptionalResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "single_read",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "unsupported"
+        }
+      },
       "capability": {
         "description": "Validate, bind, and execute portable typed SheetPort manifests",
         "name": "sheetport"
@@ -9226,9 +9760,6 @@
         "class": "expensive"
       },
       "description": "Execute a portable SheetPort manifest with closed typed inputs, results, errors, and coverage.",
-      "name": "execute_sheetport",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "ResourceId": {
@@ -9531,6 +10062,7 @@
         "title": "ExecuteSheetportRequest",
         "type": "object"
       },
+      "name": "execute_sheetport",
       "output_schema": {
         "$defs": {
           "ExecuteSheetportData": {
@@ -9973,10 +10505,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "single_read",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "unsupported"
+        }
+      },
       "capability": {
         "description": "Inspect bounded VBA project metadata and module source",
         "name": "vba"
@@ -9990,9 +10540,6 @@
         "class": "bounded"
       },
       "description": "Inspect a VBA project summary or bounded module source with revision-bound opaque paging.",
-      "name": "inspect_vba",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "ResourceId": {
@@ -10094,6 +10641,7 @@
         ],
         "title": "InspectVbaRequest"
       },
+      "name": "inspect_vba",
       "output_schema": {
         "$defs": {
           "InspectVbaData": {
@@ -10266,10 +10814,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "single_mutable",
+          "persistence": "export_required",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "single_mutable",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "single_mutable",
+          "persistence": "export_required",
+          "support_status": "unsupported"
+        }
+      },
       "capability": {
         "description": "Mutate an isolated fork or session resource with revision CAS",
         "name": "workbook_write"
@@ -10283,9 +10849,6 @@
         "class": "expensive"
       },
       "description": "Preview, stage, or apply an ordered batch of canonical mutations with revision CAS and atomic rollback by default.",
-      "name": "write",
-      "risk_ceiling": "destructive",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "AlignmentPatch": {
@@ -12063,6 +12626,24 @@
               {
                 "additionalProperties": false,
                 "properties": {
+                  "after": {
+                    "default": null,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "before": {
+                    "default": null,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
                   "count": {
                     "default": 1,
                     "format": "uint32",
@@ -12074,9 +12655,13 @@
                     "type": "boolean"
                   },
                   "insert_at": {
+                    "default": null,
                     "format": "uint32",
                     "minimum": 0,
-                    "type": "integer"
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
                   },
                   "kind": {
                     "const": "clone_row",
@@ -12102,22 +12687,43 @@
                 "required": [
                   "kind",
                   "sheet_name",
-                  "source_row",
-                  "insert_at"
+                  "source_row"
                 ],
                 "type": "object"
               },
               {
                 "additionalProperties": false,
                 "properties": {
+                  "after": {
+                    "default": null,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "before": {
+                    "default": null,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
                   "expand_adjacent_sums": {
                     "default": false,
                     "type": "boolean"
                   },
                   "insert_at": {
+                    "default": null,
                     "format": "uint32",
                     "minimum": 0,
-                    "type": "integer"
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
                   },
                   "kind": {
                     "const": "clone_row_band",
@@ -12147,8 +12753,7 @@
                 "required": [
                   "kind",
                   "sheet_name",
-                  "source_rows",
-                  "insert_at"
+                  "source_rows"
                 ],
                 "type": "object"
               },
@@ -12706,6 +13311,7 @@
         "title": "WriteRequest",
         "type": "object"
       },
+      "name": "write",
       "output_schema": {
         "$defs": {
           "OperationRisk": {
@@ -13188,10 +13794,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "destructive",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "unsupported"
+        },
+        "mcp": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "unsupported"
+        }
+      },
       "capability": {
         "description": "Mutate an isolated fork or session resource with revision CAS",
         "name": "workbook_write"
@@ -13206,9 +13830,6 @@
         "class": "expensive"
       },
       "description": "Create an isolated mutable fork from a revision-bound resource.",
-      "name": "create_fork",
-      "risk_ceiling": "moderate",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "ResourceId": {
@@ -13235,6 +13856,7 @@
         "title": "CreateForkRequest",
         "type": "object"
       },
+      "name": "create_fork",
       "output_schema": {
         "$defs": {
           "CreateForkData": {
@@ -13327,10 +13949,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "moderate",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "unsupported"
+        },
+        "mcp": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "unsupported"
+        }
+      },
       "capability": {
         "description": "Mutate an isolated fork or session resource with revision CAS",
         "name": "workbook_write"
@@ -13342,15 +13982,13 @@
         "class": "cheap"
       },
       "description": "Discover active forks without exposing server-local paths.",
-      "name": "list_forks",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "title": "ListForksRequest",
         "type": "object"
       },
+      "name": "list_forks",
       "output_schema": {
         "$defs": {
           "CanonicalForkDescriptor": {
@@ -13464,10 +14102,28 @@
         ],
         "title": "DiscoveryResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "single_mutable",
+          "persistence": "export_required",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "single_mutable",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "single_mutable",
+          "persistence": "export_required",
+          "support_status": "unsupported"
+        }
+      },
       "capability": {
         "description": "Mutate an isolated fork or session resource with revision CAS",
         "name": "workbook_write"
@@ -13480,9 +14136,6 @@
         "class": "expensive"
       },
       "description": "Evaluate a fork with revision CAS and complete F1 coverage metadata.",
-      "name": "recalculate",
-      "risk_ceiling": "high",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "RecalcBackendKind": {
@@ -13534,6 +14187,7 @@
         "title": "RecalculateRequest",
         "type": "object"
       },
+      "name": "recalculate",
       "output_schema": {
         "$defs": {
           "EvaluationCoverage": {
@@ -13727,10 +14381,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "high",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "two_resource",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "mcp": {
+          "binding_kind": "two_resource",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "two_resource",
+          "persistence": "none",
+          "support_status": "unsupported"
+        }
+      },
       "capability": {
         "description": "Mutate an isolated fork or session resource with revision CAS",
         "name": "workbook_write"
@@ -13745,9 +14417,6 @@
         "class": "expensive"
       },
       "description": "Evaluate and compare baseline and current resources with sound proof states and coverage.",
-      "name": "verify_workbook",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "ResourceId": {
@@ -13800,6 +14469,7 @@
         "title": "VerifyWorkbookRequest",
         "type": "object"
       },
+      "name": "verify_workbook",
       "output_schema": {
         "$defs": {
           "CellValue": {
@@ -14380,10 +15050,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "unsupported"
+        },
+        "mcp": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "unsupported"
+        }
+      },
       "capability": {
         "description": "Mutate an isolated fork or session resource with revision CAS",
         "name": "workbook_write"
@@ -14395,9 +15083,6 @@
         "class": "expensive"
       },
       "description": "Export a revision-bound fork to a portable artifact destination.",
-      "name": "export_fork",
-      "risk_ceiling": "high",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "ExportDestination": {
@@ -14449,6 +15134,7 @@
         "title": "ExportForkRequest",
         "type": "object"
       },
+      "name": "export_fork",
       "output_schema": {
         "$defs": {
           "ArtifactMetadata": {
@@ -14582,10 +15268,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "high",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "unsupported"
+        },
+        "mcp": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "unsupported"
+        }
+      },
       "capability": {
         "description": "Mutate an isolated fork or session resource with revision CAS",
         "name": "workbook_write"
@@ -14597,9 +15301,6 @@
         "class": "cheap"
       },
       "description": "Destroy an isolated fork with revision CAS.",
-      "name": "discard_fork",
-      "risk_ceiling": "destructive",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "ResourceId": {
@@ -14626,6 +15327,7 @@
         "title": "DiscardForkRequest",
         "type": "object"
       },
+      "name": "discard_fork",
       "output_schema": {
         "$defs": {
           "DiscardForkData": {
@@ -14708,10 +15410,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "destructive",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "unsupported"
+        },
+        "mcp": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "unsupported"
+        }
+      },
       "capability": {
         "description": "Mutate an isolated fork or session resource with revision CAS",
         "name": "workbook_write"
@@ -14726,9 +15446,6 @@
         "class": "expensive"
       },
       "description": "Read either the canonical operation audit or a direct base-to-current net diff.",
-      "name": "get_changes",
-      "risk_ceiling": "low",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "ChangesView": {
@@ -14816,6 +15533,7 @@
         "title": "GetChangesRequest",
         "type": "object"
       },
+      "name": "get_changes",
       "output_schema": {
         "$defs": {
           "CanonicalOperationRecord": {
@@ -15323,10 +16041,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "low",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "unsupported"
+        },
+        "mcp": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "unsupported"
+        }
+      },
       "capability": {
         "description": "Mutate an isolated fork or session resource with revision CAS",
         "name": "workbook_write"
@@ -15339,9 +16075,6 @@
         "class": "expensive"
       },
       "description": "Create, list, atomically restore, or delete fork checkpoints.",
-      "name": "checkpoint",
-      "risk_ceiling": "destructive",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "ResourceId": {
@@ -15451,6 +16184,7 @@
         ],
         "title": "CheckpointRequest"
       },
+      "name": "checkpoint",
       "output_schema": {
         "$defs": {
           "CheckpointData": {
@@ -15707,10 +16441,28 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "destructive",
+      "schema_version": "1"
     },
     {
-      "available": true,
+      "adapters": {
+        "cli": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "unsupported"
+        },
+        "mcp": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "supported"
+        },
+        "wasm": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "unsupported"
+        }
+      },
       "capability": {
         "description": "Mutate an isolated fork or session resource with revision CAS",
         "name": "workbook_write"
@@ -15724,9 +16476,6 @@
         "class": "expensive"
       },
       "description": "List, atomically apply, or discard canonical staged write bundles.",
-      "name": "staged_change",
-      "risk_ceiling": "destructive",
-      "schema_version": "1",
       "input_schema": {
         "$defs": {
           "ResourceId": {
@@ -15808,6 +16557,7 @@
         ],
         "title": "StagedChangeRequest"
       },
+      "name": "staged_change",
       "output_schema": {
         "$defs": {
           "ChangeSummary": {
@@ -16064,70 +16814,11 @@
         ],
         "title": "ResourceResponseSchema",
         "type": "object"
-      }
+      },
+      "risk_ceiling": "destructive",
+      "schema_version": "1"
     }
   ],
-  "error_schema": {
-    "$defs": {
-      "CanonicalError": {
-        "additionalProperties": false,
-        "properties": {
-          "code": {
-            "$ref": "#/$defs/CanonicalErrorCode"
-          },
-          "message": {
-            "type": "string"
-          },
-          "operation": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "path": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "code",
-          "message"
-        ],
-        "type": "object"
-      },
-      "CanonicalErrorCode": {
-        "enum": [
-          "UNKNOWN_OPERATION",
-          "INVALID_REQUEST",
-          "CAPABILITY_UNAVAILABLE",
-          "RESOURCE_NOT_FOUND",
-          "OPERATION_FAILED",
-          "STALE_CURSOR",
-          "CURSOR_MISMATCH",
-          "ROW_EXCEEDS_BUDGET",
-          "REVISION_CONFLICT"
-        ],
-        "type": "string"
-      }
-    },
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "additionalProperties": false,
-    "properties": {
-      "error": {
-        "$ref": "#/$defs/CanonicalError"
-      },
-      "schema_version": {
-        "const": "1",
-        "type": "string"
-      }
-    },
-    "required": [
-      "schema_version",
-      "error"
-    ],
-    "title": "CanonicalErrorEnvelope",
-    "type": "object"
-  }
+  "schema_version": "1",
+  "generated_by": "asp registry --all"
 }

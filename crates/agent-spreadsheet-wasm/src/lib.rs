@@ -9,8 +9,9 @@ use agent_spreadsheet::model::{
     WorkbookDescription,
 };
 use agent_spreadsheet::operations::{
-    CanonicalErrorCode, CanonicalErrorEnvelope, CanonicalResponse, ResourceId, RuntimeCapabilities,
-    execute_operation_json, operation_descriptor, operations_discovery,
+    CanonicalErrorCode, CanonicalErrorEnvelope, CanonicalResponse, OperationAdapter, ResourceId,
+    RuntimeCapabilities, execute_operation_json, is_canonical_operation_name, operation_descriptor,
+    operations_discovery_for,
 };
 use agent_spreadsheet::repository::{VirtualWorkbookInput, VirtualWorkspaceRepository};
 use agent_spreadsheet::state::AppState;
@@ -24,24 +25,6 @@ pub const MAX_WORKBOOK_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_PARAMS_JSON_BYTES: usize = 1024 * 1024;
 pub const MAX_SESSIONS: usize = 16;
 const MAX_TOTAL_WORKBOOK_BYTES: usize = 256 * 1024 * 1024;
-
-const EXPLICITLY_UNAVAILABLE_OPERATIONS: &[&str] = &[
-    "list_workbooks",
-    "write",
-    "create_fork",
-    "list_forks",
-    "recalculate",
-    "verify_workbook",
-    "export_fork",
-    "discard_fork",
-    "get_changes",
-    "checkpoint",
-    "staged_change",
-    "screenshot_sheet",
-    "sheetport_manifest",
-    "execute_sheetport",
-    "inspect_vba",
-];
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum SessionApiError {
@@ -390,10 +373,12 @@ impl SessionApi {
     }
 
     pub fn operations_json(&self) -> SessionResult<String> {
-        serde_json::to_string(&operations_discovery(&adapter_capabilities())).map_err(|error| {
-            SessionApiError::Internal {
-                message: format!("failed to serialize operations discovery: {error}"),
-            }
+        serde_json::to_string(&operations_discovery_for(
+            OperationAdapter::Wasm,
+            &adapter_capabilities(),
+        ))
+        .map_err(|error| SessionApiError::Internal {
+            message: format!("failed to serialize operations discovery: {error}"),
         })
     }
 
@@ -412,18 +397,11 @@ impl SessionApi {
             ));
         }
 
-        if EXPLICITLY_UNAVAILABLE_OPERATIONS.contains(&operation_name) {
-            return Err(canonical_error(
-                CanonicalErrorCode::CapabilityUnavailable,
-                Some(operation_name),
-                format!(
-                    "operation '{operation_name}' is unavailable in the WASM byte-session runtime"
-                ),
-                None,
-            ));
-        }
-        if let Some(descriptor) = operation_descriptor(operation_name)
-            && !descriptor.is_available(&adapter_capabilities())
+        if (operation_descriptor(operation_name).is_none()
+            && is_canonical_operation_name(operation_name))
+            || operation_descriptor(operation_name).is_some_and(|descriptor| {
+                !descriptor.is_available_for(OperationAdapter::Wasm, &adapter_capabilities())
+            })
         {
             return Err(canonical_error(
                 CanonicalErrorCode::CapabilityUnavailable,

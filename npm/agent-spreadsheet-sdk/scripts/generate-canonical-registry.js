@@ -8,29 +8,9 @@ const packageRoot = path.resolve(__dirname, "..")
 const outputPath = path.join(packageRoot, "src", "generated", "canonical-registry.json")
 const asp = process.env.ASP_BINARY || process.argv[2] || path.resolve(packageRoot, "..", "..", "target", "debug", "asp")
 
-function run(args) {
-  return JSON.parse(execFileSync(asp, args, { encoding: "utf8" }))
-}
-
-const discovery = run(["operations"])
-const operations = discovery.map((descriptor) => {
-  const schema = run(["schema", descriptor.name])
-  return {
-    ...descriptor,
-    input_schema: schema.input_schema,
-    output_schema: schema.output_schema
-  }
-})
-
-const manifest = {
-  generated_by: "asp operations + asp schema <operation>",
-  schema_version: operations[0]?.schema_version || "1",
-  operations,
-  error_schema: operations.length > 0
-    ? run(["schema", operations[0].name]).error_schema
-    : null
-}
+const manifest = JSON.parse(execFileSync(asp, ["registry", "--all"], { encoding: "utf8" }))
+manifest.generated_by = "asp registry --all"
 
 fs.mkdirSync(path.dirname(outputPath), { recursive: true })
 fs.writeFileSync(outputPath, `${JSON.stringify(manifest, null, 2)}\n`)
-console.log(`wrote ${operations.length} operations to ${outputPath}`)
+console.log(`wrote ${manifest.operations.length} operations to ${outputPath}`)

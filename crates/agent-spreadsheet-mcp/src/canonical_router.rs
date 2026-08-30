@@ -1,7 +1,7 @@
 use crate::server::SpreadsheetServer;
 use agent_spreadsheet::operations::{
-    CanonicalErrorCode, CanonicalErrorEnvelope, OperationDescriptor, OperationRisk,
-    RuntimeCapabilities, decode_operation, execute_operation, operation_registry,
+    CanonicalErrorCode, CanonicalErrorEnvelope, OperationAdapter, OperationDescriptor,
+    OperationRisk, RuntimeCapabilities, decode_operation, execute_operation, operation_registry,
 };
 use rmcp::{
     ErrorData as McpError,
@@ -21,7 +21,7 @@ pub(crate) fn canonical_tool_router(
     let mut router = ToolRouter::new();
     for descriptor in operation_registry()
         .iter()
-        .filter(|descriptor| descriptor.is_available(capabilities))
+        .filter(|descriptor| descriptor.is_available_for(OperationAdapter::Mcp, capabilities))
     {
         router.add_route(canonical_route(descriptor));
     }

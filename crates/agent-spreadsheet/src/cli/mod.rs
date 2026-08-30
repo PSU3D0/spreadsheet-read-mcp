@@ -508,8 +508,16 @@ enum SurfaceDiscoverabilityCommands {
 
 #[derive(Debug, Subcommand)]
 enum SurfaceCommands {
-    #[command(about = "List canonical operations and their policy metadata")]
+    #[command(about = "List canonical operations supported by the CLI adapter")]
     Operations,
+    #[command(about = "Emit the complete host-independent canonical registry and schemas")]
+    Registry {
+        #[arg(
+            long,
+            help = "Include every canonical descriptor regardless of host availability"
+        )]
+        all: bool,
+    },
     #[command(about = "Execute a canonical operation against an ephemeral bound resource")]
     Op {
         #[arg(value_name = "OPERATION")]
@@ -520,6 +528,12 @@ enum SurfaceCommands {
             help = "Bind a workbook path as an ephemeral resource"
         )]
         bind: Option<PathBuf>,
+        #[arg(
+            long,
+            value_name = "FILE",
+            help = "Bind a verification baseline as a second ephemeral resource"
+        )]
+        baseline: Option<PathBuf>,
         #[arg(
             long,
             value_name = "JSON",
@@ -3339,9 +3353,11 @@ enum ResolvedDiscoverabilityCommand {
 enum ResolvedSurfaceCommand {
     Command(Commands),
     Operations,
+    Registry,
     Operation {
         operation: String,
         bind: Option<PathBuf>,
+        baseline: Option<PathBuf>,
         json: Option<String>,
         output: Option<PathBuf>,
         in_place: bool,
@@ -3795,9 +3811,11 @@ fn resolve_surface_command(
 ) -> Result<ResolvedSurfaceCommand, clap::Error> {
     match command {
         SurfaceCommands::Operations => Ok(ResolvedSurfaceCommand::Operations),
+        SurfaceCommands::Registry { all: _ } => Ok(ResolvedSurfaceCommand::Registry),
         SurfaceCommands::Op {
             operation,
             bind,
+            baseline,
             json,
             output,
             in_place,
@@ -3805,6 +3823,7 @@ fn resolve_surface_command(
         } => Ok(ResolvedSurfaceCommand::Operation {
             operation,
             bind,
+            baseline,
             json,
             output,
             in_place,
@@ -4187,12 +4206,28 @@ fn canonical_operation_example(
             Some("$.operation".to_string()),
         )
     })?;
+    if !descriptor.is_available_for(
+        crate::operations::OperationAdapter::Cli,
+        &crate::operations::RuntimeCapabilities::native(),
+    ) {
+        return Err(CanonicalErrorEnvelope::new(
+            CanonicalErrorCode::CapabilityUnavailable,
+            format!(
+                "canonical operation '{operation}' is unavailable in the stateless CLI adapter"
+            ),
+            Some(operation),
+            Some("adapter".to_string()),
+        ));
+    }
     let schema = (descriptor.input_schema)();
     Ok(example_from_schema(
         &schema,
         &schema,
         None,
-        descriptor.capability.name == "workbook_write",
+        matches!(
+            descriptor.adapters.cli.binding_kind,
+            crate::operations::AdapterBindingKind::SingleMutable
+        ),
     ))
 }
 
@@ -4262,20 +4297,24 @@ fn machine_bind_rule(
         Some(true) => MachineBindRule::Required,
         Some(false)
             if matches!(
-                descriptor.capability.name,
-                "workbook_discovery" | "workbook_write"
+                descriptor.adapters.cli.binding_kind,
+                crate::operations::AdapterBindingKind::None
             ) =>
         {
             MachineBindRule::OptionalContext
         }
         Some(false) => MachineBindRule::Forbidden,
-        None => MachineBindRule::OptionalContext,
+        None => match descriptor.adapters.cli.binding_kind {
+            crate::operations::AdapterBindingKind::None => MachineBindRule::Forbidden,
+            _ => MachineBindRule::OptionalContext,
+        },
     }
 }
 
 async fn run_machine_operation(
     operation: &str,
     bind: Option<PathBuf>,
+    baseline: Option<PathBuf>,
     json_payload: Option<String>,
     output: Option<PathBuf>,
     in_place: bool,
@@ -4292,6 +4331,17 @@ async fn run_machine_operation(
             Some("$.operation".to_string()),
         )
     })?;
+    let adapter = descriptor.adapters.cli;
+    if !adapter.is_supported() {
+        return Err(CanonicalErrorEnvelope::new(
+            CanonicalErrorCode::CapabilityUnavailable,
+            format!(
+                "canonical operation '{operation}' is unavailable in the stateless CLI adapter"
+            ),
+            Some(operation),
+            Some("adapter".to_string()),
+        ));
+    }
 
     let payload_text = match json_payload {
         Some(payload) => payload,
@@ -4332,6 +4382,10 @@ async fn run_machine_operation(
     })?;
 
     let bind_rule = machine_bind_rule(descriptor, object);
+    let two_resource = matches!(
+        adapter.binding_kind,
+        crate::operations::AdapterBindingKind::TwoResource
+    );
     if bind_rule == MachineBindRule::Required && bind.is_none() {
         return Err(CanonicalErrorEnvelope::new(
             CanonicalErrorCode::InvalidRequest,
@@ -4348,6 +4402,22 @@ async fn run_machine_operation(
             Some("--bind".to_string()),
         ));
     }
+    if two_resource && baseline.is_none() {
+        return Err(CanonicalErrorEnvelope::new(
+            CanonicalErrorCode::InvalidRequest,
+            format!("canonical operation '{operation}' requires --baseline <FILE>"),
+            Some(operation),
+            Some("--baseline".to_string()),
+        ));
+    }
+    if !two_resource && baseline.is_some() {
+        return Err(CanonicalErrorEnvelope::new(
+            CanonicalErrorCode::InvalidRequest,
+            "--baseline is only accepted by two-resource CLI operations",
+            Some(operation),
+            Some("--baseline".to_string()),
+        ));
+    }
     if bind_rule != MachineBindRule::Required && object.contains_key("resource_id") {
         return Err(CanonicalErrorEnvelope::new(
             CanonicalErrorCode::InvalidRequest,
@@ -4358,8 +4428,10 @@ async fn run_machine_operation(
     }
 
     let runtime = crate::runtime::stateless::StatelessRuntime;
-    let mutable_resource =
-        descriptor.capability.name == "workbook_write" && bind_rule == MachineBindRule::Required;
+    let mutable_resource = matches!(
+        adapter.binding_kind,
+        crate::operations::AdapterBindingKind::SingleMutable
+    ) && bind_rule == MachineBindRule::Required;
     if !mutable_resource && (output.is_some() || in_place || force) {
         return Err(CanonicalErrorEnvelope::new(
             CanonicalErrorCode::InvalidRequest,
@@ -4374,18 +4446,27 @@ async fn run_machine_operation(
         .map(str::to_string);
     if mutable_resource {
         match operation_mode.as_deref() {
-            Some("apply") if (output.is_some() as u8 + in_place as u8) != 1 => {
+            Some("preview") if output.is_some() || in_place || force => {
                 return Err(CanonicalErrorEnvelope::new(
                     CanonicalErrorCode::InvalidRequest,
-                    "canonical mode=apply requires exactly one of --output <PATH> or --in-place",
+                    "preview does not accept file export flags",
                     Some(operation),
                     Some("adapter_flags".to_string()),
                 ));
             }
-            Some("preview" | "stage") if output.is_some() || in_place || force => {
+            Some("stage") => {
+                return Err(CanonicalErrorEnvelope::new(
+                    CanonicalErrorCode::CapabilityUnavailable,
+                    "stage requires durable orchestration and is unavailable in the stateless CLI adapter",
+                    Some(operation),
+                    Some("$.mode".to_string()),
+                ));
+            }
+            Some("preview") => {}
+            _ if (output.is_some() as u8 + in_place as u8) != 1 => {
                 return Err(CanonicalErrorEnvelope::new(
                     CanonicalErrorCode::InvalidRequest,
-                    "preview and stage do not accept file export flags",
+                    "a mutating CLI operation requires exactly one of --output <PATH> or --in-place",
                     Some(operation),
                     Some("adapter_flags".to_string()),
                 ));
@@ -4401,7 +4482,25 @@ async fn run_machine_operation(
             ));
         }
     }
-    let (state, workbook_id, fork_path) = match (bind_rule, mutable_resource) {
+    let mut _pair_guard = None;
+    let (state, workbook_id, fork_path, baseline_id) = match (bind_rule, mutable_resource) {
+        (MachineBindRule::Required, false) if two_resource => {
+            let bind = bind.as_ref().expect("required bind validated");
+            let baseline = baseline.as_ref().expect("baseline validated");
+            let (guard, state, current_id, baseline_id) = runtime
+                .open_state_for_file_pair_for_operation(bind, baseline, Some(operation))
+                .await
+                .map_err(|error| {
+                    CanonicalErrorEnvelope::new(
+                        CanonicalErrorCode::ResourceNotFound,
+                        error.to_string(),
+                        Some(operation),
+                        Some("--baseline".to_string()),
+                    )
+                })?;
+            _pair_guard = Some(guard);
+            (state, Some(current_id), None, Some(baseline_id))
+        }
         (MachineBindRule::Required, true) => {
             let bind = bind.as_ref().expect("required bind validated");
             let (state, id, path) =
@@ -4416,7 +4515,7 @@ async fn run_machine_operation(
                             Some("--bind".to_string()),
                         )
                     })?;
-            (state, Some(id), Some(path))
+            (state, Some(id), Some(path), None)
         }
         (MachineBindRule::Required, false) => {
             let bind = bind.as_ref().expect("required bind validated");
@@ -4431,7 +4530,7 @@ async fn run_machine_operation(
                         Some("--bind".to_string()),
                     )
                 })?;
-            (state, Some(id), None)
+            (state, Some(id), None, None)
         }
         (MachineBindRule::OptionalContext, false) if bind.is_some() => {
             let (state, _) = runtime
@@ -4448,7 +4547,7 @@ async fn run_machine_operation(
                         Some("--bind".to_string()),
                     )
                 })?;
-            (state, None, None)
+            (state, None, None, None)
         }
         (MachineBindRule::OptionalContext | MachineBindRule::Forbidden, false) => (
             runtime
@@ -4461,6 +4560,7 @@ async fn run_machine_operation(
                         None,
                     )
                 })?,
+            None,
             None,
             None,
         ),
@@ -4489,6 +4589,30 @@ async fn run_machine_operation(
         }
         object.insert(
             "resource_id".to_string(),
+            Value::String(resource_id.as_str().to_string()),
+        );
+    }
+    if let Some(baseline_id) = baseline_id {
+        let resource_id = ResourceId::bind_workbook(&baseline_id).map_err(|message| {
+            CanonicalErrorEnvelope::new(
+                CanonicalErrorCode::InvalidRequest,
+                message,
+                Some(operation),
+                Some("--baseline".to_string()),
+            )
+        })?;
+        if let Some(provided) = object.get("baseline_resource_id")
+            && provided.as_str() != Some(resource_id.as_str())
+        {
+            return Err(CanonicalErrorEnvelope::new(
+                CanonicalErrorCode::InvalidRequest,
+                "payload baseline_resource_id does not match the ephemeral --baseline resource",
+                Some(operation),
+                Some("$.baseline_resource_id".to_string()),
+            ));
+        }
+        object.insert(
+            "baseline_resource_id".to_string(),
             Value::String(resource_id.as_str().to_string()),
         );
     }
@@ -4596,81 +4720,93 @@ pub async fn run() -> Result<()> {
         Err(error) => error.exit(),
     };
 
-    let result = match resolve_surface_command(surface.command) {
-        Ok(ResolvedSurfaceCommand::Command(command)) => {
-            run_with_options(
-                command,
-                surface.output_format,
-                surface.shape,
-                surface.compact,
-                surface.quiet,
-            )
-            .await
-        }
-        Ok(ResolvedSurfaceCommand::Operations) => {
-            let payload = crate::operations::operations_discovery(
-                &crate::operations::RuntimeCapabilities::native(),
-            );
-            if let Err(error) = emit_exact_json(&payload, false) {
-                emit_error_and_exit(error.into());
+    let result =
+        match resolve_surface_command(surface.command) {
+            Ok(ResolvedSurfaceCommand::Command(command)) => {
+                run_with_options(
+                    command,
+                    surface.output_format,
+                    surface.shape,
+                    surface.compact,
+                    surface.quiet,
+                )
+                .await
             }
-            Ok(())
-        }
-        Ok(ResolvedSurfaceCommand::Operation {
-            operation,
-            bind,
-            json,
-            output,
-            in_place,
-            force,
-        }) => match run_machine_operation(&operation, bind, json, output, in_place, force).await {
-            Ok(response) => {
-                if let Err(error) = emit_exact_json(&response, false) {
+            Ok(ResolvedSurfaceCommand::Operations) => {
+                let payload = crate::operations::operations_discovery_for(
+                    crate::operations::OperationAdapter::Cli,
+                    &crate::operations::RuntimeCapabilities::native(),
+                );
+                if let Err(error) = emit_exact_json(&payload, false) {
                     emit_error_and_exit(error.into());
                 }
-                // Automation policy: complete apply/preview/stage exits 0,
-                // failed or rolled-back work exits 1, and an exported
-                // non-atomic partial result exits 2.
-                match response.data["status"].as_str() {
-                    Some("failed" | "rolled_back") => std::process::exit(1),
-                    Some("partial") => std::process::exit(2),
-                    _ => Ok(()),
-                }
+                Ok(())
             }
-            Err(error) => emit_canonical_error_and_exit(error),
-        },
-        Ok(ResolvedSurfaceCommand::Schema(command)) => {
-            let payload = match command {
-                ResolvedDiscoverabilityCommand::Legacy(command) => {
-                    run_schema_command(command).unwrap_or_else(|error| emit_error_and_exit(error))
+            Ok(ResolvedSurfaceCommand::Registry) => {
+                let payload = crate::operations::registry_projection();
+                if let Err(error) = emit_exact_json(&payload, false) {
+                    emit_error_and_exit(error.into());
                 }
-                ResolvedDiscoverabilityCommand::Canonical(operation) => {
-                    crate::operations::operation_schema(&operation)
-                        .unwrap_or_else(|error| emit_canonical_error_and_exit(error))
-                }
-            };
-            if let Err(error) = emit_exact_json(&payload, false) {
-                emit_error_and_exit(error.into());
+                Ok(())
             }
-            Ok(())
-        }
-        Ok(ResolvedSurfaceCommand::Example(command)) => {
-            let payload = match command {
-                ResolvedDiscoverabilityCommand::Legacy(command) => {
-                    run_example_command(command).unwrap_or_else(|error| emit_error_and_exit(error))
+            Ok(ResolvedSurfaceCommand::Operation {
+                operation,
+                bind,
+                baseline,
+                json,
+                output,
+                in_place,
+                force,
+            }) => match run_machine_operation(
+                &operation, bind, baseline, json, output, in_place, force,
+            )
+            .await
+            {
+                Ok(response) => {
+                    if let Err(error) = emit_exact_json(&response, false) {
+                        emit_error_and_exit(error.into());
+                    }
+                    // Automation policy: complete apply/preview/stage exits 0,
+                    // failed or rolled-back work exits 1, and an exported
+                    // non-atomic partial result exits 2.
+                    match response.data["status"].as_str() {
+                        Some("failed" | "rolled_back") => std::process::exit(1),
+                        Some("partial") => std::process::exit(2),
+                        _ => Ok(()),
+                    }
                 }
-                ResolvedDiscoverabilityCommand::Canonical(operation) => {
-                    canonical_operation_example(&operation)
-                        .unwrap_or_else(|error| emit_canonical_error_and_exit(error))
+                Err(error) => emit_canonical_error_and_exit(error),
+            },
+            Ok(ResolvedSurfaceCommand::Schema(command)) => {
+                let payload = match command {
+                    ResolvedDiscoverabilityCommand::Legacy(command) => run_schema_command(command)
+                        .unwrap_or_else(|error| emit_error_and_exit(error)),
+                    ResolvedDiscoverabilityCommand::Canonical(operation) => {
+                        crate::operations::operation_schema(&operation)
+                            .unwrap_or_else(|error| emit_canonical_error_and_exit(error))
+                    }
+                };
+                if let Err(error) = emit_exact_json(&payload, false) {
+                    emit_error_and_exit(error.into());
                 }
-            };
-            if let Err(error) = emit_exact_json(&payload, false) {
-                emit_error_and_exit(error.into());
+                Ok(())
             }
-            Ok(())
-        }
-        Err(error) => emit_rewritten_clap_error_and_exit(error),
-    };
+            Ok(ResolvedSurfaceCommand::Example(command)) => {
+                let payload = match command {
+                    ResolvedDiscoverabilityCommand::Legacy(command) => run_example_command(command)
+                        .unwrap_or_else(|error| emit_error_and_exit(error)),
+                    ResolvedDiscoverabilityCommand::Canonical(operation) => {
+                        canonical_operation_example(&operation)
+                            .unwrap_or_else(|error| emit_canonical_error_and_exit(error))
+                    }
+                };
+                if let Err(error) = emit_exact_json(&payload, false) {
+                    emit_error_and_exit(error.into());
+                }
+                Ok(())
+            }
+            Err(error) => emit_rewritten_clap_error_and_exit(error),
+        };
 
     if result.is_ok() && !surface.quiet {
         for warning in &warnings {

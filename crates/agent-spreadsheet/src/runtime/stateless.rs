@@ -72,6 +72,49 @@ impl StatelessRuntime {
         Ok((state, workbook_id))
     }
 
+    #[cfg(feature = "recalc")]
+    pub async fn open_state_for_file_pair_for_operation(
+        &self,
+        current: &Path,
+        baseline: &Path,
+        operation: Option<&str>,
+    ) -> Result<(tempfile::TempDir, Arc<AppState>, WorkbookId, WorkbookId)> {
+        let current = self.normalize_existing_file(current)?;
+        let baseline = self.normalize_existing_file(baseline)?;
+        let temp = tempfile::tempdir()?;
+        let current_ext = current
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("xlsx");
+        let baseline_ext = baseline
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("xlsx");
+        let current_copy = temp.path().join(format!("current.{current_ext}"));
+        let baseline_copy = temp.path().join(format!("baseline.{baseline_ext}"));
+        fs::copy(&current, &current_copy)?;
+        fs::copy(&baseline, &baseline_copy)?;
+
+        let mut config = self.build_cli_config(&current_copy);
+        configure_canonical_components(&mut config, operation);
+        config.workspace_root = temp.path().to_path_buf();
+        config.screenshot_dir = temp.path().join("screenshots");
+        config.single_workbook = None;
+        let state = Arc::new(AppState::new(Arc::new(config)));
+        let listed = state.list_workbooks(WorkbookFilter::default())?.workbooks;
+        let current_id = listed
+            .iter()
+            .find(|entry| entry.slug == "current")
+            .map(|entry| entry.workbook_id.clone())
+            .ok_or_else(|| anyhow!("current verification resource was not bound"))?;
+        let baseline_id = listed
+            .iter()
+            .find(|entry| entry.slug == "baseline")
+            .map(|entry| entry.workbook_id.clone())
+            .ok_or_else(|| anyhow!("baseline verification resource was not bound"))?;
+        Ok((temp, state, current_id, baseline_id))
+    }
+
     pub fn open_unbound_state(&self) -> Result<Arc<AppState>> {
         self.open_unbound_state_for_operation(None)
     }
