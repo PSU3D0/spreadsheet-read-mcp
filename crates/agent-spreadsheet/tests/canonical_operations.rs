@@ -171,6 +171,15 @@ fn registry_schemas_are_closed_typed_and_discriminated() {
             "profile_table",
             "sheet_statistics",
             "write",
+            "create_fork",
+            "list_forks",
+            "recalculate",
+            "verify_workbook",
+            "export_fork",
+            "discard_fork",
+            "get_changes",
+            "checkpoint",
+            "staged_change",
         ])
     );
 
@@ -180,10 +189,13 @@ fn registry_schemas_are_closed_typed_and_discriminated() {
         assert!(descriptor.is_available(&capabilities));
         assert_eq!(
             descriptor.risk_ceiling,
-            if descriptor.name == "write" {
-                OperationRisk::Destructive
-            } else {
-                OperationRisk::Low
+            match descriptor.name {
+                "write" | "discard_fork" | "checkpoint" | "staged_change" => {
+                    OperationRisk::Destructive
+                }
+                "recalculate" | "export_fork" => OperationRisk::High,
+                "create_fork" => OperationRisk::Moderate,
+                _ => OperationRisk::Low,
             }
         );
         let input = (descriptor.input_schema)();
@@ -192,10 +204,12 @@ fn registry_schemas_are_closed_typed_and_discriminated() {
         jsonschema::validator_for(&output).expect("valid generated output JSON Schema");
         assert_object_schemas_closed(&input);
         assert_object_schemas_closed(&output);
-        if descriptor.name == "list_workbooks" {
+        if matches!(descriptor.name, "list_workbooks" | "list_forks") {
             assert!(input["$defs"].get("ResourceId").is_none());
             assert!(output["properties"].get("resource_id").is_none());
-            assert_eq!(descriptor.capability.name, "workbook_discovery");
+            if descriptor.name == "list_workbooks" {
+                assert_eq!(descriptor.capability.name, "workbook_discovery");
+            }
         } else {
             assert_eq!(
                 input["$defs"]["ResourceId"]["pattern"],

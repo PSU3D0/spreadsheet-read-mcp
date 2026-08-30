@@ -5930,21 +5930,15 @@ pub async fn apply_staged_change(
                     serde_json::from_value(op.payload.clone())
                         .map_err(|error| anyhow!("invalid canonical write bundle: {error}"))?;
                 let applied = registry.with_fork_mut(&params.fork_id, |fork| {
-                    if fork.canonical_revision != bundle.expected_revision {
-                        bail!(
-                            "revision conflict: staged write expected {}, current {}",
-                            bundle.expected_revision,
-                            fork.canonical_revision
-                        );
-                    }
+                    fork.sync_revisions()?;
                     let applied = crate::canonical_write::apply_bundle_atomically_to_path(
                         &fork.work_path,
                         &bundle,
                     )?;
                     if applied > 0 {
-                        let revision = crate::utils::hash_file_sha256_hex(&fork.work_path)?;
-                        fork.canonical_file_revision = revision.clone();
-                        fork.canonical_revision = revision;
+                        fork.content_revision =
+                            crate::utils::hash_file_sha256_hex(&fork.work_path)?;
+                        fork.advance_state_revision();
                         fork.recalc_needed = true;
                     }
                     Ok(applied)
