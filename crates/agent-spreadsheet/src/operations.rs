@@ -186,6 +186,7 @@ pub struct DescriptorAdapterMetadata {
     pub cli: AdapterOperationMetadata,
     pub mcp: AdapterOperationMetadata,
     pub wasm: AdapterOperationMetadata,
+    pub just_bash: AdapterOperationMetadata,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1263,38 +1264,70 @@ const WASM_DURABLE_UNSUPPORTED: AdapterOperationMetadata = AdapterOperationMetad
     AdapterBindingKind::DurableOrchestration,
     DURABLE_REQUIRED,
 );
+const fn just_bash_adapter(
+    wasm: AdapterOperationMetadata,
+    persistence: AdapterPersistence,
+) -> AdapterOperationMetadata {
+    match wasm.support_status {
+        AdapterSupportStatus::Supported => {
+            AdapterOperationMetadata::supported(wasm.binding_kind, persistence)
+        }
+        AdapterSupportStatus::Unsupported => {
+            AdapterOperationMetadata::unsupported(wasm.binding_kind, persistence)
+        }
+    }
+}
+const JUST_BASH_NONE_UNSUPPORTED: AdapterOperationMetadata =
+    just_bash_adapter(WASM_NONE_UNSUPPORTED, NONE);
+const JUST_BASH_READ: AdapterOperationMetadata = just_bash_adapter(WASM_READ, NONE);
+const JUST_BASH_READ_UNSUPPORTED: AdapterOperationMetadata =
+    just_bash_adapter(WASM_READ_UNSUPPORTED, NONE);
+#[cfg(feature = "recalc")]
+const JUST_BASH_MUTABLE: AdapterOperationMetadata =
+    just_bash_adapter(WASM_MUTABLE, EXPORT_REQUIRED);
+#[cfg(feature = "recalc")]
+const JUST_BASH_TWO_RESOURCE: AdapterOperationMetadata = just_bash_adapter(WASM_TWO_RESOURCE, NONE);
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+const JUST_BASH_DURABLE_UNSUPPORTED: AdapterOperationMetadata =
+    just_bash_adapter(WASM_DURABLE_UNSUPPORTED, DURABLE_REQUIRED);
 const SHARED_READ_ADAPTERS: DescriptorAdapterMetadata = DescriptorAdapterMetadata {
     cli: CLI_READ,
     mcp: MCP_READ,
     wasm: WASM_READ,
+    just_bash: JUST_BASH_READ,
 };
 const DISCOVERY_ADAPTERS: DescriptorAdapterMetadata = DescriptorAdapterMetadata {
     cli: CLI_NONE,
     mcp: MCP_NONE,
     wasm: WASM_NONE_UNSUPPORTED,
+    just_bash: JUST_BASH_NONE_UNSUPPORTED,
 };
 const NATIVE_READ_ADAPTERS: DescriptorAdapterMetadata = DescriptorAdapterMetadata {
     cli: CLI_READ,
     mcp: MCP_READ,
     wasm: WASM_READ_UNSUPPORTED,
+    just_bash: JUST_BASH_READ_UNSUPPORTED,
 };
 #[cfg(feature = "recalc")]
 const MUTABLE_ADAPTERS: DescriptorAdapterMetadata = DescriptorAdapterMetadata {
     cli: CLI_MUTABLE,
     mcp: MCP_MUTABLE,
     wasm: WASM_MUTABLE,
+    just_bash: JUST_BASH_MUTABLE,
 };
 #[cfg(feature = "recalc")]
 const TWO_RESOURCE_ADAPTERS: DescriptorAdapterMetadata = DescriptorAdapterMetadata {
     cli: CLI_TWO_RESOURCE,
     mcp: MCP_TWO_RESOURCE,
     wasm: WASM_TWO_RESOURCE,
+    just_bash: JUST_BASH_TWO_RESOURCE,
 };
 #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 const DURABLE_ADAPTERS: DescriptorAdapterMetadata = DescriptorAdapterMetadata {
     cli: CLI_DURABLE_UNSUPPORTED,
     mcp: MCP_DURABLE,
     wasm: WASM_DURABLE_UNSUPPORTED,
+    just_bash: JUST_BASH_DURABLE_UNSUPPORTED,
 };
 
 macro_rules! descriptor {
@@ -1743,6 +1776,7 @@ pub enum OperationAdapter {
     Cli,
     Mcp,
     Wasm,
+    JustBash,
 }
 
 impl OperationDescriptor {
@@ -1751,6 +1785,7 @@ impl OperationDescriptor {
             OperationAdapter::Cli => self.adapters.cli,
             OperationAdapter::Mcp => self.adapters.mcp,
             OperationAdapter::Wasm => self.adapters.wasm,
+            OperationAdapter::JustBash => self.adapters.just_bash,
         }
     }
 

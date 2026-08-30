@@ -76,10 +76,11 @@ function exampleFromSchema(schema, root = schema, name) {
   return name || "value"
 }
 
-function discover(args) {
+function discover(args, availableOperations) {
   if (args.length === 1 && args[0] === "operations") {
     return registry.operations
-      .filter(({ adapters }) => adapters.wasm.support_status === "supported")
+      .filter(({ name, adapters }) => adapters.just_bash.support_status === "supported" &&
+        availableOperations.has(name))
       .map(({ input_schema, output_schema, ...descriptor }) => ({ ...descriptor, available: true }))
   }
   if (args.length === 2 && ["schema", "example"].includes(args[0])) {

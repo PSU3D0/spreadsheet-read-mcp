@@ -72,6 +72,19 @@ test("checked-in MCP adapter subset remains intentional", () => {
   assert.equal(supported("mcp").length, 31)
 })
 
-test("checked-in WASM adapter subset remains intentional", () => {
+test("checked-in WASM and just-bash adapter subsets remain intentional", () => {
   assert.deepEqual(supported("wasm"), EXPECTED_WASM_OPERATIONS)
+  assert.deepEqual(supported("just_bash"), EXPECTED_WASM_OPERATIONS)
+
+  for (const descriptor of manifest.operations) {
+    const plan = descriptor.adapters.just_bash
+    assert.equal(plan.binding_kind, descriptor.adapters.wasm.binding_kind, descriptor.name)
+    if (EXPECTED_WASM_OPERATIONS.includes(descriptor.name)) {
+      assert.equal(
+        plan.persistence,
+        ["write", "recalculate"].includes(descriptor.name) ? "export_required" : "none",
+        descriptor.name
+      )
+    }
+  }
 })

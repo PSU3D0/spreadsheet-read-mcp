@@ -70,6 +70,11 @@
           "persistence": "none",
           "support_status": "supported"
         },
+        "just_bash": {
+          "binding_kind": "none",
+          "persistence": "none",
+          "support_status": "unsupported"
+        },
         "mcp": {
           "binding_kind": "none",
           "persistence": "none",
@@ -339,6 +344,11 @@
     {
       "adapters": {
         "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "just_bash": {
           "binding_kind": "single_read",
           "persistence": "none",
           "support_status": "supported"
@@ -937,6 +947,11 @@
           "persistence": "none",
           "support_status": "supported"
         },
+        "just_bash": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
         "mcp": {
           "binding_kind": "single_read",
           "persistence": "durable_required",
@@ -1156,6 +1171,11 @@
     {
       "adapters": {
         "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "just_bash": {
           "binding_kind": "single_read",
           "persistence": "none",
           "support_status": "supported"
@@ -1454,6 +1474,11 @@
     {
       "adapters": {
         "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "just_bash": {
           "binding_kind": "single_read",
           "persistence": "none",
           "support_status": "supported"
@@ -2617,6 +2642,11 @@
           "persistence": "none",
           "support_status": "supported"
         },
+        "just_bash": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
         "mcp": {
           "binding_kind": "single_read",
           "persistence": "durable_required",
@@ -3021,6 +3051,11 @@
     {
       "adapters": {
         "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "just_bash": {
           "binding_kind": "single_read",
           "persistence": "none",
           "support_status": "supported"
@@ -3613,6 +3648,11 @@
           "persistence": "none",
           "support_status": "supported"
         },
+        "just_bash": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
         "mcp": {
           "binding_kind": "single_read",
           "persistence": "durable_required",
@@ -3993,6 +4033,11 @@
     {
       "adapters": {
         "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "just_bash": {
           "binding_kind": "single_read",
           "persistence": "none",
           "support_status": "supported"
@@ -4672,6 +4717,11 @@
           "persistence": "none",
           "support_status": "supported"
         },
+        "just_bash": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
         "mcp": {
           "binding_kind": "single_read",
           "persistence": "durable_required",
@@ -4868,6 +4918,11 @@
     {
       "adapters": {
         "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "just_bash": {
           "binding_kind": "single_read",
           "persistence": "none",
           "support_status": "supported"
@@ -5880,6 +5935,11 @@
           "persistence": "none",
           "support_status": "supported"
         },
+        "just_bash": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
         "mcp": {
           "binding_kind": "single_read",
           "persistence": "durable_required",
@@ -6437,6 +6497,11 @@
     {
       "adapters": {
         "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "just_bash": {
           "binding_kind": "single_read",
           "persistence": "none",
           "support_status": "supported"
@@ -7302,6 +7367,11 @@
           "persistence": "none",
           "support_status": "supported"
         },
+        "just_bash": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
         "mcp": {
           "binding_kind": "single_read",
           "persistence": "durable_required",
@@ -7984,6 +8054,11 @@
           "persistence": "none",
           "support_status": "supported"
         },
+        "just_bash": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
         "mcp": {
           "binding_kind": "single_read",
           "persistence": "durable_required",
@@ -8354,6 +8429,11 @@
     {
       "adapters": {
         "cli": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "just_bash": {
           "binding_kind": "single_read",
           "persistence": "none",
           "support_status": "supported"
@@ -8861,6 +8941,11 @@
           "persistence": "none",
           "support_status": "supported"
         },
+        "just_bash": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "supported"
+        },
         "mcp": {
           "binding_kind": "single_read",
           "persistence": "durable_required",
@@ -9175,6 +9260,11 @@
           "persistence": "none",
           "support_status": "supported"
         },
+        "just_bash": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "unsupported"
+        },
         "mcp": {
           "binding_kind": "single_read",
           "persistence": "durable_required",
@@ -9343,6 +9433,11 @@
           "binding_kind": "single_read",
           "persistence": "none",
           "support_status": "supported"
+        },
+        "just_bash": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "unsupported"
         },
         "mcp": {
           "binding_kind": "single_read",
@@ -9734,6 +9829,11 @@
           "binding_kind": "single_read",
           "persistence": "none",
           "support_status": "supported"
+        },
+        "just_bash": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "unsupported"
         },
         "mcp": {
           "binding_kind": "single_read",
@@ -10516,6 +10616,11 @@
           "persistence": "none",
           "support_status": "supported"
         },
+        "just_bash": {
+          "binding_kind": "single_read",
+          "persistence": "none",
+          "support_status": "unsupported"
+        },
         "mcp": {
           "binding_kind": "single_read",
           "persistence": "durable_required",
@@ -10821,6 +10926,11 @@
     {
       "adapters": {
         "cli": {
+          "binding_kind": "single_mutable",
+          "persistence": "export_required",
+          "support_status": "supported"
+        },
+        "just_bash": {
           "binding_kind": "single_mutable",
           "persistence": "export_required",
           "support_status": "supported"
@@ -13805,6 +13915,11 @@
           "persistence": "durable_required",
           "support_status": "unsupported"
         },
+        "just_bash": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "unsupported"
+        },
         "mcp": {
           "binding_kind": "durable_orchestration",
           "persistence": "durable_required",
@@ -13960,6 +14075,11 @@
           "persistence": "durable_required",
           "support_status": "unsupported"
         },
+        "just_bash": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "unsupported"
+        },
         "mcp": {
           "binding_kind": "durable_orchestration",
           "persistence": "durable_required",
@@ -14109,6 +14229,11 @@
     {
       "adapters": {
         "cli": {
+          "binding_kind": "single_mutable",
+          "persistence": "export_required",
+          "support_status": "supported"
+        },
+        "just_bash": {
           "binding_kind": "single_mutable",
           "persistence": "export_required",
           "support_status": "supported"
@@ -14388,6 +14513,11 @@
     {
       "adapters": {
         "cli": {
+          "binding_kind": "two_resource",
+          "persistence": "none",
+          "support_status": "supported"
+        },
+        "just_bash": {
           "binding_kind": "two_resource",
           "persistence": "none",
           "support_status": "supported"
@@ -15061,6 +15191,11 @@
           "persistence": "durable_required",
           "support_status": "unsupported"
         },
+        "just_bash": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "unsupported"
+        },
         "mcp": {
           "binding_kind": "durable_orchestration",
           "persistence": "durable_required",
@@ -15279,6 +15414,11 @@
           "persistence": "durable_required",
           "support_status": "unsupported"
         },
+        "just_bash": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "unsupported"
+        },
         "mcp": {
           "binding_kind": "durable_orchestration",
           "persistence": "durable_required",
@@ -15417,6 +15557,11 @@
     {
       "adapters": {
         "cli": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "unsupported"
+        },
+        "just_bash": {
           "binding_kind": "durable_orchestration",
           "persistence": "durable_required",
           "support_status": "unsupported"
@@ -16052,6 +16197,11 @@
           "persistence": "durable_required",
           "support_status": "unsupported"
         },
+        "just_bash": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "unsupported"
+        },
         "mcp": {
           "binding_kind": "durable_orchestration",
           "persistence": "durable_required",
@@ -16448,6 +16598,11 @@
     {
       "adapters": {
         "cli": {
+          "binding_kind": "durable_orchestration",
+          "persistence": "durable_required",
+          "support_status": "unsupported"
+        },
+        "just_bash": {
           "binding_kind": "durable_orchestration",
           "persistence": "durable_required",
           "support_status": "unsupported"

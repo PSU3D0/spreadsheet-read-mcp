@@ -94,9 +94,11 @@ const result = await bash.exec(
 )
 ```
 
-The command accepts only `asp op <operation> [--bind VFS_PATH] [--baseline VFS_PATH] [--json JSON] [--output VFS_PATH|--in-place]`. It reads and writes workbook bytes only through `ctx.fs`, injects the exact typed `session:` IDs returned by WASM, and disposes every ephemeral session. Preview never exports. Apply and recalculate require exactly one output target and use an adjacent VFS temporary file plus `mv`.
+The command accepts only `asp op <operation> [--bind VFS_PATH] [--baseline VFS_PATH] [--json JSON] [--output VFS_PATH|--in-place]`. It reads and writes workbook bytes only through `ctx.fs`. The reusable `agent-spreadsheet-sdk/stateless-byte-adapter` module owns ephemeral resource binding, canonical execution, export, status-to-exit mapping, and disposal; it is backend-oriented and has no dependency on just-bash or a filesystem. Preview never exports. Apply and recalculate require exactly one output target and use an adjacent VFS temporary file plus `mv`.
 
-The defaults match WASM's 64 MiB workbook and 1 MiB parameter ceilings. Override them with `maxWorkbookBytes` and `maxParamsBytes`; stat and payload limits are checked before creating a WASM session. `asp operations`, `asp schema <operation>`, and `asp example <operation>` are generic projections of the checked-in canonical registry. With `javascript: true`, `js-exec` can call `asp` through its `child_process.execSync` or `spawnSync` bridge without another tool projection.
+Writes to the same resolved target are serialized per `asp` command instance from the no-clobber check through `mv`. Concurrent `--output` calls therefore have exactly one winner, while `--in-place` replacements cannot interleave, and failed writes remove their temporary file.
+
+The defaults match WASM's 64 MiB workbook and 1 MiB parameter ceilings. Override them with `maxWorkbookBytes` and `maxParamsBytes`; stat and payload limits are checked before creating a WASM session. `asp operations` is the intersection of the registry's explicit `adapters.just_bash` support plan and the backend's live operation capabilities. `asp schema <operation>` and `asp example <operation>` remain generic projections of the checked-in canonical registry. With `javascript: true`, `js-exec` can call `asp` through its `child_process.execSync` or `spawnSync` bridge without another tool projection.
 
 ## Capabilities and errors
 

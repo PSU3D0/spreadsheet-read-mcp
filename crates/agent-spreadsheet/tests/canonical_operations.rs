@@ -1,8 +1,8 @@
 use agent_spreadsheet::model::WorkbookId;
 use agent_spreadsheet::operations::{
-    CanonicalErrorCode, CanonicalErrorEnvelope, CanonicalResponse, OperationRisk, ResourceId,
-    RuntimeCapabilities, canonical_error_schema, decode_operation, execute_operation_json,
-    operation_registry,
+    AdapterPersistence, CanonicalErrorCode, CanonicalErrorEnvelope, CanonicalResponse,
+    OperationAdapter, OperationRisk, ResourceId, RuntimeCapabilities, canonical_error_schema,
+    decode_operation, execute_operation_json, operation_registry,
 };
 use agent_spreadsheet::runtime::stateless::StatelessRuntime;
 use agent_spreadsheet::tools::{SheetOverviewParams, sheet_overview};
@@ -666,6 +666,9 @@ fn complete_registry_and_cli_discovery_are_distinct_projections() {
             && descriptor.pointer("/adapters/cli/binding_kind").is_some()
             && descriptor.pointer("/adapters/mcp/support_status").is_some()
             && descriptor.pointer("/adapters/wasm/persistence").is_some()
+            && descriptor
+                .pointer("/adapters/just_bash/binding_kind")
+                .is_some()
     }));
 
     let operations = assert_cmd::cargo::cargo_bin_cmd!("asp")
@@ -693,6 +696,32 @@ fn complete_registry_and_cli_discovery_are_distinct_projections() {
         "staged_change",
     ] {
         assert!(!names.contains(durable), "CLI advertised {durable}");
+    }
+}
+
+#[test]
+fn just_bash_registry_plan_is_the_portable_wasm_subset() {
+    for descriptor in operation_registry() {
+        let wasm = descriptor.adapter_metadata(OperationAdapter::Wasm);
+        let just_bash = descriptor.adapter_metadata(OperationAdapter::JustBash);
+        assert_eq!(
+            just_bash.support_status, wasm.support_status,
+            "{}",
+            descriptor.name
+        );
+        assert_eq!(
+            just_bash.binding_kind, wasm.binding_kind,
+            "{}",
+            descriptor.name
+        );
+        let expected = if matches!(descriptor.name, "write" | "recalculate") {
+            AdapterPersistence::ExportRequired
+        } else if just_bash.is_supported() {
+            AdapterPersistence::None
+        } else {
+            wasm.persistence
+        };
+        assert_eq!(just_bash.persistence, expected, "{}", descriptor.name);
     }
 }
 

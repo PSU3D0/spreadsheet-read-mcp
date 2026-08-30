@@ -23,6 +23,7 @@
   "exports": {
     ".": "./src/index.js",
     "./just-bash": "./src/just-bash.js",
+    "./stateless-byte-adapter": "./src/stateless-byte-adapter.js",
     "./package.json": "./package.json"
   },
   "files": [

@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict")
 const { spawnSync } = require("node:child_process")
+const fs = require("node:fs")
 const path = require("node:path")
 const test = require("node:test")
 
@@ -104,13 +105,23 @@ test("registry discovery, schema, and examples are checked-in generic projection
   const bash = new Bash({ customCommands: [createAspCommand({ bindings })] })
 
   const operations = parseJsonOutput(await bash.exec("asp operations"))
-  assert.ok(operations.some(({ name }) => name === "write"))
+  assert.deepEqual(operations.map(({ name }) => name), [
+    "list_sheets", "write", "recalculate", "verify_workbook"
+  ])
   assert.ok(operations.every(({ input_schema }) => input_schema === undefined))
   const schema = parseJsonOutput(await bash.exec("asp schema read_cells"))
   assert.equal(schema.name, "read_cells")
   assert.equal(schema.input_schema.title, "ReadCellsRequest")
   const example = parseJsonOutput(await bash.exec("asp example list_sheets"))
   assert.match(example.resource_id, /^session:/)
+
+  const restricted = mockBindings().bindings
+  delete restricted.exportWorkbook
+  const readOnly = new Bash({ customCommands: [createAspCommand({ bindings: restricted })] })
+  assert.deepEqual(
+    parseJsonOutput(await readOnly.exec("asp operations")).map(({ name }) => name),
+    ["list_sheets", "verify_workbook"]
+  )
 })
 
 test("preview is pure while apply and recalculate export atomically", async () => {
@@ -219,6 +230,60 @@ test("structured errors and limits happen before WASM session allocation", async
   assert.equal(JSON.parse(missing.stderr).error.path, "--bind")
   const unknown = await tooLargeWorkbook.exec("asp op not_real --json '{'")
   assert.equal(JSON.parse(unknown.stderr).error.code, "UNKNOWN_OPERATION")
+  const unavailable = await tooLargeWorkbook.exec("asp op read_cells --bind /book.xlsx --json '{}'")
+  assert.equal(JSON.parse(unavailable.stderr).error.code, "CAPABILITY_UNAVAILABLE")
+  assert.equal(workbook.state.created, 0)
+})
+
+test("same-target exports are locked, no-clobber, and leave no temporary files", async () => {
+  const { bindings } = mockBindings()
+  const bash = new Bash({
+    files: { "/book.xlsx": Uint8Array.from([1]) },
+    customCommands: [createAspCommand({ bindings })]
+  })
+  const command = "asp op write --bind /book.xlsx --output /winner.xlsx"
+  const input = { stdin: JSON.stringify({ expected_revision: "rev-1", mode: "apply", ops: [] }) }
+  const results = await Promise.all([bash.exec(command, input), bash.exec(command, input)])
+  assert.deepEqual(results.map(({ exitCode }) => exitCode).sort(), [0, 1])
+  const loser = results.find(({ exitCode }) => exitCode === 1)
+  assert.equal(JSON.parse(loser.stderr).error.path, "--output")
+  assert.deepEqual(Array.from(await bash.fs.readFileBuffer("/winner.xlsx")), [1, 9])
+  assert.equal((await bash.fs.getAllPaths()).some((entry) => entry.includes(".asp-tmp-")), false)
+
+  const inPlace = "asp op write --bind /book.xlsx --in-place"
+  const move = bash.fs.mv.bind(bash.fs)
+  let activeMoves = 0
+  let maxActiveMoves = 0
+  bash.fs.mv = async (...args) => {
+    activeMoves += 1
+    maxActiveMoves = Math.max(maxActiveMoves, activeMoves)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    try { return await move(...args) } finally { activeMoves -= 1 }
+  }
+  const applied = await Promise.all([bash.exec(inPlace, input), bash.exec(inPlace, input)])
+  bash.fs.mv = move
+  assert.deepEqual(applied.map(({ exitCode }) => exitCode), [0, 0])
+  assert.equal(maxActiveMoves, 1)
+  assert.equal((await bash.fs.getAllPaths()).some((entry) => entry.includes(".asp-tmp-")), false)
+
+  bash.fs.mv = async () => { throw new Error("injected move failure") }
+  const failed = await bash.exec(
+    "asp op write --bind /book.xlsx --output /broken.xlsx",
+    input
+  )
+  bash.fs.mv = move
+  assert.equal(JSON.parse(failed.stderr).error.path, "adapter_export")
+  assert.equal(await bash.fs.exists("/broken.xlsx"), false)
+  assert.equal((await bash.fs.getAllPaths()).some((entry) => entry.includes(".asp-tmp-")), false)
+})
+
+test("just-bash command remains a thin protocol and VFS transport", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "src", "just-bash.js"), "utf8")
+  const semanticLines = source.split("\n").filter((line) => {
+    const trimmed = line.trim()
+    return trimmed && !trimmed.startsWith("//")
+  })
+  assert.ok(semanticLines.length <= 150, `${semanticLines.length} semantic lines exceeds 150`)
 })
 
 test("js-exec child_process bridge invokes asp without a second tools projection", () => {

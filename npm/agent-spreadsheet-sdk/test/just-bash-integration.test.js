@@ -114,6 +114,24 @@ test("generated WASM just-bash adapter matches native canonical JSON and workboo
       fs.readFileSync(nativeAppliedPath)
     )
 
+    const raceFlags = "--bind /vfs-only.xlsx --output /race.xlsx"
+    const raceParams = {
+      expected_revision: adapterRead.json.revision_id,
+      mode: "apply",
+      ops: [op]
+    }
+    const raced = await Promise.all([
+      execute(bash, "write", raceFlags, raceParams),
+      execute(bash, "write", raceFlags, raceParams)
+    ])
+    assert.deepEqual(raced.map(({ exitCode }) => exitCode).sort(), [0, 1])
+    assert.equal(raced.find(({ exitCode }) => exitCode === 1).json.error.path, "--output")
+    assert.deepEqual(
+      Buffer.from(await bash.fs.readFileBuffer("/race.xlsx")),
+      fs.readFileSync(nativeAppliedPath)
+    )
+    assert.equal((await bash.fs.getAllPaths()).some((entry) => entry.includes(".asp-tmp-")), false)
+
     const nativePartialRead = native("list_sheets", { bind: partialFixture, params: {} })
     const adapterPartialRead = await execute(bash, "list_sheets", "--bind /partial.xlsx", {})
     const nativeRecalcPath = path.join(temp, "native-recalc.xlsx")

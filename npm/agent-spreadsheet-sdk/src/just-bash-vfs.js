@@ -1,10 +1,8 @@
-let tempSequence = 0
-
 function resolveVfsPath(ctx, path) {
   return ctx.fs.resolvePath(ctx.cwd, path)
 }
 
-async function readWorkbook(ctx, path, limit, operation, flag) {
+async function readWorkbook(ctx, path, limit, flag) {
   const resolved = resolveVfsPath(ctx, path)
   let stat
   try {
@@ -15,10 +13,9 @@ async function readWorkbook(ctx, path, limit, operation, flag) {
   }
   if (!stat.isFile) throw Object.assign(new Error(`'${path}' is not a file`), { aspPath: flag })
   if (stat.size > limit) {
-    const error = new Error(`workbook exceeds the ${limit}-byte adapter limit`)
-    error.aspCode = "INVALID_REQUEST"
-    error.aspPath = flag
-    throw error
+    throw Object.assign(new Error(`workbook exceeds the ${limit}-byte adapter limit`), {
+      aspCode: "INVALID_REQUEST", aspPath: flag
+    })
   }
   let bytes
   try {
@@ -28,35 +25,56 @@ async function readWorkbook(ctx, path, limit, operation, flag) {
     throw cause
   }
   if (bytes.byteLength > limit) {
-    const error = new Error(`workbook exceeds the ${limit}-byte adapter limit`)
-    error.aspCode = "INVALID_REQUEST"
-    error.aspPath = flag
-    throw error
+    throw Object.assign(new Error(`workbook exceeds the ${limit}-byte adapter limit`), {
+      aspCode: "INVALID_REQUEST", aspPath: flag
+    })
   }
-  return { bytes, path: resolved }
+  return bytes
 }
 
-async function atomicWrite(ctx, target, bytes, replace) {
-  const resolved = resolveVfsPath(ctx, target)
-  if (!replace && await ctx.fs.exists(resolved)) {
-    const error = new Error(`output path '${target}' already exists`)
-    error.aspCode = "INVALID_REQUEST"
-    error.aspPath = "--output"
-    throw error
+function createVfsWriter() {
+  const locks = new Map()
+  let tempSequence = 0
+
+  async function withTargetLock(target, task) {
+    const previous = locks.get(target) || Promise.resolve()
+    let release
+    const current = new Promise((resolve) => { release = resolve })
+    locks.set(target, current)
+    await previous
+    try {
+      return await task()
+    } finally {
+      release()
+      if (locks.get(target) === current) locks.delete(target)
+    }
   }
-  let temporary
-  do {
-    temporary = `${resolved}.asp-tmp-${++tempSequence}`
-  } while (await ctx.fs.exists(temporary))
-  try {
-    await ctx.fs.writeFile(temporary, bytes)
-    await ctx.fs.mv(temporary, resolved)
-  } catch (cause) {
-    try { await ctx.fs.rm(temporary, { force: true }) } catch (_) {}
-    cause.aspCode = "OPERATION_FAILED"
-    cause.aspPath = "adapter_export"
-    throw cause
+
+  async function atomicWrite(ctx, target, bytes, replace) {
+    const resolved = resolveVfsPath(ctx, target)
+    return withTargetLock(resolved, async () => {
+      if (!replace && await ctx.fs.exists(resolved)) {
+        throw Object.assign(new Error(`output path '${target}' already exists`), {
+          aspCode: "INVALID_REQUEST", aspPath: "--output"
+        })
+      }
+      let temporary
+      do {
+        temporary = `${resolved}.asp-tmp-${++tempSequence}`
+      } while (await ctx.fs.exists(temporary))
+      try {
+        await ctx.fs.writeFile(temporary, bytes)
+        await ctx.fs.mv(temporary, resolved)
+      } catch (cause) {
+        try { await ctx.fs.rm(temporary, { force: true }) } catch (_) {}
+        cause.aspCode = "OPERATION_FAILED"
+        cause.aspPath = "adapter_export"
+        throw cause
+      }
+    })
   }
+
+  return { atomicWrite }
 }
 
-module.exports = { resolveVfsPath, readWorkbook, atomicWrite }
+module.exports = { createVfsWriter, readWorkbook, resolveVfsPath }

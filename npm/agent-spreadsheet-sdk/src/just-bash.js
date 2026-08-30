@@ -1,6 +1,11 @@
 const { decodeBytesToUtf8, defineCommand } = require("just-bash")
 const { WasmBackend } = require("./wasm-backend")
 const {
+  executeStatelessByteOperation,
+  supportsStatelessBytePlan,
+  validateStatelessByteRequest
+} = require("./stateless-byte-adapter")
+const {
   assertLimit,
   canonicalError,
   descriptorFor,
@@ -11,7 +16,7 @@ const {
   parseOperationArgs,
   utf8Bytes
 } = require("./just-bash-parser")
-const { atomicWrite, readWorkbook, resolveVfsPath } = require("./just-bash-vfs")
+const { createVfsWriter, readWorkbook, resolveVfsPath } = require("./just-bash-vfs")
 
 const DEFAULT_MAX_WORKBOOK_BYTES = 64 * 1024 * 1024
 const DEFAULT_MAX_PARAMS_BYTES = 1024 * 1024
@@ -24,12 +29,17 @@ function createAspCommand({
   assertLimit(maxWorkbookBytes, "maxWorkbookBytes")
   assertLimit(maxParamsBytes, "maxParamsBytes")
   const backend = new WasmBackend({ bindings })
+  const capabilities = backend.getCapabilities()
+  const availableOperations = new Set(capabilities.operations.filter((operation) => {
+    const descriptor = descriptorFor(operation)
+    return descriptor && supportsStatelessBytePlan(descriptor.adapters.just_bash, capabilities)
+  }))
+  const { atomicWrite } = createVfsWriter()
 
   return defineCommand("asp", async (args, ctx) => {
     let operation
-    const sessions = []
     try {
-      const discovery = discover(args)
+      const discovery = discover(args, availableOperations)
       if (discovery !== null) return jsonResult(discovery)
 
       const options = parseOperationArgs(args)
@@ -38,13 +48,15 @@ function createAspCommand({
       if (!descriptor) throw canonicalError(
         "UNKNOWN_OPERATION", `unknown operation '${operation}'`, operation, "$.operation"
       )
-      const adapter = descriptor.adapters.wasm
-      if (adapter.support_status !== "supported") throw canonicalError(
-        "CAPABILITY_UNAVAILABLE",
-        `canonical operation '${operation}' is unavailable in the WASM adapter`,
-        operation,
-        "adapter"
-      )
+      const plan = descriptor.adapters.just_bash
+      if (plan.support_status !== "supported" || !availableOperations.has(operation)) {
+        throw canonicalError(
+          "CAPABILITY_UNAVAILABLE",
+          `canonical operation '${operation}' is unavailable in the just-bash adapter`,
+          operation,
+          "adapter"
+        )
+      }
 
       let payloadText
       try {
@@ -65,87 +77,61 @@ function createAspCommand({
       try { params = JSON.parse(payloadText) } catch (error) {
         throw canonicalError("INVALID_REQUEST", error.message, operation, "$")
       }
-      if (!params || typeof params !== "object" || Array.isArray(params)) {
-        throw canonicalError("INVALID_REQUEST", "canonical request payload must be a JSON object", operation, "$")
-      }
+      validateStatelessByteRequest(plan, params)
 
-      const needsBind = adapter.binding_kind !== "none"
-      const twoResource = adapter.binding_kind === "two_resource"
+      const needsBind = plan.binding_kind !== "none"
+      const twoResource = plan.binding_kind === "two_resource"
       if (needsBind !== Boolean(options.bind)) invalid(
         needsBind ? `canonical operation '${operation}' requires --bind <VFS_PATH>`
           : `canonical operation '${operation}' does not accept --bind`,
-        operation,
-        "--bind"
+        operation, "--bind"
       )
       if (twoResource !== Boolean(options.baseline)) invalid(
         twoResource ? `canonical operation '${operation}' requires --baseline <VFS_PATH>`
           : "--baseline is only accepted by two-resource operations",
-        operation,
-        "--baseline"
+        operation, "--baseline"
       )
 
-      const mutable = descriptor.adapters.cli.persistence === "export_required"
+      const exports = plan.persistence === "export_required"
       const preview = params.mode === "preview"
-      if (!mutable && (options.output || options.inPlace)) invalid(
-        "--output and --in-place require a bound workbook-write operation", operation, "adapter_flags"
+      if (!exports && (options.output || options.inPlace)) invalid(
+        "--output and --in-place require a bound workbook-write operation",
+        operation, "adapter_flags"
       )
-      if (mutable && params.mode === "stage") throw canonicalError(
-        "CAPABILITY_UNAVAILABLE",
-        "stage requires durable orchestration and is unavailable in the just-bash adapter",
-        operation,
-        "$.mode"
-      )
-      if (mutable && preview && (options.output || options.inPlace)) invalid(
+      if (exports && preview && (options.output || options.inPlace)) invalid(
         "preview does not accept file export flags", operation, "adapter_flags"
       )
-      if (mutable && !preview && Boolean(options.output) === Boolean(options.inPlace)) invalid(
+      if (exports && !preview && Boolean(options.output) === Boolean(options.inPlace)) invalid(
         "a mutating operation requires exactly one of --output <VFS_PATH> or --in-place",
-        operation,
-        "adapter_flags"
+        operation, "adapter_flags"
       )
       if (options.output && resolveVfsPath(ctx, options.output) === resolveVfsPath(ctx, options.bind)) {
         invalid("--output must differ from --bind; use --in-place", operation, "--output")
       }
 
-      const reads = []
-      if (options.bind) reads.push(readWorkbook(ctx, options.bind, maxWorkbookBytes, operation, "--bind"))
-      if (options.baseline) reads.push(readWorkbook(
-        ctx, options.baseline, maxWorkbookBytes, operation, "--baseline"
-      ))
-      const workbooks = await Promise.all(reads)
-      for (const workbook of workbooks) {
-        const resourceId = await backend.createSession({ workbookBytes: workbook.bytes })
-        sessions.push(resourceId)
+      const sources = []
+      if (options.bind) sources.push(readWorkbook(ctx, options.bind, maxWorkbookBytes, "--bind"))
+      if (options.baseline) {
+        sources.push(readWorkbook(ctx, options.baseline, maxWorkbookBytes, "--baseline"))
       }
-      if (sessions[0]) {
-        if (params.resource_id && params.resource_id !== sessions[0]) invalid(
-          "payload resource_id does not match the ephemeral --bind resource", operation, "$.resource_id"
+      const result = await executeStatelessByteOperation({
+        backend,
+        operation,
+        params,
+        plan,
+        workbooks: await Promise.all(sources)
+      })
+      if (result.workbookBytes) {
+        await atomicWrite(
+          ctx,
+          options.inPlace ? options.bind : options.output,
+          result.workbookBytes,
+          options.inPlace
         )
-        params.resource_id = sessions[0]
       }
-      if (sessions[1]) {
-        if (params.baseline_resource_id && params.baseline_resource_id !== sessions[1]) invalid(
-          "payload baseline_resource_id does not match the ephemeral --baseline resource",
-          operation,
-          "$.baseline_resource_id"
-        )
-        params.baseline_resource_id = sessions[1]
-      }
-
-      const response = await backend.execute(operation, params)
-      const status = response?.data?.status
-      const exportResult = mutable && !preview && !["failed", "rolled_back"].includes(status)
-      if (exportResult) {
-        const bytes = await backend.exportWorkbook({ resource_id: sessions[0] })
-        await atomicWrite(ctx, options.inPlace ? options.bind : options.output, bytes, options.inPlace)
-      }
-      return jsonResult(response, status === "partial" ? 2 : ["failed", "rolled_back"].includes(status) ? 1 : 0)
+      return jsonResult(result.response, result.exitCode)
     } catch (error) {
       return jsonResult(errorEnvelope(error, operation), 1, true)
-    } finally {
-      for (const resourceId of sessions.reverse()) {
-        try { await backend.disposeSession({ resource_id: resourceId }) } catch (_) {}
-      }
     }
   })
 }
