@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use agent_spreadsheet::config::{OutputProfile, RecalcBackendKind, ServerConfig, TransportKind};
 use agent_spreadsheet::core::session::{
     SessionApplySummary, SessionFindValueParams, SessionRangeSelection, SessionReadTableParams,
     SessionSheetOverviewParams, SessionSheetPageParams, SessionTransformOp, WorkbookSession,
@@ -8,8 +8,40 @@ use agent_spreadsheet::model::{
     SheetOverviewResponse, SheetPageFormat, SheetPageResponse, TableOutputFormat,
     WorkbookDescription,
 };
+use agent_spreadsheet::operations::{
+    CanonicalErrorCode, CanonicalErrorEnvelope, CanonicalResponse, ResourceId, RuntimeCapabilities,
+    execute_operation_json, operation_descriptor, operations_discovery,
+};
+use agent_spreadsheet::repository::{VirtualWorkbookInput, VirtualWorkspaceRepository};
+use agent_spreadsheet::state::AppState;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
+
+pub const MAX_WORKBOOK_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_PARAMS_JSON_BYTES: usize = 1024 * 1024;
+pub const MAX_SESSIONS: usize = 16;
+const MAX_TOTAL_WORKBOOK_BYTES: usize = 256 * 1024 * 1024;
+
+const EXPLICITLY_UNAVAILABLE_OPERATIONS: &[&str] = &[
+    "list_workbooks",
+    "write",
+    "create_fork",
+    "list_forks",
+    "recalculate",
+    "verify_workbook",
+    "export_fork",
+    "discard_fork",
+    "get_changes",
+    "checkpoint",
+    "staged_change",
+    "screenshot_sheet",
+    "sheetport_manifest",
+    "execute_sheetport",
+    "inspect_vba",
+];
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum SessionApiError {
@@ -232,11 +264,78 @@ impl From<SheetPageParams> for SessionSheetPageParams {
 struct SessionStore {
     next_id: u64,
     sessions: HashMap<String, WorkbookSession>,
+    virtual_keys: HashMap<String, String>,
+    workbook_bytes: HashMap<String, usize>,
 }
 
 #[derive(Clone, Default)]
 pub struct SessionApi {
     store: Arc<Mutex<SessionStore>>,
+}
+
+fn wasm_config() -> Arc<ServerConfig> {
+    Arc::new(ServerConfig {
+        workspace_root: PathBuf::new(),
+        screenshot_dir: PathBuf::new(),
+        path_mappings: Vec::new(),
+        cache_capacity: 1,
+        supported_extensions: vec!["xlsx".to_string(), "xlsm".to_string()],
+        single_workbook: None,
+        enabled_tools: None,
+        transport: TransportKind::Stdio,
+        http_bind_address: "127.0.0.1:0"
+            .parse()
+            .expect("static loopback address is valid"),
+        recalc_enabled: false,
+        recalc_backend: RecalcBackendKind::Formualizer,
+        vba_enabled: false,
+        max_concurrent_recalcs: 1,
+        tool_timeout_ms: None,
+        max_response_bytes: Some(MAX_PARAMS_JSON_BYTES as u64),
+        output_profile: OutputProfile::TokenDense,
+        max_payload_bytes: Some(MAX_PARAMS_JSON_BYTES as u64),
+        max_cells: Some(10_000),
+        max_items: Some(500),
+        allow_overwrite: false,
+        slim_surface: true,
+    })
+}
+
+fn virtual_state(
+    key: String,
+    bytes: Vec<u8>,
+) -> (Arc<AppState>, agent_spreadsheet::model::WorkbookId) {
+    let config = wasm_config();
+    let repository = Arc::new(VirtualWorkspaceRepository::new(config.clone()));
+    let workbook_id = repository.register(VirtualWorkbookInput {
+        key,
+        slug: Some("session".to_string()),
+        bytes,
+    });
+    (
+        Arc::new(AppState::new_with_repository(config, repository)),
+        workbook_id,
+    )
+}
+
+fn adapter_capabilities() -> RuntimeCapabilities {
+    RuntimeCapabilities {
+        workbook_discovery: false,
+        workbook_read: true,
+        workbook_write: false,
+        screenshot_rendering: false,
+        sheetport: false,
+        vba: false,
+    }
+}
+
+fn canonical_error(
+    code: CanonicalErrorCode,
+    operation: Option<&str>,
+    message: impl Into<String>,
+    path: Option<&str>,
+) -> CanonicalErrorEnvelope {
+    CanonicalErrorEnvelope::new(code, message, operation, path.map(str::to_string))
 }
 
 impl SessionApi {
@@ -245,6 +344,27 @@ impl SessionApi {
     }
 
     pub fn create_session(&self, workbook_bytes: &[u8]) -> SessionResult<String> {
+        if workbook_bytes.len() > MAX_WORKBOOK_BYTES {
+            return Err(SessionApiError::InvalidArgument {
+                message: format!("workbook exceeds the {MAX_WORKBOOK_BYTES}-byte session limit"),
+            });
+        }
+
+        {
+            let store = self.lock_store()?;
+            let total_bytes: usize = store.workbook_bytes.values().sum();
+            if store.sessions.len() >= MAX_SESSIONS {
+                return Err(SessionApiError::InvalidArgument {
+                    message: format!("session limit of {MAX_SESSIONS} reached"),
+                });
+            }
+            if total_bytes.saturating_add(workbook_bytes.len()) > MAX_TOTAL_WORKBOOK_BYTES {
+                return Err(SessionApiError::InvalidArgument {
+                    message: "total workbook session memory limit exceeded".to_string(),
+                });
+            }
+        }
+
         let session = WorkbookSession::from_bytes(workbook_bytes).map_err(|err| {
             SessionApiError::InvalidArgument {
                 message: err.to_string(),
@@ -253,9 +373,173 @@ impl SessionApi {
 
         let mut store = self.lock_store()?;
         store.next_id += 1;
-        let session_id = format!("session-{:016x}", store.next_id);
-        store.sessions.insert(session_id.clone(), session);
-        Ok(session_id)
+        let virtual_key = format!("session-{:016x}", store.next_id);
+        let (_, workbook_id) = virtual_state(virtual_key.clone(), workbook_bytes.to_vec());
+        let resource_id = format!("session:{}", workbook_id.as_str());
+        serde_json::from_value::<ResourceId>(json!(resource_id)).map_err(|error| {
+            SessionApiError::Internal {
+                message: format!("failed to create typed session resource: {error}"),
+            }
+        })?;
+        store.sessions.insert(resource_id.clone(), session);
+        store.virtual_keys.insert(resource_id.clone(), virtual_key);
+        store
+            .workbook_bytes
+            .insert(resource_id.clone(), workbook_bytes.len());
+        Ok(resource_id)
+    }
+
+    pub fn operations_json(&self) -> SessionResult<String> {
+        serde_json::to_string(&operations_discovery(&adapter_capabilities())).map_err(|error| {
+            SessionApiError::Internal {
+                message: format!("failed to serialize operations discovery: {error}"),
+            }
+        })
+    }
+
+    pub async fn execute_operation(
+        &self,
+        session_id: &str,
+        operation_name: &str,
+        params_json: &str,
+    ) -> Result<String, CanonicalErrorEnvelope> {
+        if params_json.len() > MAX_PARAMS_JSON_BYTES {
+            return Err(canonical_error(
+                CanonicalErrorCode::InvalidRequest,
+                Some(operation_name),
+                format!("params JSON exceeds the {MAX_PARAMS_JSON_BYTES}-byte limit"),
+                Some("$.params"),
+            ));
+        }
+
+        if EXPLICITLY_UNAVAILABLE_OPERATIONS.contains(&operation_name) {
+            return Err(canonical_error(
+                CanonicalErrorCode::CapabilityUnavailable,
+                Some(operation_name),
+                format!(
+                    "operation '{operation_name}' is unavailable in the WASM byte-session runtime"
+                ),
+                None,
+            ));
+        }
+        if let Some(descriptor) = operation_descriptor(operation_name)
+            && !descriptor.is_available(&adapter_capabilities())
+        {
+            return Err(canonical_error(
+                CanonicalErrorCode::CapabilityUnavailable,
+                Some(operation_name),
+                format!(
+                    "operation '{operation_name}' is unavailable in the WASM byte-session runtime"
+                ),
+                None,
+            ));
+        }
+
+        let mut params: Value = serde_json::from_str(params_json).map_err(|error| {
+            canonical_error(
+                CanonicalErrorCode::InvalidRequest,
+                Some(operation_name),
+                format!("invalid params JSON: {error}"),
+                Some("$.params"),
+            )
+        })?;
+        let object = params.as_object_mut().ok_or_else(|| {
+            canonical_error(
+                CanonicalErrorCode::InvalidRequest,
+                Some(operation_name),
+                "params JSON must be an object",
+                Some("$.params"),
+            )
+        })?;
+        match object.get("resource_id") {
+            Some(Value::String(resource_id)) if resource_id == session_id => {}
+            Some(_) => {
+                return Err(canonical_error(
+                    CanonicalErrorCode::InvalidRequest,
+                    Some(operation_name),
+                    "params resource_id must match sessionId",
+                    Some("$.resource_id"),
+                ));
+            }
+            None => {
+                object.insert("resource_id".to_string(), json!(session_id));
+            }
+        }
+
+        let (bytes, virtual_key) = {
+            let store = self.lock_store().map_err(|error| {
+                canonical_error(
+                    CanonicalErrorCode::OperationFailed,
+                    Some(operation_name),
+                    error.to_string(),
+                    None,
+                )
+            })?;
+            let session = store.sessions.get(session_id).ok_or_else(|| {
+                canonical_error(
+                    CanonicalErrorCode::ResourceNotFound,
+                    Some(operation_name),
+                    format!("session resource '{session_id}' not found"),
+                    Some("$.sessionId"),
+                )
+            })?;
+            let bytes = session.to_bytes().map_err(|error| {
+                canonical_error(
+                    CanonicalErrorCode::OperationFailed,
+                    Some(operation_name),
+                    format!("failed to materialize session workbook: {error}"),
+                    None,
+                )
+            })?;
+            if bytes.len() > MAX_WORKBOOK_BYTES {
+                return Err(canonical_error(
+                    CanonicalErrorCode::CapabilityUnavailable,
+                    Some(operation_name),
+                    "session workbook exceeds the WASM materialization limit",
+                    None,
+                ));
+            }
+            let key = store.virtual_keys.get(session_id).cloned().ok_or_else(|| {
+                canonical_error(
+                    CanonicalErrorCode::OperationFailed,
+                    Some(operation_name),
+                    "session resource metadata is missing",
+                    None,
+                )
+            })?;
+            (bytes, key)
+        };
+
+        let (state, workbook_id) = virtual_state(virtual_key, bytes);
+        let expected_opaque = session_id.split_once(':').map(|(_, value)| value);
+        if expected_opaque != Some(workbook_id.as_str()) {
+            return Err(canonical_error(
+                CanonicalErrorCode::OperationFailed,
+                Some(operation_name),
+                "session resource binding changed unexpectedly",
+                None,
+            ));
+        }
+
+        let mut response: CanonicalResponse =
+            execute_operation_json(state, operation_name, params).await?;
+        response.resource_id =
+            Some(serde_json::from_value(json!(session_id)).map_err(|error| {
+                canonical_error(
+                    CanonicalErrorCode::OperationFailed,
+                    Some(operation_name),
+                    format!("invalid session resource binding: {error}"),
+                    None,
+                )
+            })?);
+        serde_json::to_string(&response).map_err(|error| {
+            canonical_error(
+                CanonicalErrorCode::OperationFailed,
+                Some(operation_name),
+                format!("failed to serialize canonical response: {error}"),
+                None,
+            )
+        })
     }
 
     pub fn list_sheets(&self, session_id: &str) -> SessionResult<Vec<String>> {
@@ -603,7 +887,10 @@ impl SessionApi {
 
     pub fn dispose_session(&self, session_id: &str) -> SessionResult<bool> {
         let mut store = self.lock_store()?;
-        Ok(store.sessions.remove(session_id).is_some())
+        let removed = store.sessions.remove(session_id).is_some();
+        store.virtual_keys.remove(session_id);
+        store.workbook_bytes.remove(session_id);
+        Ok(removed)
     }
 
     fn lock_store(&self) -> SessionResult<MutexGuard<'_, SessionStore>> {
@@ -614,7 +901,7 @@ impl SessionApi {
 }
 
 #[cfg(target_arch = "wasm32")]
-mod wasm_bindings {
+pub mod wasm_bindings {
     use super::*;
     use wasm_bindgen::prelude::*;
 
@@ -627,6 +914,10 @@ mod wasm_bindings {
         let payload = SessionApiErrorPayload::from(err);
         serde_wasm_bindgen::to_value(&payload)
             .unwrap_or_else(|_| JsValue::from_str(&payload.message))
+    }
+
+    fn canonical_to_js_error(err: CanonicalErrorEnvelope) -> JsValue {
+        serde_wasm_bindgen::to_value(&err).unwrap_or_else(|_| JsValue::from_str(&err.error.message))
     }
 
     fn to_js_value<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
@@ -644,8 +935,33 @@ mod wasm_bindings {
     }
 
     #[wasm_bindgen(js_name = createSession)]
-    pub fn create_session_js(workbook_bytes: Vec<u8>) -> Result<String, JsValue> {
-        api().create_session(&workbook_bytes).map_err(to_js_error)
+    pub fn create_session_js(workbook_bytes: js_sys::Uint8Array) -> Result<String, JsValue> {
+        let byte_length = workbook_bytes.length() as usize;
+        if byte_length > MAX_WORKBOOK_BYTES {
+            return Err(to_js_error(SessionApiError::InvalidArgument {
+                message: format!("workbook exceeds the {MAX_WORKBOOK_BYTES}-byte session limit"),
+            }));
+        }
+        let mut bytes = vec![0; byte_length];
+        workbook_bytes.copy_to(&mut bytes);
+        api().create_session(&bytes).map_err(to_js_error)
+    }
+
+    #[wasm_bindgen(js_name = operations)]
+    pub fn operations_js() -> Result<String, JsValue> {
+        api().operations_json().map_err(to_js_error)
+    }
+
+    #[wasm_bindgen(js_name = executeOperation)]
+    pub async fn execute_operation_js(
+        session_id: String,
+        operation_name: String,
+        params_json: String,
+    ) -> Result<String, JsValue> {
+        api()
+            .execute_operation(&session_id, &operation_name, &params_json)
+            .await
+            .map_err(canonical_to_js_error)
     }
 
     #[wasm_bindgen(js_name = listSheets)]

@@ -19,6 +19,7 @@ use parking_lot::RwLock;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::task;
 
 pub struct AppState {
@@ -153,7 +154,10 @@ impl AppState {
         }
 
         let repo = self.repository.clone();
+        #[cfg(not(target_arch = "wasm32"))]
         let workbook = task::spawn_blocking(move || repo.load_context(&resolved)).await??;
+        #[cfg(target_arch = "wasm32")]
+        let workbook = repo.load_context(&resolved)?;
         let workbook = Arc::new(workbook);
 
         let mut cache = self.cache.write();
