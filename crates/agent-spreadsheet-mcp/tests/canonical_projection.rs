@@ -67,6 +67,13 @@ async fn live_json_rpc_projects_every_available_canonical_descriptor() -> Result
 
     for tool in &tools {
         let descriptor = operation_descriptor(&tool.name).expect("canonical descriptor");
+        let marker = tool
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.0.get("agent-spreadsheet/canonical"))
+            .expect("canonical marker must survive tools/list");
+        assert_eq!(marker["schema_version"], "1");
+        assert_eq!(marker["operation"], tool.name.as_ref());
         assert_eq!(tool.schema_as_json_value(), (descriptor.input_schema)());
         assert!(
             tool.output_schema.is_none(),
@@ -192,6 +199,48 @@ async fn live_compat_router_preserves_legacy_shared_routes() -> Result<()> {
     assert!(names.contains(&"mutate_batch"));
     assert!(names.contains(&"read_cells"));
     assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
+
+    let marked = tools
+        .iter()
+        .filter_map(|tool| {
+            tool.meta
+                .as_ref()
+                .and_then(|meta| meta.0.get("agent-spreadsheet/canonical"))
+                .map(|marker| (tool.name.as_ref(), marker))
+        })
+        .collect::<Vec<_>>();
+    for (name, marker) in &marked {
+        assert_eq!(marker["schema_version"], "1");
+        assert_eq!(marker["operation"], *name);
+    }
+    for legacy_shared in [
+        "list_workbooks",
+        "describe_workbook",
+        "list_sheets",
+        "sheet_overview",
+        "read_table",
+        "named_ranges",
+        "create_fork",
+        "list_forks",
+        "verify_workbook",
+        "discard_fork",
+    ] {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == legacy_shared)
+            .expect("legacy shared route");
+        assert!(tool.meta.is_none(), "{legacy_shared} must remain legacy");
+    }
+    if let Some(screenshot) = tools.iter().find(|tool| tool.name == "screenshot_sheet") {
+        assert!(
+            screenshot.meta.is_none(),
+            "legacy screenshot must be unmarked"
+        );
+    }
+    assert!(
+        marked.iter().any(|(name, _)| *name == "read_cells"),
+        "canonical-only tools remain discoverable in compatibility mode"
+    );
 
     let list = client
         .call_tool(call_tool("list_workbooks", json!({"include_paths":false})))

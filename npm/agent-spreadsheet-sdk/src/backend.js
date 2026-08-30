@@ -3,6 +3,8 @@ const { CapabilityError, SpreadsheetSdkError } = require("./errors")
 
 const OPERATION_NAMES = Object.freeze(registry.operations.map(({ name }) => name))
 const OPERATION_SET = new Set(OPERATION_NAMES)
+const CANONICAL_TOOL_META_KEY = "agent-spreadsheet/canonical"
+const CANONICAL_SCHEMA_VERSION = registry.schema_version
 
 function canonicalMethodName(operation) {
   return operation.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase())
@@ -24,7 +26,7 @@ function declaredOperations(value, fallback = []) {
   return [...new Set(operations.filter((operation) => OPERATION_SET.has(operation)))]
 }
 
-function discoveredOperations(value) {
+function discoveryEntries(value) {
   let entries = value
   if (typeof entries === "string") {
     try {
@@ -43,6 +45,14 @@ function discoveredOperations(value) {
       code: "INVALID_RESPONSE"
     })
   }
+  return entries
+}
+
+// Explicit operation registries and WASM operations() are trusted canonical API
+// contracts. Generic MCP tools/list descriptors are not: compatibility routers
+// intentionally reuse several canonical names with legacy schemas and outputs.
+function discoveredOperations(value) {
+  const entries = discoveryEntries(value)
   const names = entries.map((entry) => typeof entry === "string" ? entry : entry?.name)
   if (names.some((name) => typeof name !== "string")) {
     throw new SpreadsheetSdkError("operation discovery contains a descriptor without a name", {
@@ -50,6 +60,17 @@ function discoveredOperations(value) {
     })
   }
   return [...new Set(names.filter((name) => OPERATION_SET.has(name)))]
+}
+
+function discoveredCanonicalTools(value) {
+  return [...new Set(discoveryEntries(value)
+    .filter((entry) => {
+      if (!entry || typeof entry !== "object" || typeof entry.name !== "string") return false
+      const marker = entry._meta?.[CANONICAL_TOOL_META_KEY] ?? entry.meta?.[CANONICAL_TOOL_META_KEY]
+      return marker?.schema_version === CANONICAL_SCHEMA_VERSION &&
+        marker?.operation === entry.name && OPERATION_SET.has(entry.name)
+    })
+    .map(({ name }) => name))]
 }
 
 function requireOperation(backend, operation, method = "execute") {
@@ -91,7 +112,12 @@ function prefixedResourceId(value, prefix) {
 function legacyResourceId(kind, input, mutation = false) {
   if (input.resource_id) return input.resource_id
   if (kind === "wasm") {
-    return prefixedResourceId(input.sessionId || input.session_id || input.contextId, "session")
+    const session = input.sessionId || input.session_id || input.contextId || input.context_id
+    if (session) return prefixedResourceId(session, "session")
+    const legacy = mutation
+      ? input.forkId || input.fork_id || input.workbookId || input.workbook_id
+      : input.workbookId || input.workbook_id
+    return prefixedResourceId(legacy, mutation ? "fork" : "session")
   }
   const value = mutation
     ? input.forkId || input.fork_id || input.workbookId || input.workbook_id || input.contextId
@@ -106,6 +132,7 @@ module.exports = {
   CANONICAL_METHODS,
   declaredOperations,
   discoveredOperations,
+  discoveredCanonicalTools,
   requireOperation,
   installCanonicalMethods,
   projectData,

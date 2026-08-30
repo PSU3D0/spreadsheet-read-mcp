@@ -8,7 +8,7 @@ const { WasmBackend, CANONICAL_REGISTRY } = require("../src")
 const generatedPackage = process.env.AGENT_SPREADSHEET_WASM_PACKAGE
 
 test("SDK drives the generated wasm-bindgen Node package", {
-  skip: generatedPackage ? false : "run npm run test:wasm to build the generated Node package"
+  skip: generatedPackage ? false : "run the repository-only WASM integration harness"
 }, async () => {
   const bindings = require(generatedPackage)
   const backend = new WasmBackend({ bindings })

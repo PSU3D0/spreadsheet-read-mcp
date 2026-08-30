@@ -9,11 +9,14 @@ use rmcp::{
         router::tool::{ToolRoute, ToolRouter},
         tool::ToolCallContext,
     },
-    model::{CallToolResult, Content, Tool, ToolAnnotations},
+    model::{CallToolResult, Content, Meta, Tool, ToolAnnotations},
 };
 use serde::Serialize;
 use serde_json::{Value, to_value};
 use std::{borrow::Cow, sync::Arc};
+
+pub(crate) const CANONICAL_TOOL_META_KEY: &str = "agent-spreadsheet/canonical";
+pub(crate) const CANONICAL_SCHEMA_VERSION: &str = "1";
 
 pub(crate) fn canonical_tool_router(
     capabilities: &RuntimeCapabilities,
@@ -33,17 +36,28 @@ fn canonical_route(descriptor: &'static OperationDescriptor) -> ToolRoute<Spread
         .as_object()
         .cloned()
         .expect("canonical operation input schemas are objects");
-    let tool = Tool::new(
+    let mut tool = Tool::new(
         descriptor.name,
         canonical_description(descriptor),
         Arc::new(input_schema),
     )
     .annotate(canonical_annotations(descriptor.risk_ceiling));
+    tool.meta = Some(canonical_meta(descriptor.name));
     let operation = descriptor.name;
 
     ToolRoute::new_dyn(tool, move |context| {
         Box::pin(async move { call_canonical_operation(context, operation).await })
     })
+}
+
+fn canonical_meta(operation: &str) -> Meta {
+    Meta(serde_json::Map::from_iter([(
+        CANONICAL_TOOL_META_KEY.to_string(),
+        serde_json::json!({
+            "schema_version": CANONICAL_SCHEMA_VERSION,
+            "operation": operation,
+        }),
+    )]))
 }
 
 fn canonical_description(descriptor: &OperationDescriptor) -> Cow<'static, str> {

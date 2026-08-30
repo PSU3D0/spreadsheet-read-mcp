@@ -51,6 +51,8 @@ await backend.initialize()
 
 MCP support is negotiated from the live server. The transport may expose `listOperations()`, `listTools()`, `"tools/list"()`, or `request({ method: "tools/list" })`. `execute` waits for initial negotiation automatically; `initialize()` makes it explicit and `refresh()` updates support after the server changes. Before negotiation, synchronous `getCapabilities()` truthfully returns `initialized: false` and an empty operation list.
 
+Generic `tools/list` discovery accepts a descriptor only when `_meta["agent-spreadsheet/canonical"]` contains `schema_version: "1"` and an `operation` exactly matching the tool name. This prevents legacy compatibility routes that share canonical names, including the legacy screenshot route, from being misidentified as canonical. An explicit `listOperations()` result or `supportedOperations` array remains a trusted canonical API contract.
+
 For transports without discovery, pass an explicit `supportedOperations` array. There is no fallback that treats all manifest operations as available. A transport may dispatch through `invoke(operation, input)` or methods named after canonical operations.
 
 ## WASM
@@ -72,7 +74,7 @@ executeOperation(sessionId, operationName, paramsJson) -> resultJson
 
 The binding returns a typed `session:` resource ID. The adapter passes that exact ID unchanged through canonical execution, export, and disposal, serializes only the canonical input for transport, and parses the returned JSON. It does not reshape canonical responses. Resource binding, byte export, and session disposal remain adapter-specific.
 
-Run `npm run test:wasm` to build the actual wasm-bindgen Node package with `wasm-pack` and exercise SDK read, write, recalculate, verify, export, and disposal end to end.
+From a repository checkout, run `node scripts/run-generated-wasm-integration.js` to build the actual wasm-bindgen Node package with `wasm-pack` and exercise SDK read, write, recalculate, verify, export, and disposal end to end. This repository-only harness is intentionally not part of the published package.
 
 ## Capabilities and errors
 
@@ -84,4 +86,6 @@ Unsupported calls throw `CapabilityError` with code `UNSUPPORTED_CAPABILITY`. Ca
 
 The 0.13 method names remain as compatibility projections where they compile directly to a canonical operation. They translate legacy inputs, call `execute`, and return the canonical envelope's `data` field. Examples include `rangeValues` -> `read_cells`, `findValue` -> `search_values`, and batch/name helpers -> `write`.
 
-New code should use canonical inputs with `execute` or the canonical convenience methods. Backend-specific lifecycle methods (`createSession`, `exportWorkbook`, and `disposeSession`) remain available for WASM resource handling.
+Nine camel-case names collide with generated canonical convenience methods: `describeWorkbook`, `namedRanges`, `sheetOverview`, `listSheets`, `readTable`, `createFork`, `listForks`, `verifyWorkbook`, and `discardFork`. Legacy-shaped input preserves the 0.13 data-only result. An explicit canonical `resource_id` selects envelope-preserving canonical dispatch. `listForks({})` is ambiguous and therefore remains data-only; use `execute("list_forks", {})` for its canonical envelope.
+
+New code should use canonical inputs with `execute`. Backend-specific lifecycle methods (`createSession`, `exportWorkbook`, and `disposeSession`) remain available for WASM resource handling.

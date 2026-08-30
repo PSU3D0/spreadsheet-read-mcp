@@ -27,8 +27,7 @@
   ],
   "scripts": {
     "generate:registry": "node scripts/generate-canonical-registry.js",
-    "test": "node --test",
-    "test:wasm": "node scripts/run-generated-wasm-integration.js"
+    "test": "node --test"
   },
   "engines": {
     "node": ">=18"

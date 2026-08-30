@@ -2,6 +2,7 @@ const { createCapabilities } = require("./capabilities")
 const {
   declaredOperations,
   discoveredOperations,
+  discoveredCanonicalTools,
   requireOperation,
   installCanonicalMethods,
   projectData,
@@ -35,7 +36,19 @@ const LEGACY_METHODS = {
   readTable: ["read_table", withResource],
   findValue: ["search_values", withResource],
   gridExport: ["export_grid", withResource],
-  createFork: ["create_fork", withResource],
+  createFork: ["create_fork", (backend, input) => {
+    const source = input.resource_id || input.workbookOrForkId || input.workbook_or_fork_id ||
+      input.workbookId || input.workbook_id || input.contextId || input.context_id
+    const resourceId = legacyResourceId(backend.kind, {
+      ...input,
+      workbookId: source,
+      sessionId: source
+    })
+    return {
+      resource_id: resourceId,
+      expected_revision: input.expectedRevision ?? input.expected_revision
+    }
+  }],
   listForks: ["list_forks", (_, input) => snakeCaseInput(input)],
   saveFork: ["export_fork", (backend, input) => withResource(backend, input, true)],
   discardFork: ["discard_fork", (backend, input) => withResource(backend, input, true)],
@@ -166,13 +179,13 @@ class McpBackend {
       return discoveredOperations(await this._transport.listOperations())
     }
     if (typeof this._transport.listTools === "function") {
-      return discoveredOperations(await this._transport.listTools())
+      return discoveredCanonicalTools(await this._transport.listTools())
     }
     if (typeof this._transport["tools/list"] === "function") {
-      return discoveredOperations(await this._transport["tools/list"]({}))
+      return discoveredCanonicalTools(await this._transport["tools/list"]({}))
     }
     if (typeof this._transport.request === "function") {
-      return discoveredOperations(await this._transport.request({ method: "tools/list", params: {} }))
+      return discoveredCanonicalTools(await this._transport.request({ method: "tools/list", params: {} }))
     }
     throw new SpreadsheetSdkError(
       "McpBackend requires supportedOperations or a transport tools/list discovery method",
@@ -232,12 +245,21 @@ class McpBackend {
   }
 }
 
+function isCanonicalInput(operation, input) {
+  return operation !== "list_forks" &&
+    input && typeof input === "object" && !Array.isArray(input) &&
+    Object.prototype.hasOwnProperty.call(input, "resource_id")
+}
+
 function installLegacyMethods(Backend) {
   for (const [method, [operation, mapInput]] of Object.entries(LEGACY_METHODS)) {
-    if (Object.prototype.hasOwnProperty.call(Backend.prototype, method)) continue
+    const collidesWithCanonicalMethod = Object.prototype.hasOwnProperty.call(Backend.prototype, method)
     Object.defineProperty(Backend.prototype, method, {
       configurable: true,
       value(input = {}) {
+        if (collidesWithCanonicalMethod && isCanonicalInput(operation, input)) {
+          return this.execute(operation, input)
+        }
         return this.execute(operation, mapInput(this, input)).then(projectData)
       }
     })

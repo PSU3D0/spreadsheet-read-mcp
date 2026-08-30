@@ -9,6 +9,18 @@ const {
   OPERATION_NAMES
 } = require("../src")
 
+function canonicalTool(operation, markerOperation = operation) {
+  return {
+    name: operation,
+    _meta: {
+      "agent-spreadsheet/canonical": {
+        schema_version: "1",
+        operation: markerOperation
+      }
+    }
+  }
+}
+
 function envelope(operation, resourceId, data = {}) {
   return {
     schema_version: "1",
@@ -62,7 +74,7 @@ test("MCP negotiates tools before execute and refreshes live capabilities", asyn
   const backend = new McpBackend({
     transport: {
       async listTools() {
-        return { tools: advertised.map((name) => ({ name })) }
+        return { tools: advertised.map((name) => canonicalTool(name)) }
       },
       async invoke(operation, input) {
         invokes += 1
@@ -88,6 +100,43 @@ test("MCP negotiates tools before execute and refreshes live capabilities", asyn
   assert.equal(backend.getCapabilities().supportsTransformBatch, true)
   await assert.rejects(backend.readCells({ resource_id: "wb:one" }), CapabilityError)
   assert.equal(invokes, 1)
+})
+
+test("MCP tools/list trusts only matching canonical markers", async () => {
+  const backend = new McpBackend({
+    transport: {
+      async request(request) {
+        assert.deepEqual(request, { method: "tools/list", params: {} })
+        return {
+          result: {
+            tools: [
+              canonicalTool("read_cells"),
+              { name: "list_sheets" },
+              { name: "screenshot_sheet" },
+              canonicalTool("describe_workbook", "list_sheets"),
+              canonicalTool("not_an_operation")
+            ]
+          }
+        }
+      },
+      async invoke() {}
+    }
+  })
+
+  await backend.initialize()
+  assert.deepEqual(backend.getCapabilities().operations, ["read_cells"])
+})
+
+test("MCP explicit listOperations remains a trusted canonical contract", async () => {
+  const backend = new McpBackend({
+    transport: {
+      listOperations: () => JSON.stringify(["list_sheets", { name: "read_cells" }]),
+      async invoke() {}
+    }
+  })
+
+  await backend.initialize()
+  assert.deepEqual(backend.getCapabilities().operations, ["list_sheets", "read_cells"])
 })
 
 test("MCP without discovery or explicit support does not fall back to the manifest", async () => {
@@ -242,6 +291,82 @@ test("legacy read methods are deprecated data projections over execute", async (
   assert.equal(seen[1].input.resource_id, "wb:wb-1")
   assert.equal(seen[1].input.query, "alpha")
 })
+
+const COLLIDING_COMPAT_METHODS = [
+  ["describeWorkbook", "describe_workbook", { workbookId: "book" }, "wb:book"],
+  ["namedRanges", "named_ranges", { workbookId: "book" }, "wb:book"],
+  ["sheetOverview", "sheet_overview", { workbookId: "book", sheetName: "Sheet1" }, "wb:book"],
+  ["listSheets", "list_sheets", { workbookId: "book" }, "wb:book"],
+  ["readTable", "read_table", { workbookId: "book", sheetName: "Sheet1" }, "wb:book"],
+  ["createFork", "create_fork", { workbookOrForkId: "book", expectedRevision: "rev-1" }, "wb:book"],
+  ["listForks", "list_forks", {}, undefined],
+  ["verifyWorkbook", "verify_workbook", {
+    currentWorkbookOrForkId: "current",
+    baselineWorkbookOrForkId: "baseline"
+  }, "fork:current"],
+  ["discardFork", "discard_fork", { forkId: "fork-1", expectedRevision: "rev-1" }, "fork:fork-1"]
+]
+
+for (const kind of ["MCP", "WASM"]) {
+  test(`${kind} preserves all nine colliding 0.13 methods for legacy-shaped input`, async () => {
+    const operations = COLLIDING_COMPAT_METHODS.map(([, operation]) => operation)
+    const calls = []
+    const invoke = async (operation, input) => {
+      calls.push({ operation, input })
+      return envelope(operation, input.resource_id, { marker: `${kind}:${operation}` })
+    }
+    const backend = kind === "MCP"
+      ? new McpBackend({ supportedOperations: operations, transport: { invoke } })
+      : new WasmBackend({
+          bindings: {
+            operations: () => operations,
+            executeOperation: async (_resourceId, operation, params) => JSON.stringify(
+              await invoke(operation, JSON.parse(params))
+            )
+          }
+        })
+
+    for (const [method, operation, input, expectedResourceId] of COLLIDING_COMPAT_METHODS) {
+      const legacyInput = kind === "WASM" && input.workbookId
+        ? { ...input, workbookId: undefined, sessionId: input.workbookId }
+        : input
+      assert.deepEqual(await backend[method](legacyInput), { marker: `${kind}:${operation}` }, method)
+      const call = calls.at(-1)
+      assert.equal(call.operation, operation, method)
+      assert.equal(call.input.resource_id, kind === "WASM" && expectedResourceId?.startsWith("wb:")
+        ? expectedResourceId.replace(/^wb:/, "session:")
+        : expectedResourceId, method)
+    }
+  })
+
+  test(`${kind} colliding methods preserve canonical envelopes only for explicit canonical input`, async () => {
+    const operations = COLLIDING_COMPAT_METHODS.map(([, operation]) => operation)
+    const invoke = async (operation, input) => envelope(operation, input.resource_id, { canonical: true })
+    const backend = kind === "MCP"
+      ? new McpBackend({ supportedOperations: operations, transport: { invoke } })
+      : new WasmBackend({
+          bindings: {
+            operations: () => operations,
+            executeOperation: async (_resourceId, operation, params) => JSON.stringify(
+              await invoke(operation, JSON.parse(params))
+            )
+          }
+        })
+
+    for (const [method, operation] of COLLIDING_COMPAT_METHODS) {
+      if (method === "listForks") {
+        assert.deepEqual(await backend.listForks({}), { canonical: true })
+        continue
+      }
+      const input = operation === "verify_workbook"
+        ? { resource_id: "fork:current", baseline_resource_id: "wb:baseline" }
+        : { resource_id: operation === "discard_fork" ? "fork:one" : "wb:one" }
+      const result = await backend[method](input)
+      assert.equal(result.schema_version, "1", method)
+      assert.equal(result.operation, operation, method)
+    }
+  })
+}
 
 test("legacy write methods compile to canonical write operations", async () => {
   let received
