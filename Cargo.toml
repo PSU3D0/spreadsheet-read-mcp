@@ -8,3 +8,4 @@ resolver = "2"
 
 [patch.crates-io]
 umya-spreadsheet = { git = "https://github.com/PSU3D0/umya-spreadsheet.git", rev = "4b64d65daf19bba79800951cd38920d7eb95320c" }
+formualizer-workbook = { path = "crates/vendor/formualizer-workbook" }

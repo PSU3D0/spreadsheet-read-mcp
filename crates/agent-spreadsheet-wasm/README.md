@@ -20,7 +20,9 @@ disposeSession(sessionId);
 
 `paramsJson` uses the canonical operation schema. The adapter injects `resource_id` when omitted; if supplied, it must exactly match `sessionId`. Success is a serialized canonical response envelope. Rejections from `executeOperation` are canonical error envelopes.
 
-Call `operations()` for serialized canonical discovery filtered to capabilities actually backed by this runtime. The byte-session runtime supports the canonical read operations advertised there. Workspace discovery, fork lifecycle, canonical write/CAS/staging, LibreOffice rendering, recalculate/verify, SheetPort, and VBA inspection are not advertised and return `CAPABILITY_UNAVAILABLE` when requested.
+Call `operations()` for serialized canonical discovery filtered to capabilities actually backed by this runtime. The byte-session runtime supports the advertised canonical reads plus `write`, `recalculate`, and `verify_workbook`. Writes use revision CAS; preview is pure, apply atomically replaces the session bytes by default, and non-atomic apply returns canonical partial results. `mode:"stage"` is rejected with `INVALID_REQUEST` because WASM sessions do not expose durable staged bundles. Recalculation uses Formualizer entirely in memory, and verification binds the current session to another `session:` id supplied as `baseline_resource_id`.
+
+Workspace discovery, fork/checkpoint/history lifecycle, LibreOffice rendering, SheetPort, and VBA inspection remain hidden. `exportWorkbook(sessionId)` always returns the latest applied or recalculated bytes.
 
 The older named bindings remain for compatibility. New integrations should use `executeOperation`; `exportWorkbook` and `disposeSession` own the adapter lifecycle.
 

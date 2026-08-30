@@ -1,6 +1,6 @@
 use super::RecalcResult;
 use crate::recalc::RecalcBackend;
-use crate::utils::{column_number_to_name, hash_file_sha256_hex};
+use crate::utils::{column_number_to_name, hash_bytes_sha256_hex, hash_file_sha256_hex};
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use formualizer::common::PackedSheetCell;
@@ -12,10 +12,15 @@ use formualizer::workbook::{
 };
 use std::collections::HashSet;
 use std::path::Path;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread;
-use std::time::{Duration, Instant};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
+use web_time::Instant;
 
 pub struct FormualizerBackend;
 
@@ -55,12 +60,51 @@ type FormualizerEngine = Engine<WBResolver>;
 
 fn recalc_sync(path: &Path, timeout_ms: Option<u64>) -> Result<RecalcResult> {
     let start = Instant::now();
-
     let open_start = Instant::now();
-    let mut adapter = UmyaAdapter::open_path(path)
+    let adapter = UmyaAdapter::open_path(path)
         .map_err(|e| anyhow!("failed to open workbook adapter {:?}: {e}", path))?;
     let open_ms = open_start.elapsed().as_millis() as u64;
+    let (result, _) = recalculate_adapter_sync(
+        adapter,
+        timeout_ms,
+        start,
+        open_ms,
+        RecalcPersistence::Path(path),
+    )?;
+    Ok(result)
+}
 
+pub fn recalculate_bytes_sync(
+    bytes: &[u8],
+    timeout_ms: Option<u64>,
+) -> Result<(RecalcResult, Vec<u8>)> {
+    let start = Instant::now();
+    let open_start = Instant::now();
+    let adapter = UmyaAdapter::open_bytes(bytes.to_vec())
+        .map_err(|e| anyhow!("failed to open workbook adapter from bytes: {e}"))?;
+    let open_ms = open_start.elapsed().as_millis() as u64;
+    let (result, evaluated) = recalculate_adapter_sync(
+        adapter,
+        timeout_ms,
+        start,
+        open_ms,
+        RecalcPersistence::Bytes,
+    )?;
+    Ok((result, evaluated.expect("bytes persistence returns bytes")))
+}
+
+enum RecalcPersistence<'a> {
+    Path(&'a Path),
+    Bytes,
+}
+
+fn recalculate_adapter_sync(
+    mut adapter: UmyaAdapter,
+    timeout_ms: Option<u64>,
+    start: Instant,
+    open_ms: u64,
+    persistence: RecalcPersistence<'_>,
+) -> Result<(RecalcResult, Option<Vec<u8>>)> {
     let formula_cells = adapter.formula_cells();
     let formula_cells_len = formula_cells.len();
 
@@ -155,7 +199,6 @@ fn recalc_sync(path: &Path, timeout_ms: Option<u64>) -> Result<RecalcResult> {
     let updates_len = cache_updates.len();
 
     let mut write_formula_caches_batch_ms = 0u64;
-    let mut save_as_path_ms = 0u64;
 
     if !cache_updates.is_empty() {
         let write_start = Instant::now();
@@ -163,13 +206,26 @@ fn recalc_sync(path: &Path, timeout_ms: Option<u64>) -> Result<RecalcResult> {
             .write_formula_caches_batch(&cache_updates, date_system)
             .map_err(|e| anyhow!("failed to write formula caches in batch: {e}"))?;
         write_formula_caches_batch_ms = write_start.elapsed().as_millis() as u64;
-
-        let save_start = Instant::now();
-        adapter
-            .save_as_path(path)
-            .map_err(|e| anyhow!("failed to save recalculated workbook {:?}: {e}", path))?;
-        save_as_path_ms = save_start.elapsed().as_millis() as u64;
     }
+    let save_start = Instant::now();
+    let (evaluated_bytes, revision_id) = match persistence {
+        RecalcPersistence::Path(path) => {
+            if !cache_updates.is_empty() {
+                adapter
+                    .save_as_path(path)
+                    .map_err(|e| anyhow!("failed to save recalculated workbook {:?}: {e}", path))?;
+            }
+            (None, hash_file_sha256_hex(path)?)
+        }
+        RecalcPersistence::Bytes => {
+            let bytes = adapter
+                .save_to_bytes()
+                .map_err(|e| anyhow!("failed to serialize recalculated workbook: {e}"))?;
+            let revision = hash_bytes_sha256_hex(&bytes);
+            (Some(bytes), revision)
+        }
+    };
+    let save_as_path_ms = save_start.elapsed().as_millis() as u64;
 
     let total_ms = start.elapsed().as_millis() as u64;
 
@@ -187,33 +243,37 @@ fn recalc_sync(path: &Path, timeout_ms: Option<u64>) -> Result<RecalcResult> {
         "formualizer recalc timing"
     );
 
-    Ok(RecalcResult {
-        duration_ms: total_ms,
-        was_warm: true,
-        backend_name: "formualizer",
-        cells_evaluated: Some(cells_evaluated),
-        eval_errors: if eval_errors.is_empty() {
-            None
-        } else {
-            Some(eval_errors)
-        },
-        evaluation_coverage: crate::model::EvaluationCoverage {
-            formula_cells: formula_cells_len as u64,
-            evaluated_formula_cells: if incomplete {
-                0
+    Ok((
+        RecalcResult {
+            duration_ms: total_ms,
+            was_warm: true,
+            backend_name: "formualizer",
+            cells_evaluated: Some(cells_evaluated),
+            eval_errors: if eval_errors.is_empty() {
+                None
             } else {
-                formula_cells_len as u64
+                Some(eval_errors)
             },
-            unsupported_formula_cells: 0,
-            error_formula_cells,
-            source: crate::model::EvaluationSource::Formualizer,
-            freshness: crate::model::EvaluationFreshness::CurrentRevision,
-            revision_id: hash_file_sha256_hex(path)?,
+            evaluation_coverage: crate::model::EvaluationCoverage {
+                formula_cells: formula_cells_len as u64,
+                evaluated_formula_cells: if incomplete {
+                    0
+                } else {
+                    formula_cells_len as u64
+                },
+                unsupported_formula_cells: 0,
+                error_formula_cells,
+                source: crate::model::EvaluationSource::Formualizer,
+                freshness: crate::model::EvaluationFreshness::CurrentRevision,
+                revision_id,
+            },
+            incomplete,
         },
-        incomplete,
-    })
+        evaluated_bytes,
+    ))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn evaluate_with_optional_timeout(
     engine: &mut FormualizerEngine,
     timeout_ms: Option<u64>,
@@ -254,5 +314,21 @@ fn evaluate_with_optional_timeout(
         eval.computed_vertices as u64,
         eval.cycle_errors as u64,
         None,
+    ))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn evaluate_with_optional_timeout(
+    engine: &mut FormualizerEngine,
+    _timeout_ms: Option<u64>,
+) -> Result<(u64, u64, Option<HashSet<PackedSheetCell>>)> {
+    // Browser and Node wasm32 have no portable preemptive thread primitive. Evaluation remains
+    // synchronous and in-memory; callers can terminate a Web Worker for a hard deadline.
+    let (eval, delta) = engine.evaluate_all_with_delta()?;
+    let changed = delta.changed_cells.into_iter().collect::<HashSet<_>>();
+    Ok((
+        eval.computed_vertices as u64,
+        eval.cycle_errors as u64,
+        Some(changed),
     ))
 }

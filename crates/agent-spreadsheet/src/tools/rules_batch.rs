@@ -318,7 +318,16 @@ pub(crate) fn apply_rules_ops_to_file(
     policy: FormulaParsePolicy,
 ) -> Result<RulesApplyResult> {
     let mut book = umya_spreadsheet::reader::xlsx::read(path)?;
+    let result = apply_rules_ops_to_workbook(&mut book, ops, policy)?;
+    umya_spreadsheet::writer::xlsx::write(&book, path)?;
+    Ok(result)
+}
 
+pub(crate) fn apply_rules_ops_to_workbook(
+    book: &mut umya_spreadsheet::Spreadsheet,
+    ops: &[RulesOp],
+    policy: FormulaParsePolicy,
+) -> Result<RulesApplyResult> {
     let mut affected_sheets: BTreeSet<String> = BTreeSet::new();
     let mut affected_bounds: Vec<String> = Vec::new();
     let mut counts: BTreeMap<String, u64> = BTreeMap::new();
@@ -475,8 +484,6 @@ pub(crate) fn apply_rules_ops_to_file(
             }
         }
     }
-
-    umya_spreadsheet::writer::xlsx::write(&book, path)?;
 
     counts.insert("validations_set".to_string(), validations_set);
     counts.insert("validations_replaced".to_string(), validations_replaced);

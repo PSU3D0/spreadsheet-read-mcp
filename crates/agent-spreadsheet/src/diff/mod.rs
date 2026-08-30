@@ -17,7 +17,7 @@ use serde::Serialize;
 use sst::Sst;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Cursor, Read, Seek};
 use std::path::Path;
 use tables::{TableDiff, TableInfo, diff_tables, parse_table_xml};
 use zip::ZipArchive;
@@ -45,9 +45,26 @@ pub fn calculate_changeset(
     fork_path: &Path,
     sheet_filter: Option<&str>,
 ) -> Result<Vec<Change>> {
-    let mut base_zip = ZipArchive::new(File::open(base_path)?)?;
-    let mut fork_zip = ZipArchive::new(File::open(fork_path)?)?;
+    let base_zip = ZipArchive::new(File::open(base_path)?)?;
+    let fork_zip = ZipArchive::new(File::open(fork_path)?)?;
+    calculate_changeset_archives(base_zip, fork_zip, sheet_filter)
+}
 
+pub fn calculate_changeset_bytes(
+    base_bytes: &[u8],
+    fork_bytes: &[u8],
+    sheet_filter: Option<&str>,
+) -> Result<Vec<Change>> {
+    let base_zip = ZipArchive::new(Cursor::new(base_bytes))?;
+    let fork_zip = ZipArchive::new(Cursor::new(fork_bytes))?;
+    calculate_changeset_archives(base_zip, fork_zip, sheet_filter)
+}
+
+fn calculate_changeset_archives<R1: Read + Seek, R2: Read + Seek>(
+    mut base_zip: ZipArchive<R1>,
+    mut fork_zip: ZipArchive<R2>,
+    sheet_filter: Option<&str>,
+) -> Result<Vec<Change>> {
     // Load SSTs
     let base_sst = load_sst(&mut base_zip).ok();
     let fork_sst = load_sst(&mut fork_zip).ok();
@@ -194,7 +211,7 @@ pub fn calculate_changeset(
     Ok(all_changes)
 }
 
-fn load_sst(zip: &mut ZipArchive<File>) -> Result<Sst> {
+fn load_sst<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Sst> {
     let f = zip.by_name("xl/sharedStrings.xml")?;
     Sst::from_reader(BufReader::new(f))
 }
@@ -206,7 +223,7 @@ struct WorkbookMeta {
     names: HashMap<NameKey, DefinedName>,
 }
 
-fn load_workbook_meta(zip: &mut ZipArchive<File>) -> Result<WorkbookMeta> {
+fn load_workbook_meta<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<WorkbookMeta> {
     // 1. Parse workbook.xml for name -> rId, sheetId, and definedNames
     let mut name_to_rid = HashMap::new();
     let mut sheet_id_map = HashMap::new();
@@ -311,8 +328,8 @@ fn load_workbook_meta(zip: &mut ZipArchive<File>) -> Result<WorkbookMeta> {
     })
 }
 
-fn load_tables(
-    zip: &mut ZipArchive<File>,
+fn load_tables<R: Read + Seek>(
+    zip: &mut ZipArchive<R>,
     sheet_map: &HashMap<String, String>,
 ) -> Result<HashMap<String, TableInfo>> {
     let mut tables = HashMap::new();

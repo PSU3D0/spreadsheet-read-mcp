@@ -8,13 +8,13 @@ use crate::styles::StylePatchMode;
 use crate::tools::fork::{
     ApplyFormulaPatternOpInput, ColumnSizeOp, ColumnSizeSpec, ColumnTarget, MatrixCell,
     ReplaceInFormulasOp, StructureOp, StyleOp, StyleTarget, TransformOp, TransformTarget,
-    apply_column_size_ops_to_file, apply_formula_pattern_ops_to_file,
-    apply_replace_in_formulas_to_file, apply_structure_ops_to_file, apply_style_ops_to_file,
-    apply_transform_ops_to_file,
+    apply_column_size_ops_to_workbook, apply_formula_pattern_ops_to_workbook,
+    apply_replace_in_formulas_to_workbook, apply_structure_ops_to_workbook,
+    apply_style_ops_to_workbook, apply_transform_ops_to_workbook,
 };
 use crate::tools::param_enums::{FillDirection, FormulaRelativeMode};
-use crate::tools::rules_batch::{ConditionalFormatRuleSpec, RulesOp, apply_rules_ops_to_file};
-use crate::tools::sheet_layout::{SheetLayoutOp, apply_sheet_layout_ops_to_file};
+use crate::tools::rules_batch::{ConditionalFormatRuleSpec, RulesOp, apply_rules_ops_to_workbook};
+use crate::tools::sheet_layout::{SheetLayoutOp, apply_sheet_layout_ops_to_workbook};
 use crate::utils::{hash_file_sha256_hex, make_short_random_id};
 use anyhow::{Result, anyhow, bail};
 use chrono::Utc;
@@ -1255,6 +1255,15 @@ fn swap_temp(temp: tempfile::NamedTempFile, target: &Path) -> Result<()> {
 
 fn diff_paths(before: &Path, after: &Path) -> Result<WriteDiff> {
     let changes = crate::core::diff::calculate_changeset(before, after, None)?;
+    changes_to_write_diff(changes)
+}
+
+fn diff_bytes(before: &[u8], after: &[u8]) -> Result<WriteDiff> {
+    let changes = crate::diff::calculate_changeset_bytes(before, after, None)?;
+    changes_to_write_diff(changes)
+}
+
+fn changes_to_write_diff(changes: Vec<crate::diff::Change>) -> Result<WriteDiff> {
     let values = changes
         .into_iter()
         .map(serde_json::to_value)
@@ -1387,8 +1396,8 @@ fn parse_cell_ref(value: &str) -> Result<(u32, u32)> {
     Ok((column, row))
 }
 
-fn apply_grid(
-    path: &Path,
+fn apply_grid_to_workbook(
+    book: &mut umya_spreadsheet::Spreadsheet,
     sheet_name: &str,
     anchor: &str,
     grid: &GridPayload,
@@ -1444,16 +1453,16 @@ fn apply_grid(
         crate::utils::cell_address(max_col, max_row)
     );
     if clear_target {
-        apply_structure_ops_to_file(
-            path,
+        apply_structure_ops_to_workbook(
+            book,
             &[StructureOp::UnmergeCells {
                 sheet_name: sheet_name.to_string(),
                 target_range: footprint.clone(),
             }],
             FormulaParsePolicy::Off,
         )?;
-        apply_transform_ops_to_file(
-            path,
+        apply_transform_ops_to_workbook(
+            book,
             &[TransformOp::ClearRange {
                 sheet_name: sheet_name.to_string(),
                 target: TransformTarget::Range {
@@ -1463,8 +1472,8 @@ fn apply_grid(
                 clear_formulas: true,
             }],
         )?;
-        apply_style_ops_to_file(
-            path,
+        apply_style_ops_to_workbook(
+            book,
             &[StyleOp {
                 sheet_name: sheet_name.to_string(),
                 target: StyleTarget::Range {
@@ -1513,12 +1522,12 @@ fn apply_grid(
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        apply_structure_ops_to_file(path, &ops, FormulaParsePolicy::Off)?;
+        apply_structure_ops_to_workbook(book, &ops, FormulaParsePolicy::Off)?;
     }
     for column in &grid.columns {
         let name = crate::utils::column_number_to_name(anchor_col + column.offset);
-        apply_column_size_ops_to_file(
-            path,
+        apply_column_size_ops_to_workbook(
+            book,
             sheet_name,
             &[ColumnSizeOp {
                 target: ColumnTarget::Columns {
@@ -1530,8 +1539,8 @@ fn apply_grid(
             }],
         )?;
     }
-    apply_transform_ops_to_file(
-        path,
+    apply_transform_ops_to_workbook(
+        book,
         &[TransformOp::WriteMatrix {
             sheet_name: sheet_name.to_string(),
             anchor: anchor.to_string(),
@@ -1540,7 +1549,7 @@ fn apply_grid(
         }],
     )?;
     if !styles.is_empty() {
-        apply_style_ops_to_file(path, &styles)?;
+        apply_style_ops_to_workbook(book, &styles)?;
     }
     Ok(
         json!({"sheet_name":sheet_name,"footprint":footprint,"cells":grid.rows.iter().map(|row| row.cells.len()).sum::<usize>()}),
@@ -1552,17 +1561,28 @@ pub(crate) fn apply_write_op_to_file(
     op: &WriteOp,
     policy: FormulaParsePolicy,
 ) -> Result<Value> {
+    let mut book = umya_spreadsheet::reader::xlsx::read(path)?;
+    let result = apply_write_op_to_workbook(&mut book, op, policy)?;
+    umya_spreadsheet::writer::xlsx::write(&book, path)?;
+    Ok(result)
+}
+
+pub(crate) fn apply_write_op_to_workbook(
+    book: &mut umya_spreadsheet::Spreadsheet,
+    op: &WriteOp,
+    policy: FormulaParsePolicy,
+) -> Result<Value> {
     match op {
         WriteOp::SetCells(op) => {
-            let result = apply_transform_ops_to_file(path, &set_cells_to_ops(op))?;
+            let result = apply_transform_ops_to_workbook(book, &set_cells_to_ops(op))?;
             summary_detail(&result.summary)
         }
         WriteOp::Transform(op) => {
-            let result = apply_transform_ops_to_file(path, std::slice::from_ref(op))?;
+            let result = apply_transform_ops_to_workbook(book, std::slice::from_ref(op))?;
             summary_detail(&result.summary)
         }
         WriteOp::Structure(op) => {
-            let result = apply_structure_ops_to_file(path, &[StructureOp::from(op)], policy)?;
+            let result = apply_structure_ops_to_workbook(book, &[StructureOp::from(op)], policy)?;
             summary_detail(&result.summary)
         }
         WriteOp::Style(StyleWriteOp::Style {
@@ -1571,8 +1591,8 @@ pub(crate) fn apply_write_op_to_file(
             patch,
             op_mode,
         }) => {
-            let result = apply_style_ops_to_file(
-                path,
+            let result = apply_style_ops_to_workbook(
+                book,
                 &[StyleOp {
                     sheet_name: sheet_name.clone(),
                     target: target.clone(),
@@ -1587,8 +1607,8 @@ pub(crate) fn apply_write_op_to_file(
             target,
             size,
         }) => {
-            let result = apply_column_size_ops_to_file(
-                path,
+            let result = apply_column_size_ops_to_workbook(
+                book,
                 sheet_name,
                 &[ColumnSizeOp {
                     target: target.clone(),
@@ -1598,11 +1618,11 @@ pub(crate) fn apply_write_op_to_file(
             summary_detail(&result.summary)
         }
         WriteOp::Layout(op) => {
-            let result = apply_sheet_layout_ops_to_file(path, std::slice::from_ref(op))?;
+            let result = apply_sheet_layout_ops_to_workbook(book, std::slice::from_ref(op))?;
             summary_detail(&result.summary)
         }
         WriteOp::Rules(op) => {
-            let result = apply_rules_ops_to_file(path, std::slice::from_ref(op), policy)?;
+            let result = apply_rules_ops_to_workbook(book, std::slice::from_ref(op), policy)?;
             summary_detail(&result.summary)
         }
         WriteOp::Formula(FormulaWriteOp::FormulaPattern {
@@ -1613,8 +1633,8 @@ pub(crate) fn apply_write_op_to_file(
             fill_direction,
             relative_mode,
         }) => {
-            let result = apply_formula_pattern_ops_to_file(
-                path,
+            let result = apply_formula_pattern_ops_to_workbook(
+                book,
                 &[ApplyFormulaPatternOpInput {
                     sheet_name: sheet_name.clone(),
                     target_range: target_range.clone(),
@@ -1634,8 +1654,8 @@ pub(crate) fn apply_write_op_to_file(
             regex,
             case_sensitive,
         }) => {
-            let result = apply_replace_in_formulas_to_file(
-                path,
+            let result = apply_replace_in_formulas_to_workbook(
+                book,
                 &ReplaceInFormulasOp {
                     sheet_name: sheet_name.clone(),
                     find: find.clone(),
@@ -1656,13 +1676,20 @@ pub(crate) fn apply_write_op_to_file(
             scope,
             scope_sheet_name,
         }) => {
-            crate::tools::define_name_in_file(
-                path,
+            let mut session = crate::core::session::WorkbookSession::from_spreadsheet(
+                std::mem::replace(book, umya_spreadsheet::new_file()),
+            );
+            let result = session.define_name(
                 name,
                 refers_to,
-                (*scope).into(),
+                Some(match scope {
+                    NameScope::Workbook => "workbook",
+                    NameScope::Sheet => "sheet",
+                }),
                 scope_sheet_name.as_deref(),
-            )?;
+            );
+            *book = session.into_spreadsheet();
+            result?;
             Ok(json!({"name":name,"defined":true}))
         }
         WriteOp::Name(NameWriteOp::UpdateName {
@@ -1671,28 +1698,45 @@ pub(crate) fn apply_write_op_to_file(
             scope,
             scope_sheet_name,
         }) => {
-            let (previous, effective_scope, effective_sheet) = crate::tools::update_name_in_file(
-                path,
+            let mut session = crate::core::session::WorkbookSession::from_spreadsheet(
+                std::mem::replace(book, umya_spreadsheet::new_file()),
+            );
+            let result = session.update_name(
                 name,
                 refers_to.as_deref(),
-                scope.map(Into::into),
+                scope.map(|value| match value {
+                    NameScope::Workbook => "workbook",
+                    NameScope::Sheet => "sheet",
+                }),
                 scope_sheet_name.as_deref(),
-            )?;
-            Ok(
-                json!({"name":name,"previous_refers_to":previous,"scope":effective_scope,"scope_sheet_name":effective_sheet}),
-            )
+            );
+            *book = session.into_spreadsheet();
+            let result = result?;
+            Ok(json!({
+                "name": name,
+                "previous_refers_to": result.previous_refers_to,
+                "scope": result.scope_kind,
+                "scope_sheet_name": result.scope_sheet_name,
+            }))
         }
         WriteOp::Name(NameWriteOp::DeleteName {
             name,
             scope,
             scope_sheet_name,
         }) => {
-            crate::tools::delete_name_in_file(
-                path,
+            let mut session = crate::core::session::WorkbookSession::from_spreadsheet(
+                std::mem::replace(book, umya_spreadsheet::new_file()),
+            );
+            let result = session.delete_name(
                 name,
-                scope.map(Into::into),
+                scope.map(|value| match value {
+                    NameScope::Workbook => "workbook",
+                    NameScope::Sheet => "sheet",
+                }),
                 scope_sheet_name.as_deref(),
-            )?;
+            );
+            *book = session.into_spreadsheet();
+            result?;
             Ok(json!({"name":name,"deleted":true}))
         }
         WriteOp::ImportAndHelper(ImportAndHelperOp::ImportGrid {
@@ -1700,7 +1744,7 @@ pub(crate) fn apply_write_op_to_file(
             anchor,
             grid,
             clear_target,
-        }) => apply_grid(path, sheet_name, anchor, grid, *clear_target),
+        }) => apply_grid_to_workbook(book, sheet_name, anchor, grid, *clear_target),
         WriteOp::ImportAndHelper(ImportAndHelperOp::ImportCsv {
             sheet_name,
             anchor,
@@ -1721,8 +1765,8 @@ pub(crate) fn apply_write_op_to_file(
                     crate::utils::cell_address(column, row),
                     crate::utils::cell_address(column + column_count - 1, row + row_count - 1),
                 );
-                apply_transform_ops_to_file(
-                    path,
+                apply_transform_ops_to_workbook(
+                    book,
                     &[TransformOp::ClearRange {
                         sheet_name: sheet_name.clone(),
                         target: TransformTarget::Range { range },
@@ -1742,8 +1786,8 @@ pub(crate) fn apply_write_op_to_file(
                         .collect()
                 })
                 .collect();
-            let result = apply_transform_ops_to_file(
-                path,
+            let result = apply_transform_ops_to_workbook(
+                book,
                 &[TransformOp::WriteMatrix {
                     sheet_name: sheet_name.clone(),
                     anchor: anchor.clone(),
@@ -1759,8 +1803,8 @@ pub(crate) fn apply_write_op_to_file(
             table_name,
             rows,
             footer_policy,
-        }) => crate::core::write_planner::apply_append_rows(
-            path,
+        }) => crate::core::write_planner::apply_append_rows_to_workbook(
+            book,
             sheet_name,
             *region_id,
             table_name.as_deref(),
@@ -1777,8 +1821,8 @@ pub(crate) fn apply_write_op_to_file(
             expand_adjacent_sums,
             patch_targets,
             merge_policy,
-        }) => crate::core::write_planner::apply_clone_row(
-            path,
+        }) => crate::core::write_planner::apply_clone_row_to_workbook(
+            book,
             sheet_name,
             *source_row,
             *before,
@@ -1799,8 +1843,8 @@ pub(crate) fn apply_write_op_to_file(
             expand_adjacent_sums,
             patch_targets,
             merge_policy,
-        }) => crate::core::write_planner::apply_clone_row_band(
-            path,
+        }) => crate::core::write_planner::apply_clone_row_band_to_workbook(
+            book,
             sheet_name,
             source_rows,
             *before,
@@ -1892,6 +1936,235 @@ pub(crate) fn apply_bundle_atomically_to_path(
     }
     swap_temp(temp, path)?;
     Ok(bundle.ops.len())
+}
+
+pub fn execute_write_on_bytes(
+    bytes: &[u8],
+    current_revision: &str,
+    request: WriteRequest,
+) -> Result<(WriteResponseData, Option<Vec<u8>>)> {
+    validate_request(&request)?;
+    if !request.resource_id.as_str().starts_with("session:") {
+        return Err(invalid_request(
+            "in-memory write requires a session: mutable resource_id",
+        ));
+    }
+    if request.expected_revision != current_revision {
+        bail!(
+            "revision conflict: expected {}, current {}",
+            request.expected_revision,
+            current_revision
+        );
+    }
+    if request.mode == WriteMode::Stage {
+        return Err(invalid_request(
+            "mode 'stage' is unavailable for in-memory sessions; use preview or apply",
+        ));
+    }
+
+    let policy = request
+        .formula_parse_policy
+        .unwrap_or(FormulaParsePolicy::Warn);
+    let impact = WriteImpact {
+        op_kinds: request.ops.iter().map(|op| op.kind().to_string()).collect(),
+        risk: worst_risk(&request.ops),
+    };
+    let original = umya_spreadsheet::reader::xlsx::read_reader(std::io::Cursor::new(bytes), true)?;
+
+    if request.mode == WriteMode::Preview || request.atomic {
+        let mut candidate = original.clone();
+        let mut results = Vec::with_capacity(request.ops.len());
+        let mut failure = None;
+        for (index, op) in request.ops.iter().enumerate() {
+            if failure.is_some() {
+                results.push(WriteOpResult {
+                    index,
+                    kind: op.kind().to_string(),
+                    status: WriteOpStatus::Skipped,
+                    detail: None,
+                    error: None,
+                });
+                continue;
+            }
+            match apply_write_op_to_workbook(&mut candidate, op, policy) {
+                Ok(detail) => results.push(WriteOpResult {
+                    index,
+                    kind: op.kind().to_string(),
+                    status: WriteOpStatus::Applied,
+                    detail: Some(detail),
+                    error: None,
+                }),
+                Err(error) => {
+                    failure = Some(index);
+                    results.push(WriteOpResult {
+                        index,
+                        kind: op.kind().to_string(),
+                        status: WriteOpStatus::Failed,
+                        detail: None,
+                        error: Some(WriteOpError {
+                            code: "OPERATION_FAILED".to_string(),
+                            message: error.to_string(),
+                            path: format!("$.ops[{index}]"),
+                            retryable: false,
+                        }),
+                    });
+                }
+            }
+        }
+        if let Some(index) = failure {
+            for result in &mut results[..index] {
+                result.status = WriteOpStatus::RolledBack;
+            }
+            let response = if request.mode == WriteMode::Preview {
+                let mut candidate_bytes = Vec::new();
+                umya_spreadsheet::writer::xlsx::write_writer(&candidate, &mut candidate_bytes)?;
+                let mut diff = diff_bytes(bytes, &candidate_bytes)?;
+                add_effect_manifest(&mut diff, &results);
+                WriteResponseData::Failed {
+                    mode: request.mode,
+                    atomic: request.atomic,
+                    revision_before: current_revision.to_string(),
+                    revision_after: current_revision.to_string(),
+                    ops_applied: 0,
+                    diff,
+                    impact,
+                    results,
+                }
+            } else {
+                WriteResponseData::RolledBack {
+                    mode: request.mode,
+                    atomic: true,
+                    revision_before: current_revision.to_string(),
+                    revision_after: current_revision.to_string(),
+                    ops_applied: 0,
+                    rolled_back: true,
+                    diff: WriteDiff {
+                        change_count: 0,
+                        changes: Vec::new(),
+                    },
+                    impact,
+                    results,
+                }
+            };
+            return Ok((response, None));
+        }
+
+        let mut candidate_bytes = Vec::new();
+        umya_spreadsheet::writer::xlsx::write_writer(&candidate, &mut candidate_bytes)?;
+        let mut diff = diff_bytes(bytes, &candidate_bytes)?;
+        add_effect_manifest(&mut diff, &results);
+        if request.mode == WriteMode::Preview {
+            for result in &mut results {
+                result.status = WriteOpStatus::Previewed;
+            }
+            return Ok((
+                WriteResponseData::Previewed {
+                    mode: request.mode,
+                    atomic: request.atomic,
+                    revision_before: current_revision.to_string(),
+                    revision_after: current_revision.to_string(),
+                    ops_previewed: request.ops.len(),
+                    diff,
+                    impact,
+                    results,
+                },
+                None,
+            ));
+        }
+        let revision_after = format!("state:{}", make_short_random_id("rev", 20));
+        return Ok((
+            WriteResponseData::Applied {
+                mode: request.mode,
+                atomic: true,
+                revision_before: current_revision.to_string(),
+                revision_after,
+                ops_applied: request.ops.len(),
+                diff,
+                impact,
+                results,
+            },
+            Some(candidate_bytes),
+        ));
+    }
+
+    let mut current = original;
+    let mut results = Vec::with_capacity(request.ops.len());
+    let mut applied = 0usize;
+    let mut failed = false;
+    for (index, op) in request.ops.iter().enumerate() {
+        if failed {
+            results.push(WriteOpResult {
+                index,
+                kind: op.kind().to_string(),
+                status: WriteOpStatus::Skipped,
+                detail: None,
+                error: None,
+            });
+            continue;
+        }
+        let mut candidate = current.clone();
+        match apply_write_op_to_workbook(&mut candidate, op, policy) {
+            Ok(detail) => {
+                current = candidate;
+                applied += 1;
+                results.push(WriteOpResult {
+                    index,
+                    kind: op.kind().to_string(),
+                    status: WriteOpStatus::Applied,
+                    detail: Some(detail),
+                    error: None,
+                });
+            }
+            Err(error) => {
+                failed = true;
+                results.push(WriteOpResult {
+                    index,
+                    kind: op.kind().to_string(),
+                    status: WriteOpStatus::Failed,
+                    detail: None,
+                    error: Some(WriteOpError {
+                        code: "OPERATION_FAILED".to_string(),
+                        message: error.to_string(),
+                        path: format!("$.ops[{index}]"),
+                        retryable: false,
+                    }),
+                });
+            }
+        }
+    }
+    let mut current_bytes = Vec::new();
+    umya_spreadsheet::writer::xlsx::write_writer(&current, &mut current_bytes)?;
+    let mut diff = diff_bytes(bytes, &current_bytes)?;
+    add_effect_manifest(&mut diff, &results);
+    let revision_after = if applied > 0 {
+        format!("state:{}", make_short_random_id("rev", 20))
+    } else {
+        current_revision.to_string()
+    };
+    let response = if failed {
+        WriteResponseData::Partial {
+            mode: request.mode,
+            atomic: false,
+            revision_before: current_revision.to_string(),
+            revision_after,
+            ops_applied: applied,
+            diff,
+            impact,
+            results,
+        }
+    } else {
+        WriteResponseData::Applied {
+            mode: request.mode,
+            atomic: false,
+            revision_before: current_revision.to_string(),
+            revision_after,
+            ops_applied: applied,
+            diff,
+            impact,
+            results,
+        }
+    };
+    Ok((response, (applied > 0).then_some(current_bytes)))
 }
 
 pub async fn execute_write(

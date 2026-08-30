@@ -1,9 +1,11 @@
+#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
+
 pub mod analysis;
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 pub mod canonical_lifecycle;
 pub mod canonical_optional;
 pub mod canonical_reads;
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 pub mod canonical_write;
 pub mod caps;
 #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]

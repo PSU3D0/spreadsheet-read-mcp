@@ -24,7 +24,7 @@ pub use executor::RecalcResult;
 #[cfg(feature = "recalc-libreoffice")]
 pub use fire_and_forget::FireAndForgetExecutor;
 #[cfg(feature = "recalc-formualizer")]
-pub use formualizer_backend::FormualizerBackend;
+pub use formualizer_backend::{FormualizerBackend, recalculate_bytes_sync};
 #[cfg(feature = "recalc-libreoffice")]
 pub use screenshot::{ScreenshotExecutor, ScreenshotResult};
 

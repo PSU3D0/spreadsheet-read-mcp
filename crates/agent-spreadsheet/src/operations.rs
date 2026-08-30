@@ -1,4 +1,4 @@
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 use crate::canonical_lifecycle::*;
 #[cfg(feature = "recalc-formualizer")]
 use crate::canonical_optional::{
@@ -8,7 +8,7 @@ use crate::canonical_optional::{InspectVbaData, InspectVbaRequest};
 #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 use crate::canonical_optional::{ScreenshotSheetData, ScreenshotSheetRequest};
 pub use crate::canonical_reads::*;
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 use crate::canonical_write::{WriteRequest, WriteResponseData};
 use crate::model::{
     FindValueResponse, InspectCellsResponse, NamedRangesResponse, ReadTableResponse,
@@ -580,7 +580,7 @@ fn sheetport(capabilities: &RuntimeCapabilities) -> bool {
 fn vba(capabilities: &RuntimeCapabilities) -> bool {
     capabilities.workbook_read && capabilities.vba
 }
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 fn workbook_write(capabilities: &RuntimeCapabilities) -> bool {
     capabilities.workbook_write
 }
@@ -609,6 +609,11 @@ fn write_risk(operation: &SpreadsheetOperation) -> OperationRisk {
         SpreadsheetOperation::DiscardFork(_) => OperationRisk::Destructive,
         _ => OperationRisk::Low,
     }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "recalc"))]
+fn write_risk(_operation: &SpreadsheetOperation) -> OperationRisk {
+    OperationRisk::Destructive
 }
 
 fn closed_schema<T: JsonSchema>() -> Value {
@@ -980,7 +985,7 @@ schemas!(
     InspectVbaData,
     "inspect_vba"
 );
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 fn write_input_schema() -> Value {
     fn apply_write_bounds(value: &mut Value, property: Option<&str>) {
         if let Some(object) = value.as_object_mut() {
@@ -1071,7 +1076,7 @@ fn list_forks_input_schema() -> Value {
 fn list_forks_output_schema() -> Value {
     discovery_output_schema::<ListForksData>("list_forks")
 }
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 schemas!(
     recalculate_input_schema,
     recalculate_output_schema,
@@ -1079,7 +1084,7 @@ schemas!(
     RecalculateData,
     "recalculate"
 );
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 schemas!(
     verify_workbook_input_schema,
     verify_workbook_output_schema,
@@ -1128,7 +1133,7 @@ schemas!(
     "staged_change"
 );
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 fn write_output_schema() -> Value {
     let mut schema = resource_output_schema::<WriteResponseData>("write");
     if let Some(variants) = schema
@@ -1191,7 +1196,7 @@ const VBA: CapabilityMetadata = CapabilityMetadata {
     name: "vba",
     description: "Inspect bounded VBA project metadata and module source",
 };
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 const WORKBOOK_WRITE: CapabilityMetadata = CapabilityMetadata {
     name: "workbook_write",
     description: "Mutate an isolated fork or session resource with revision CAS",
@@ -1210,17 +1215,17 @@ const EXPENSIVE_READ: OperationCost = OperationCost {
 };
 
 const NONE: AdapterPersistence = AdapterPersistence::None;
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 const EXPORT_REQUIRED: AdapterPersistence = AdapterPersistence::ExportRequired;
 const DURABLE_REQUIRED: AdapterPersistence = AdapterPersistence::DurableRequired;
 const CLI_NONE: AdapterOperationMetadata =
     AdapterOperationMetadata::supported(AdapterBindingKind::None, NONE);
 const CLI_READ: AdapterOperationMetadata =
     AdapterOperationMetadata::supported(AdapterBindingKind::SingleRead, NONE);
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 const CLI_MUTABLE: AdapterOperationMetadata =
     AdapterOperationMetadata::supported(AdapterBindingKind::SingleMutable, EXPORT_REQUIRED);
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 const CLI_TWO_RESOURCE: AdapterOperationMetadata =
     AdapterOperationMetadata::supported(AdapterBindingKind::TwoResource, NONE);
 #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
@@ -1232,10 +1237,10 @@ const MCP_NONE: AdapterOperationMetadata =
     AdapterOperationMetadata::supported(AdapterBindingKind::None, NONE);
 const MCP_READ: AdapterOperationMetadata =
     AdapterOperationMetadata::supported(AdapterBindingKind::SingleRead, DURABLE_REQUIRED);
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 const MCP_MUTABLE: AdapterOperationMetadata =
     AdapterOperationMetadata::supported(AdapterBindingKind::SingleMutable, DURABLE_REQUIRED);
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 const MCP_TWO_RESOURCE: AdapterOperationMetadata =
     AdapterOperationMetadata::supported(AdapterBindingKind::TwoResource, DURABLE_REQUIRED);
 #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
@@ -1247,12 +1252,12 @@ const WASM_READ: AdapterOperationMetadata =
     AdapterOperationMetadata::supported(AdapterBindingKind::SingleRead, NONE);
 const WASM_READ_UNSUPPORTED: AdapterOperationMetadata =
     AdapterOperationMetadata::unsupported(AdapterBindingKind::SingleRead, NONE);
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
-const WASM_MUTABLE_UNSUPPORTED: AdapterOperationMetadata =
-    AdapterOperationMetadata::unsupported(AdapterBindingKind::SingleMutable, EXPORT_REQUIRED);
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
-const WASM_TWO_UNSUPPORTED: AdapterOperationMetadata =
-    AdapterOperationMetadata::unsupported(AdapterBindingKind::TwoResource, NONE);
+#[cfg(feature = "recalc")]
+const WASM_MUTABLE: AdapterOperationMetadata =
+    AdapterOperationMetadata::supported(AdapterBindingKind::SingleMutable, NONE);
+#[cfg(feature = "recalc")]
+const WASM_TWO_RESOURCE: AdapterOperationMetadata =
+    AdapterOperationMetadata::supported(AdapterBindingKind::TwoResource, NONE);
 #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 const WASM_DURABLE_UNSUPPORTED: AdapterOperationMetadata = AdapterOperationMetadata::unsupported(
     AdapterBindingKind::DurableOrchestration,
@@ -1273,17 +1278,17 @@ const NATIVE_READ_ADAPTERS: DescriptorAdapterMetadata = DescriptorAdapterMetadat
     mcp: MCP_READ,
     wasm: WASM_READ_UNSUPPORTED,
 };
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 const MUTABLE_ADAPTERS: DescriptorAdapterMetadata = DescriptorAdapterMetadata {
     cli: CLI_MUTABLE,
     mcp: MCP_MUTABLE,
-    wasm: WASM_MUTABLE_UNSUPPORTED,
+    wasm: WASM_MUTABLE,
 };
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 const TWO_RESOURCE_ADAPTERS: DescriptorAdapterMetadata = DescriptorAdapterMetadata {
     cli: CLI_TWO_RESOURCE,
     mcp: MCP_TWO_RESOURCE,
-    wasm: WASM_TWO_UNSUPPORTED,
+    wasm: WASM_TWO_RESOURCE,
 };
 #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 const DURABLE_ADAPTERS: DescriptorAdapterMetadata = DescriptorAdapterMetadata {
@@ -1523,11 +1528,11 @@ static REGISTRY: &[OperationDescriptor] = &[
         inspect_vba_input_schema,
         inspect_vba_output_schema
     ),
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(feature = "recalc")]
     OperationDescriptor {
         name: "write",
         schema_version: CANONICAL_SCHEMA_VERSION,
-        description: "Preview, stage, or apply an ordered batch of canonical mutations with revision CAS and atomic rollback by default.",
+        description: "Preview or apply an ordered batch of canonical mutations with revision CAS and atomic rollback by default; stage requires a durable adapter and is invalid for in-memory WASM sessions.",
         capability: WORKBOOK_WRITE,
         capability_predicate: workbook_write,
         adapters: MUTABLE_ADAPTERS,
@@ -1565,11 +1570,11 @@ static REGISTRY: &[OperationDescriptor] = &[
         list_forks_input_schema,
         list_forks_output_schema
     ),
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(feature = "recalc")]
     OperationDescriptor {
         name: "recalculate",
         schema_version: CANONICAL_SCHEMA_VERSION,
-        description: "Evaluate a fork with revision CAS and complete F1 coverage metadata.",
+        description: "Evaluate a mutable fork or in-memory session with revision CAS and complete F1 coverage metadata.",
         capability: WORKBOOK_WRITE,
         capability_predicate: workbook_write,
         adapters: MUTABLE_ADAPTERS,
@@ -1582,7 +1587,7 @@ static REGISTRY: &[OperationDescriptor] = &[
         input_schema: recalculate_input_schema,
         output_schema: recalculate_output_schema,
     },
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(feature = "recalc")]
     descriptor_adapters!(
         "verify_workbook",
         "Evaluate and compare baseline and current resources with sound proof states and coverage.",

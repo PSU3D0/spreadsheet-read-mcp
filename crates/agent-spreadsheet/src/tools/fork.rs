@@ -1558,10 +1558,31 @@ fn apply_formula_pattern_to_file(
     base_formula: &str,
     relative_mode: RelativeMode,
 ) -> Result<FormulaPatternApplyResult> {
+    let mut book = umya_spreadsheet::reader::xlsx::read(path)?;
+    let result = apply_formula_pattern_to_workbook(
+        &mut book,
+        sheet_name,
+        target_range,
+        anchor_col,
+        anchor_row,
+        base_formula,
+        relative_mode,
+    )?;
+    umya_spreadsheet::writer::xlsx::write(&book, path)?;
+    Ok(result)
+}
+
+fn apply_formula_pattern_to_workbook(
+    book: &mut umya_spreadsheet::Spreadsheet,
+    sheet_name: &str,
+    target_range: &str,
+    anchor_col: u32,
+    anchor_row: u32,
+    base_formula: &str,
+    relative_mode: RelativeMode,
+) -> Result<FormulaPatternApplyResult> {
     let ast = parse_base_formula(base_formula)?;
     let bounds = parse_range_bounds(target_range)?;
-
-    let mut book = umya_spreadsheet::reader::xlsx::read(path)?;
     let sheet = book
         .get_sheet_by_name_mut(sheet_name)
         .ok_or_else(|| anyhow!("sheet '{}' not found", sheet_name))?;
@@ -1580,8 +1601,6 @@ fn apply_formula_pattern_to_file(
             cells_filled += 1;
         }
     }
-
-    umya_spreadsheet::writer::xlsx::write(&book, path)?;
 
     let mut counts = BTreeMap::new();
     counts.insert("cells_filled".to_string(), cells_filled);
@@ -1608,6 +1627,16 @@ pub(crate) struct FormulaPatternBatchApplyResult {
 
 pub(crate) fn apply_formula_pattern_ops_to_file(
     path: &Path,
+    ops: &[ApplyFormulaPatternOpInput],
+) -> Result<FormulaPatternBatchApplyResult> {
+    let mut book = umya_spreadsheet::reader::xlsx::read(path)?;
+    let result = apply_formula_pattern_ops_to_workbook(&mut book, ops)?;
+    umya_spreadsheet::writer::xlsx::write(&book, path)?;
+    Ok(result)
+}
+
+pub(crate) fn apply_formula_pattern_ops_to_workbook(
+    book: &mut umya_spreadsheet::Spreadsheet,
     ops: &[ApplyFormulaPatternOpInput],
 ) -> Result<FormulaPatternBatchApplyResult> {
     struct PreparedFormulaPatternOp {
@@ -1647,8 +1676,8 @@ pub(crate) fn apply_formula_pattern_ops_to_file(
 
     let mut cells_filled = 0u64;
     for op in prepared_ops {
-        let result = apply_formula_pattern_to_file(
-            path,
+        let result = apply_formula_pattern_to_workbook(
+            book,
             &op.sheet_name,
             &op.target_range,
             op.anchor_col,
@@ -2137,6 +2166,24 @@ pub(crate) fn apply_structure_ops_to_file(
     policy: FormulaParsePolicy,
 ) -> Result<StructureApplyResult> {
     let mut book = umya_spreadsheet::reader::xlsx::read(path)?;
+    let mut result = apply_structure_ops_to_workbook(&mut book, ops, policy)?;
+    umya_spreadsheet::writer::xlsx::write(&book, path)?;
+    // Umya exposes parsed defined names, but malformed legacy workbook.xml entries may
+    // survive outside that model. Keep the ZIP-level native guardrail in the path wrapper.
+    let clamped = sanitize_workbook_xml_defined_name_rows(path)?;
+    if clamped > 0 {
+        result.summary.warnings.push(format!(
+            "Clamped {clamped} workbook.xml defined name reference(s) to Excel max row 1048576 after structural edits."
+        ));
+    }
+    Ok(result)
+}
+
+pub(crate) fn apply_structure_ops_to_workbook(
+    book: &mut umya_spreadsheet::Spreadsheet,
+    ops: &[StructureOp],
+    policy: FormulaParsePolicy,
+) -> Result<StructureApplyResult> {
     let mut formula_parse_diagnostics_builder = FormulaParseDiagnosticsBuilder::new(policy);
 
     let mut affected_sheets: BTreeSet<String> = BTreeSet::new();
@@ -2212,7 +2259,7 @@ pub(crate) fn apply_structure_ops_to_file(
                     replace_data_validations(sheet, relocated_validations);
                 }
                 rewrite_formulas_for_sheet_row_insert(
-                    &mut book,
+                    book,
                     sheet_name,
                     *at_row,
                     *count,
@@ -2220,7 +2267,7 @@ pub(crate) fn apply_structure_ops_to_file(
                     &mut formula_parse_diagnostics_builder,
                 )?;
                 rewrite_defined_name_formulas_for_sheet_row_insert(
-                    &mut book,
+                    book,
                     sheet_name,
                     *at_row,
                     *count,
@@ -2229,7 +2276,7 @@ pub(crate) fn apply_structure_ops_to_file(
                 )?;
                 if *expand_adjacent_sums {
                     let (expansion_warnings, expanded_count) =
-                        expand_adjacent_sum_formulas(&mut book, sheet_name, *at_row, *count)?;
+                        expand_adjacent_sum_formulas(book, sheet_name, *at_row, *count)?;
                     warnings.extend(expansion_warnings);
                     if expanded_count > 0 {
                         counts
@@ -2285,7 +2332,7 @@ pub(crate) fn apply_structure_ops_to_file(
                     replace_data_validations(sheet, relocated_validations);
                 }
                 rewrite_formulas_for_sheet_row_insert(
-                    &mut book,
+                    book,
                     sheet_name,
                     *insert_at,
                     *count,
@@ -2293,7 +2340,7 @@ pub(crate) fn apply_structure_ops_to_file(
                     &mut formula_parse_diagnostics_builder,
                 )?;
                 rewrite_defined_name_formulas_for_sheet_row_insert(
-                    &mut book,
+                    book,
                     sheet_name,
                     *insert_at,
                     *count,
@@ -2319,7 +2366,7 @@ pub(crate) fn apply_structure_ops_to_file(
                 // Step 4: Optionally expand adjacent SUMs.
                 if *expand_adjacent_sums {
                     let (expansion_warnings, expanded_count) =
-                        expand_adjacent_sum_formulas(&mut book, sheet_name, *insert_at, *count)?;
+                        expand_adjacent_sum_formulas(book, sheet_name, *insert_at, *count)?;
                     warnings.extend(expansion_warnings);
                     if expanded_count > 0 {
                         counts
@@ -2363,7 +2410,7 @@ pub(crate) fn apply_structure_ops_to_file(
                     replace_data_validations(sheet, relocated_validations);
                 }
                 rewrite_formulas_for_sheet_row_delete(
-                    &mut book,
+                    book,
                     sheet_name,
                     *start_row,
                     *count,
@@ -2371,7 +2418,7 @@ pub(crate) fn apply_structure_ops_to_file(
                     &mut formula_parse_diagnostics_builder,
                 )?;
                 rewrite_defined_name_formulas_for_sheet_row_delete(
-                    &mut book,
+                    book,
                     sheet_name,
                     *start_row,
                     *count,
@@ -2402,7 +2449,7 @@ pub(crate) fn apply_structure_ops_to_file(
                     sheet.insert_new_column(&col_letters, count);
                 }
                 rewrite_formulas_for_sheet_col_insert(
-                    &mut book,
+                    book,
                     sheet_name,
                     root_col,
                     *count,
@@ -2410,7 +2457,7 @@ pub(crate) fn apply_structure_ops_to_file(
                     &mut formula_parse_diagnostics_builder,
                 )?;
                 rewrite_defined_name_formulas_for_sheet_col_insert(
-                    &mut book,
+                    book,
                     sheet_name,
                     root_col,
                     *count,
@@ -2441,7 +2488,7 @@ pub(crate) fn apply_structure_ops_to_file(
                     sheet.remove_column(&col_letters, count);
                 }
                 rewrite_formulas_for_sheet_col_delete(
-                    &mut book,
+                    book,
                     sheet_name,
                     root_col,
                     *count,
@@ -2449,7 +2496,7 @@ pub(crate) fn apply_structure_ops_to_file(
                     &mut formula_parse_diagnostics_builder,
                 )?;
                 rewrite_defined_name_formulas_for_sheet_col_delete(
-                    &mut book,
+                    book,
                     sheet_name,
                     root_col,
                     *count,
@@ -2478,14 +2525,14 @@ pub(crate) fn apply_structure_ops_to_file(
                     .map_err(|e| anyhow!("failed to rename sheet '{}': {}", old_name, e))?;
 
                 rewrite_formulas_for_sheet_rename(
-                    &mut book,
+                    book,
                     old_name,
                     new_name,
                     policy,
                     &mut formula_parse_diagnostics_builder,
                 )?;
                 rewrite_defined_name_formulas_for_sheet_rename(
-                    &mut book,
+                    book,
                     old_name,
                     new_name,
                     policy,
@@ -2555,7 +2602,7 @@ pub(crate) fn apply_structure_ops_to_file(
             } => {
                 let dest_sheet_name = dest_sheet_name.as_deref().unwrap_or(sheet_name);
                 let result = copy_or_move_range(
-                    &mut book,
+                    book,
                     sheet_name,
                     dest_sheet_name,
                     src_range,
@@ -2588,7 +2635,7 @@ pub(crate) fn apply_structure_ops_to_file(
             } => {
                 let dest_sheet_name = dest_sheet_name.as_deref().unwrap_or(sheet_name);
                 let result = copy_or_move_range(
-                    &mut book,
+                    book,
                     sheet_name,
                     dest_sheet_name,
                     src_range,
@@ -2614,24 +2661,11 @@ pub(crate) fn apply_structure_ops_to_file(
         }
     }
 
-    let clamped_defined_names = clamp_out_of_bounds_defined_name_rows(&mut book);
+    let clamped_defined_names = clamp_out_of_bounds_defined_name_rows(book);
     if clamped_defined_names > 0 {
         warnings.push(format!(
             "Clamped {} defined name reference(s) to Excel max row 1048576 after structural edits.",
             clamped_defined_names
-        ));
-    }
-
-    umya_spreadsheet::writer::xlsx::write(&book, path)?;
-
-    // Temporary guardrail: patch overflowing workbook-scoped defined-name row references
-    // directly in workbook.xml after structural writes. Remove once Formualizer/Umya
-    // perform named-range row-bound clamping during ingest/mutation.
-    let clamped_workbook_xml_defined_names = sanitize_workbook_xml_defined_name_rows(path)?;
-    if clamped_workbook_xml_defined_names > 0 {
-        warnings.push(format!(
-            "Clamped {} workbook.xml defined name reference(s) to Excel max row 1048576 after structural edits.",
-            clamped_workbook_xml_defined_names
         ));
     }
 
@@ -4357,6 +4391,16 @@ pub(crate) fn apply_column_size_ops_to_file(
     ops: &[ColumnSizeOp],
 ) -> Result<ColumnSizeApplyResult> {
     let mut book = umya_spreadsheet::reader::xlsx::read(path)?;
+    let result = apply_column_size_ops_to_workbook(&mut book, sheet_name, ops)?;
+    umya_spreadsheet::writer::xlsx::write(&book, path)?;
+    Ok(result)
+}
+
+pub(crate) fn apply_column_size_ops_to_workbook(
+    book: &mut umya_spreadsheet::Spreadsheet,
+    sheet_name: &str,
+    ops: &[ColumnSizeOp],
+) -> Result<ColumnSizeApplyResult> {
     let sheet = book
         .get_sheet_by_name_mut(sheet_name)
         .ok_or_else(|| anyhow!("sheet '{}' not found", sheet_name))?;
@@ -4438,8 +4482,6 @@ pub(crate) fn apply_column_size_ops_to_file(
         }
     }
 
-    umya_spreadsheet::writer::xlsx::write(&book, path)?;
-
     let mut counts = BTreeMap::new();
     counts.insert("columns_sized".to_string(), columns_sized);
     counts.insert("auto_ops".to_string(), auto_ops);
@@ -4468,7 +4510,15 @@ pub(crate) fn apply_transform_ops_to_file(
     ops: &[TransformOp],
 ) -> Result<TransformApplyResult> {
     let mut book = umya_spreadsheet::reader::xlsx::read(path)?;
+    let result = apply_transform_ops_to_workbook(&mut book, ops)?;
+    umya_spreadsheet::writer::xlsx::write(&book, path)?;
+    Ok(result)
+}
 
+pub(crate) fn apply_transform_ops_to_workbook(
+    book: &mut umya_spreadsheet::Spreadsheet,
+    ops: &[TransformOp],
+) -> Result<TransformApplyResult> {
     let mut sheets: BTreeSet<String> = BTreeSet::new();
     let mut affected_bounds: Vec<String> = Vec::new();
 
@@ -4839,8 +4889,6 @@ pub(crate) fn apply_transform_ops_to_file(
         }
     }
 
-    umya_spreadsheet::writer::xlsx::write(&book, path)?;
-
     let mut counts = BTreeMap::new();
     counts.insert("cells_touched".to_string(), cells_touched);
     counts.insert("cells_value_cleared".to_string(), cells_value_cleared);
@@ -4912,7 +4960,16 @@ pub fn apply_replace_in_formulas_to_file(
     policy: FormulaParsePolicy,
 ) -> Result<ReplaceInFormulasApplyResult> {
     let mut book = umya_spreadsheet::reader::xlsx::read(path)?;
+    let result = apply_replace_in_formulas_to_workbook(&mut book, op, policy)?;
+    umya_spreadsheet::writer::xlsx::write(&book, path)?;
+    Ok(result)
+}
 
+pub(crate) fn apply_replace_in_formulas_to_workbook(
+    book: &mut umya_spreadsheet::Spreadsheet,
+    op: &ReplaceInFormulasOp,
+    policy: FormulaParsePolicy,
+) -> Result<ReplaceInFormulasApplyResult> {
     let sheet = book
         .get_sheet_by_name_mut(&op.sheet_name)
         .ok_or_else(|| anyhow!("sheet '{}' not found", op.sheet_name))?;
@@ -5040,8 +5097,6 @@ pub fn apply_replace_in_formulas_to_file(
     if formulas_changed == 0 {
         warnings.push("WARN_NO_MATCH: no formula text matched the find pattern".to_string());
     }
-
-    umya_spreadsheet::writer::xlsx::write(&book, path)?;
 
     let formula_parse_diagnostics = if formula_parse_diagnostics_builder.has_errors() {
         Some(formula_parse_diagnostics_builder.build())
@@ -5220,11 +5275,19 @@ pub async fn replace_in_formulas(
 }
 
 pub(crate) fn apply_style_ops_to_file(path: &Path, ops: &[StyleOp]) -> Result<StyleApplyResult> {
+    let mut book = umya_spreadsheet::reader::xlsx::read(path)?;
+    let result = apply_style_ops_to_workbook(&mut book, ops)?;
+    umya_spreadsheet::writer::xlsx::write(&book, path)?;
+    Ok(result)
+}
+
+pub(crate) fn apply_style_ops_to_workbook(
+    book: &mut umya_spreadsheet::Spreadsheet,
+    ops: &[StyleOp],
+) -> Result<StyleApplyResult> {
     use crate::styles::{
         StylePatchMode, apply_style_patch, descriptor_from_style, stable_style_id,
     };
-
-    let mut book = umya_spreadsheet::reader::xlsx::read(path)?;
 
     let mut sheets: BTreeSet<String> = BTreeSet::new();
     let mut affected_bounds: Vec<String> = Vec::new();
@@ -5279,8 +5342,6 @@ pub(crate) fn apply_style_ops_to_file(path: &Path, ops: &[StyleOp]) -> Result<St
             }
         }
     }
-
-    umya_spreadsheet::writer::xlsx::write(&book, path)?;
 
     let mut counts = BTreeMap::new();
     counts.insert("cells_touched".to_string(), cells_touched);

@@ -61,6 +61,7 @@ dependencies = [
  "umya-spreadsheet",
  "uuid",
  "walkdir",
+ "web-time",
  "xxhash-rust",
  "zip 0.6.6",
 ]
@@ -127,6 +128,7 @@ dependencies = [
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "umya-spreadsheet",
@@ -1348,11 +1350,14 @@ dependencies = [
  "formualizer-common",
  "formualizer-macros",
  "formualizer-parse",
+ "getrandom 0.2.17",
+ "getrandom 0.3.4",
  "once_cell",
  "rand 0.8.5",
  "rayon",
  "rustc-hash",
  "smallvec",
+ "web-time",
 ]
 
 [[package]]
@@ -1399,8 +1404,6 @@ dependencies = [
 [[package]]
 name = "formualizer-workbook"
 version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18961c1529269e9d4d8a9fa2a0d5df0406d43458ee9ed777bcd0c6a17ebcf2a9"
 dependencies = [
  "chrono",
  "formualizer-common",
@@ -1414,6 +1417,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "umya-spreadsheet",
+ "web-time",
  "zip 7.2.0",
 ]
 
@@ -4378,6 +4382,16 @@ name = "web-sys"
 version = "0.3.91"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "854ba17bb104abfb26ba36da9729addc7ce7f06f5c0f90f3c391f8461cca21f9"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "web-time"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",

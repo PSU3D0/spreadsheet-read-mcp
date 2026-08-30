@@ -10832,8 +10832,8 @@
         },
         "wasm": {
           "binding_kind": "single_mutable",
-          "persistence": "export_required",
-          "support_status": "unsupported"
+          "persistence": "none",
+          "support_status": "supported"
         }
       },
       "capability": {
@@ -10848,7 +10848,7 @@
         ],
         "class": "expensive"
       },
-      "description": "Preview, stage, or apply an ordered batch of canonical mutations with revision CAS and atomic rollback by default.",
+      "description": "Preview or apply an ordered batch of canonical mutations with revision CAS and atomic rollback by default; stage requires a durable adapter and is invalid for in-memory WASM sessions.",
       "input_schema": {
         "$defs": {
           "AlignmentPatch": {
@@ -14120,8 +14120,8 @@
         },
         "wasm": {
           "binding_kind": "single_mutable",
-          "persistence": "export_required",
-          "support_status": "unsupported"
+          "persistence": "none",
+          "support_status": "supported"
         }
       },
       "capability": {
@@ -14135,7 +14135,7 @@
         ],
         "class": "expensive"
       },
-      "description": "Evaluate a fork with revision CAS and complete F1 coverage metadata.",
+      "description": "Evaluate a mutable fork or in-memory session with revision CAS and complete F1 coverage metadata.",
       "input_schema": {
         "$defs": {
           "RecalcBackendKind": {
@@ -14400,7 +14400,7 @@
         "wasm": {
           "binding_kind": "two_resource",
           "persistence": "none",
-          "support_status": "unsupported"
+          "support_status": "supported"
         }
       },
       "capability": {

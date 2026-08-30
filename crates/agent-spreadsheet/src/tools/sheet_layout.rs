@@ -217,7 +217,15 @@ pub(crate) fn apply_sheet_layout_ops_to_file(
     ops: &[SheetLayoutOp],
 ) -> Result<SheetLayoutApplyResult> {
     let mut book = umya_spreadsheet::reader::xlsx::read(path)?;
+    let result = apply_sheet_layout_ops_to_workbook(&mut book, ops)?;
+    umya_spreadsheet::writer::xlsx::write(&book, path)?;
+    Ok(result)
+}
 
+pub(crate) fn apply_sheet_layout_ops_to_workbook(
+    book: &mut umya_spreadsheet::Spreadsheet,
+    ops: &[SheetLayoutOp],
+) -> Result<SheetLayoutApplyResult> {
     let mut affected_sheets: BTreeSet<String> = BTreeSet::new();
     let mut affected_bounds: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
@@ -359,7 +367,7 @@ pub(crate) fn apply_sheet_layout_ops_to_file(
                 print_area_ops += 1;
                 affected_sheets.insert(sheet_name.clone());
                 affected_bounds.push(range.clone());
-                set_print_area_defined_name(&mut book, sheet_name, range)?;
+                set_print_area_defined_name(book, sheet_name, range)?;
             }
             SheetLayoutOp::SetPageBreaks {
                 sheet_name,
@@ -385,8 +393,6 @@ pub(crate) fn apply_sheet_layout_ops_to_file(
             }
         }
     }
-
-    umya_spreadsheet::writer::xlsx::write(&book, path)?;
 
     counts.insert("ops".to_string(), ops.len() as u64);
     if freeze_ops > 0 {
