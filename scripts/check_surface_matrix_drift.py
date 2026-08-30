@@ -283,6 +283,16 @@ def main() -> int:
     discovered_cli = discover_cli_commands(cli_source)
     discovered_mcp = discover_mcp_tools(mcp_source)
     matrix_cli_rows, matrix_mcp_rows, matrix_errors = parse_matrix_rows(matrix_text)
+    staged_risk_contract = (
+        "| `staged_change` | three legacy staging tools remain unchanged |"
+        " action union; canonical bundles bind applicability to base content revision,"
+        " replay through the write dispatcher, and are consumed only after success |"
+        " `workbook_write` | destructive ceiling; request-aware low/moderate/destructive |"
+    )
+    if staged_risk_contract not in matrix_text:
+        matrix_errors.append(
+            "canonical staged_change risk contract must remain destructive-ceiling"
+        )
 
     matrix_cli = set(matrix_cli_rows.keys())
     matrix_mcp = set(matrix_mcp_rows.keys())

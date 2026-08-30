@@ -169,7 +169,7 @@ Wave 3A registers the complete canonical discovery/read/search/analysis surface.
 | `export_fork` | legacy `save_fork` retains path-oriented MCP adapter UX | workspace destination plus portable artifact metadata; canonical data never relies on a server-local path | `workbook_write` | high |
 | `get_changes` | legacy `get_edits`/`get_changeset` remain unchanged | honest `view.kind` union: stored canonical operation audit or direct fork-base net diff | `workbook_write` | low |
 | `checkpoint` | four legacy checkpoint tools remain unchanged | action union with CAS mutations; atomic restore reports removed operations/stages and retained/invalidated checkpoints | `workbook_write` | destructive ceiling; request-aware low/moderate/high/destructive |
-| `staged_change` | three legacy staging tools remain unchanged | action union; canonical bundles require base/current revision agreement, replay through the write dispatcher, and are consumed only after success | `workbook_write` | high ceiling; request-aware low/moderate/high |
+| `staged_change` | three legacy staging tools remain unchanged | action union; canonical bundles bind applicability to base content revision, replay through the write dispatcher, and are consumed only after success | `workbook_write` | destructive ceiling; request-aware low/moderate/destructive |
 
 Canonical responses use the versioned operation envelope and state reads carry `revision_id`. Value-bearing reads expose calculation state. Merged responses echo branch discriminants. Checked-in full JSON fixtures cover both branches of `describe_workbook`, `read_cells`, `analyze_styles`, and `search_formulas`, plus every unbranched operation.
 
