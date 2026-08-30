@@ -80,9 +80,21 @@ tempfile = "3.10"
 
 [features]
 default = ["recalc-formualizer"]
-recalc = ["async-trait", "uuid", "quick-xml", "xxhash-rust", "image", "base64"]
-recalc-formualizer = ["recalc", "dep:formualizer"]
-recalc-libreoffice = ["recalc"]
+recalc = [
+    "agent-spreadsheet/recalc",
+    "async-trait",
+    "uuid",
+    "quick-xml",
+    "xxhash-rust",
+    "image",
+    "base64",
+]
+recalc-formualizer = [
+    "recalc",
+    "agent-spreadsheet/recalc-formualizer",
+    "dep:formualizer",
+]
+recalc-libreoffice = ["recalc", "agent-spreadsheet/recalc-libreoffice"]
 docker-tests = []
 
 [dev-dependencies]
