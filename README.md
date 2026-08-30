@@ -100,7 +100,7 @@ The current surface is much stronger than a plain “read some cells” tool. Ma
 curl -fsSL https://raw.githubusercontent.com/PSU3D0/agent-spreadsheet/main/install.sh | sh
 ```
 
-The installer downloads a prebuilt CLI to `~/.local/bin` and creates the `asp` command. Pin a release with `ASP_VERSION=0.12.0`, set `ASP_INSTALL_DIR` to choose another destination, or pass `--mcp` to install the MCP server too:
+The installer downloads a prebuilt CLI to `~/.local/bin` and creates the `asp` command. Pin a release with `ASP_VERSION=0.14.0`, set `ASP_INSTALL_DIR` to choose another destination, or pass `--mcp` to install the MCP server too:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/PSU3D0/agent-spreadsheet/main/install.sh | sh -s -- --mcp

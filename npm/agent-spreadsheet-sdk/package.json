@@ -1,6 +1,6 @@
 {
   "name": "agent-spreadsheet-sdk",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Backend-agnostic JavaScript SDK for agent-spreadsheet surfaces (MCP and WASM)",
   "license": "Apache-2.0",
   "repository": {
