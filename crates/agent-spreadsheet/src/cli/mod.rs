@@ -508,8 +508,16 @@ enum SurfaceDiscoverabilityCommands {
 
 #[derive(Debug, Subcommand)]
 enum SurfaceCommands {
-    #[command(about = "List canonical operations and their policy metadata")]
+    #[command(about = "List canonical operations supported by the CLI adapter")]
     Operations,
+    #[command(about = "Emit the complete host-independent canonical registry and schemas")]
+    Registry {
+        #[arg(
+            long,
+            help = "Include every canonical descriptor regardless of host availability"
+        )]
+        all: bool,
+    },
     #[command(about = "Execute a canonical operation against an ephemeral bound resource")]
     Op {
         #[arg(value_name = "OPERATION")]
@@ -520,6 +528,12 @@ enum SurfaceCommands {
             help = "Bind a workbook path as an ephemeral resource"
         )]
         bind: Option<PathBuf>,
+        #[arg(
+            long,
+            value_name = "FILE",
+            help = "Bind a verification baseline as a second ephemeral resource"
+        )]
+        baseline: Option<PathBuf>,
         #[arg(
             long,
             value_name = "JSON",
@@ -3339,9 +3353,11 @@ enum ResolvedDiscoverabilityCommand {
 enum ResolvedSurfaceCommand {
     Command(Commands),
     Operations,
+    Registry,
     Operation {
         operation: String,
         bind: Option<PathBuf>,
+        baseline: Option<PathBuf>,
         json: Option<String>,
         output: Option<PathBuf>,
         in_place: bool,
@@ -3795,9 +3811,11 @@ fn resolve_surface_command(
 ) -> Result<ResolvedSurfaceCommand, clap::Error> {
     match command {
         SurfaceCommands::Operations => Ok(ResolvedSurfaceCommand::Operations),
+        SurfaceCommands::Registry { all: _ } => Ok(ResolvedSurfaceCommand::Registry),
         SurfaceCommands::Op {
             operation,
             bind,
+            baseline,
             json,
             output,
             in_place,
@@ -3805,6 +3823,7 @@ fn resolve_surface_command(
         } => Ok(ResolvedSurfaceCommand::Operation {
             operation,
             bind,
+            baseline,
             json,
             output,
             in_place,
@@ -4015,12 +4034,212 @@ fn emit_canonical_error_and_exit(error: crate::operations::CanonicalErrorEnvelop
     std::process::exit(1)
 }
 
-fn normalize_canonical_discoverability_argv(mut argv: Vec<OsString>) -> Vec<OsString> {
-    if argv.len() == 3
-        && matches!(argv[1].to_str(), Some("schema" | "example"))
-        && argv[2] == "write"
+fn schema_pointer<'a>(root: &'a Value, reference: &str) -> Option<&'a Value> {
+    reference
+        .strip_prefix('#')
+        .and_then(|pointer| root.pointer(pointer))
+}
+
+fn example_string(name: Option<&str>, schema: &Value, mutable_resource: bool) -> String {
+    match name {
+        Some("resource_id") => {
+            if mutable_resource {
+                "fork:fork-example".to_string()
+            } else {
+                "wb:workbook-example".to_string()
+            }
+        }
+        Some("baseline_resource_id") => "wb:baseline-example".to_string(),
+        Some("expected_revision" | "revision_id") => "sha256-revision".to_string(),
+        Some("sheet_name" | "dest_sheet_name") => "Sheet1".to_string(),
+        Some("cell" | "cell_address" | "anchor" | "anchor_cell" | "dest_anchor") => {
+            "A1".to_string()
+        }
+        Some("source_rows") => "1:2".to_string(),
+        Some(name) if name.contains("range") || name == "refers_to" => "A1:B2".to_string(),
+        Some("manifest_yaml") => "{}".to_string(),
+        Some("module_name") => "Module1".to_string(),
+        Some("destination") => "output.xlsx".to_string(),
+        _ if schema
+            .get("pattern")
+            .and_then(Value::as_str)
+            .is_some_and(|pattern| pattern.contains("wb|fork|session")) =>
+        {
+            if mutable_resource {
+                "fork:fork-example".to_string()
+            } else {
+                "wb:workbook-example".to_string()
+            }
+        }
+        _ => {
+            let length = schema
+                .get("minLength")
+                .and_then(Value::as_u64)
+                .unwrap_or(1)
+                .max(1) as usize;
+            "example".chars().cycle().take(length).collect()
+        }
+    }
+}
+
+fn example_from_schema(
+    schema: &Value,
+    root: &Value,
+    name: Option<&str>,
+    mutable_resource: bool,
+) -> Value {
+    if let Some(value) = schema.get("const") {
+        return value.clone();
+    }
+    if let Some(value) = schema.get("default")
+        && !value.is_null()
     {
-        argv.insert(2, OsString::from("--"));
+        return value.clone();
+    }
+    if let Some(value) = schema
+        .get("enum")
+        .and_then(Value::as_array)
+        .and_then(|values| values.first())
+    {
+        return value.clone();
+    }
+    if let Some(reference) = schema.get("$ref").and_then(Value::as_str)
+        && let Some(target) = schema_pointer(root, reference)
+    {
+        return example_from_schema(target, root, name, mutable_resource);
+    }
+    for keyword in ["oneOf", "anyOf"] {
+        if let Some(variants) = schema.get(keyword).and_then(Value::as_array)
+            && let Some(variant) = variants
+                .iter()
+                .find(|variant| variant.get("type").and_then(Value::as_str) != Some("null"))
+        {
+            return example_from_schema(variant, root, name, mutable_resource);
+        }
+    }
+    let schema_type = schema.get("type").and_then(|value| match value {
+        Value::String(value) => Some(value.as_str()),
+        Value::Array(values) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .find(|value| *value != "null"),
+        _ => None,
+    });
+    match schema_type {
+        Some("object") => {
+            let properties = schema
+                .get("properties")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            let required = schema
+                .get("required")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let mut object = required
+                .iter()
+                .filter_map(Value::as_str)
+                .filter_map(|property| {
+                    properties.get(property).map(|property_schema| {
+                        (
+                            property.to_string(),
+                            example_from_schema(
+                                property_schema,
+                                root,
+                                Some(property),
+                                mutable_resource,
+                            ),
+                        )
+                    })
+                })
+                .collect::<serde_json::Map<_, _>>();
+            if object.is_empty()
+                && let Some(value_schema) = schema.get("additionalProperties")
+                && value_schema.is_object()
+            {
+                let key = if name == Some("cells") {
+                    "A1"
+                } else {
+                    "example"
+                };
+                object.insert(
+                    key.to_string(),
+                    example_from_schema(value_schema, root, Some(key), mutable_resource),
+                );
+            }
+            Value::Object(object)
+        }
+        Some("array") => {
+            let count = schema
+                .get("minItems")
+                .and_then(Value::as_u64)
+                .unwrap_or(1)
+                .max(1);
+            let item = schema.get("items").unwrap_or(&Value::Null);
+            Value::Array(
+                (0..count)
+                    .map(|_| example_from_schema(item, root, name, mutable_resource))
+                    .collect(),
+            )
+        }
+        Some("integer") => {
+            let minimum = schema.get("minimum").and_then(Value::as_i64).unwrap_or(0);
+            Value::from(minimum)
+        }
+        Some("number") => Value::from(schema.get("minimum").and_then(Value::as_f64).unwrap_or(0.0)),
+        Some("boolean") => Value::Bool(false),
+        Some("null") => Value::Null,
+        _ => Value::String(example_string(name, schema, mutable_resource)),
+    }
+}
+
+fn canonical_operation_example(
+    operation: &str,
+) -> Result<Value, crate::operations::CanonicalErrorEnvelope> {
+    use crate::operations::{CanonicalErrorCode, CanonicalErrorEnvelope};
+    let descriptor = crate::operations::operation_descriptor(operation).ok_or_else(|| {
+        CanonicalErrorEnvelope::new(
+            CanonicalErrorCode::UnknownOperation,
+            format!("unknown operation '{operation}'"),
+            Some(operation),
+            Some("$.operation".to_string()),
+        )
+    })?;
+    if !descriptor.is_available_for(
+        crate::operations::OperationAdapter::Cli,
+        &crate::operations::RuntimeCapabilities::native(),
+    ) {
+        return Err(CanonicalErrorEnvelope::new(
+            CanonicalErrorCode::CapabilityUnavailable,
+            format!(
+                "canonical operation '{operation}' is unavailable in the stateless CLI adapter"
+            ),
+            Some(operation),
+            Some("adapter".to_string()),
+        ));
+    }
+    let schema = (descriptor.input_schema)();
+    Ok(example_from_schema(
+        &schema,
+        &schema,
+        None,
+        matches!(
+            descriptor.adapters.cli.binding_kind,
+            crate::operations::AdapterBindingKind::SingleMutable
+        ),
+    ))
+}
+
+fn normalize_canonical_discoverability_argv(mut argv: Vec<OsString>) -> Vec<OsString> {
+    if argv.len() == 3 && matches!(argv[1].to_str(), Some("schema" | "example")) {
+        let target = argv[2].to_string_lossy();
+        if crate::operations::operation_descriptor(&target).is_some() {
+            // Canonical operation names take precedence over legacy discovery
+            // subtrees. `--` makes that rule explicit to clap for collisions
+            // such as the canonical `write` operation.
+            argv.insert(2, OsString::from("--"));
+        }
     }
     argv
 }
@@ -4032,24 +4251,70 @@ enum MachineBindRule {
     Forbidden,
 }
 
-fn machine_bind_rule(operation: &str, payload: &serde_json::Map<String, Value>) -> MachineBindRule {
-    match operation {
-        "list_workbooks" | "list_forks" => MachineBindRule::OptionalContext,
-        "sheetport_manifest"
+fn schema_variant_matches_payload(
+    schema: &Value,
+    payload: &serde_json::Map<String, Value>,
+) -> bool {
+    schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .is_none_or(|properties| {
+            properties.iter().all(|(name, property)| {
+                property
+                    .get("const")
+                    .is_none_or(|expected| payload.get(name) == Some(expected))
+            })
+        })
+}
+
+fn schema_requires_resource(
+    schema: &Value,
+    payload: &serde_json::Map<String, Value>,
+) -> Option<bool> {
+    if let Some(variants) = schema.get("oneOf").and_then(Value::as_array) {
+        let matching = variants
+            .iter()
+            .filter(|variant| schema_variant_matches_payload(variant, payload))
+            .collect::<Vec<_>>();
+        if matching.len() == 1 {
+            return schema_requires_resource(matching[0], payload);
+        }
+        return None;
+    }
+    Some(
+        schema
+            .get("required")
+            .and_then(Value::as_array)
+            .is_some_and(|required| required.iter().any(|name| name == "resource_id")),
+    )
+}
+
+fn machine_bind_rule(
+    descriptor: &crate::operations::OperationDescriptor,
+    payload: &serde_json::Map<String, Value>,
+) -> MachineBindRule {
+    match schema_requires_resource(&(descriptor.input_schema)(), payload) {
+        Some(true) => MachineBindRule::Required,
+        Some(false)
             if matches!(
-                payload.get("action").and_then(Value::as_str),
-                Some("schema" | "validate" | "normalize")
+                descriptor.adapters.cli.binding_kind,
+                crate::operations::AdapterBindingKind::None
             ) =>
         {
-            MachineBindRule::Forbidden
+            MachineBindRule::OptionalContext
         }
-        _ => MachineBindRule::Required,
+        Some(false) => MachineBindRule::Forbidden,
+        None => match descriptor.adapters.cli.binding_kind {
+            crate::operations::AdapterBindingKind::None => MachineBindRule::Forbidden,
+            _ => MachineBindRule::OptionalContext,
+        },
     }
 }
 
 async fn run_machine_operation(
     operation: &str,
     bind: Option<PathBuf>,
+    baseline: Option<PathBuf>,
     json_payload: Option<String>,
     output: Option<PathBuf>,
     in_place: bool,
@@ -4058,12 +4323,23 @@ async fn run_machine_operation(
     use crate::operations::{CanonicalErrorCode, CanonicalErrorEnvelope, ResourceId};
     use std::io::Read;
 
-    if crate::operations::operation_descriptor(operation).is_none() {
-        return Err(CanonicalErrorEnvelope::new(
+    let descriptor = crate::operations::operation_descriptor(operation).ok_or_else(|| {
+        CanonicalErrorEnvelope::new(
             CanonicalErrorCode::UnknownOperation,
             format!("unknown operation '{operation}'"),
             Some(operation),
             Some("$.operation".to_string()),
+        )
+    })?;
+    let adapter = descriptor.adapters.cli;
+    if !adapter.is_supported() {
+        return Err(CanonicalErrorEnvelope::new(
+            CanonicalErrorCode::CapabilityUnavailable,
+            format!(
+                "canonical operation '{operation}' is unavailable in the stateless CLI adapter"
+            ),
+            Some(operation),
+            Some("adapter".to_string()),
         ));
     }
 
@@ -4105,7 +4381,11 @@ async fn run_machine_operation(
         )
     })?;
 
-    let bind_rule = machine_bind_rule(operation, object);
+    let bind_rule = machine_bind_rule(descriptor, object);
+    let two_resource = matches!(
+        adapter.binding_kind,
+        crate::operations::AdapterBindingKind::TwoResource
+    );
     if bind_rule == MachineBindRule::Required && bind.is_none() {
         return Err(CanonicalErrorEnvelope::new(
             CanonicalErrorCode::InvalidRequest,
@@ -4122,6 +4402,22 @@ async fn run_machine_operation(
             Some("--bind".to_string()),
         ));
     }
+    if two_resource && baseline.is_none() {
+        return Err(CanonicalErrorEnvelope::new(
+            CanonicalErrorCode::InvalidRequest,
+            format!("canonical operation '{operation}' requires --baseline <FILE>"),
+            Some(operation),
+            Some("--baseline".to_string()),
+        ));
+    }
+    if !two_resource && baseline.is_some() {
+        return Err(CanonicalErrorEnvelope::new(
+            CanonicalErrorCode::InvalidRequest,
+            "--baseline is only accepted by two-resource CLI operations",
+            Some(operation),
+            Some("--baseline".to_string()),
+        ));
+    }
     if bind_rule != MachineBindRule::Required && object.contains_key("resource_id") {
         return Err(CanonicalErrorEnvelope::new(
             CanonicalErrorCode::InvalidRequest,
@@ -4132,33 +4428,45 @@ async fn run_machine_operation(
     }
 
     let runtime = crate::runtime::stateless::StatelessRuntime;
-    let is_write = operation == "write";
-    if !is_write && (output.is_some() || in_place || force) {
+    let mutable_resource = matches!(
+        adapter.binding_kind,
+        crate::operations::AdapterBindingKind::SingleMutable
+    ) && bind_rule == MachineBindRule::Required;
+    if !mutable_resource && (output.is_some() || in_place || force) {
         return Err(CanonicalErrorEnvelope::new(
             CanonicalErrorCode::InvalidRequest,
-            "--output, --in-place, and --force are valid only for the canonical write operation",
+            "--output, --in-place, and --force require a bound workbook-write operation",
             Some(operation),
             Some("adapter_flags".to_string()),
         ));
     }
-    let write_mode = object
+    let operation_mode = object
         .get("mode")
         .and_then(Value::as_str)
         .map(str::to_string);
-    if is_write {
-        match write_mode.as_deref() {
-            Some("apply") if (output.is_some() as u8 + in_place as u8) != 1 => {
+    if mutable_resource {
+        match operation_mode.as_deref() {
+            Some("preview") if output.is_some() || in_place || force => {
                 return Err(CanonicalErrorEnvelope::new(
                     CanonicalErrorCode::InvalidRequest,
-                    "canonical write mode=apply requires exactly one of --output <PATH> or --in-place",
+                    "preview does not accept file export flags",
                     Some(operation),
                     Some("adapter_flags".to_string()),
                 ));
             }
-            Some("preview" | "stage") if output.is_some() || in_place || force => {
+            Some("stage") => {
+                return Err(CanonicalErrorEnvelope::new(
+                    CanonicalErrorCode::CapabilityUnavailable,
+                    "stage requires durable orchestration and is unavailable in the stateless CLI adapter",
+                    Some(operation),
+                    Some("$.mode".to_string()),
+                ));
+            }
+            Some("preview") => {}
+            _ if (output.is_some() as u8 + in_place as u8) != 1 => {
                 return Err(CanonicalErrorEnvelope::new(
                     CanonicalErrorCode::InvalidRequest,
-                    "preview and stage do not accept file export flags",
+                    "a mutating CLI operation requires exactly one of --output <PATH> or --in-place",
                     Some(operation),
                     Some("adapter_flags".to_string()),
                 ));
@@ -4174,7 +4482,25 @@ async fn run_machine_operation(
             ));
         }
     }
-    let (state, workbook_id, fork_path) = match (bind_rule, is_write) {
+    let mut _pair_guard = None;
+    let (state, workbook_id, fork_path, baseline_id) = match (bind_rule, mutable_resource) {
+        (MachineBindRule::Required, false) if two_resource => {
+            let bind = bind.as_ref().expect("required bind validated");
+            let baseline = baseline.as_ref().expect("baseline validated");
+            let (guard, state, current_id, baseline_id) = runtime
+                .open_state_for_file_pair_for_operation(bind, baseline, Some(operation))
+                .await
+                .map_err(|error| {
+                    CanonicalErrorEnvelope::new(
+                        CanonicalErrorCode::ResourceNotFound,
+                        error.to_string(),
+                        Some(operation),
+                        Some("--baseline".to_string()),
+                    )
+                })?;
+            _pair_guard = Some(guard);
+            (state, Some(current_id), None, Some(baseline_id))
+        }
         (MachineBindRule::Required, true) => {
             let bind = bind.as_ref().expect("required bind validated");
             let (state, id, path) =
@@ -4189,7 +4515,7 @@ async fn run_machine_operation(
                             Some("--bind".to_string()),
                         )
                     })?;
-            (state, Some(id), Some(path))
+            (state, Some(id), Some(path), None)
         }
         (MachineBindRule::Required, false) => {
             let bind = bind.as_ref().expect("required bind validated");
@@ -4204,7 +4530,7 @@ async fn run_machine_operation(
                         Some("--bind".to_string()),
                     )
                 })?;
-            (state, Some(id), None)
+            (state, Some(id), None, None)
         }
         (MachineBindRule::OptionalContext, false) if bind.is_some() => {
             let (state, _) = runtime
@@ -4221,7 +4547,7 @@ async fn run_machine_operation(
                         Some("--bind".to_string()),
                     )
                 })?;
-            (state, None, None)
+            (state, None, None, None)
         }
         (MachineBindRule::OptionalContext | MachineBindRule::Forbidden, false) => (
             runtime
@@ -4236,9 +4562,10 @@ async fn run_machine_operation(
                 })?,
             None,
             None,
+            None,
         ),
         (MachineBindRule::OptionalContext | MachineBindRule::Forbidden, true) => {
-            unreachable!("write always requires a bind")
+            unreachable!("a mutable resource always requires a bind")
         }
     };
     if let Some(workbook_id) = workbook_id {
@@ -4265,16 +4592,40 @@ async fn run_machine_operation(
             Value::String(resource_id.as_str().to_string()),
         );
     }
+    if let Some(baseline_id) = baseline_id {
+        let resource_id = ResourceId::bind_workbook(&baseline_id).map_err(|message| {
+            CanonicalErrorEnvelope::new(
+                CanonicalErrorCode::InvalidRequest,
+                message,
+                Some(operation),
+                Some("--baseline".to_string()),
+            )
+        })?;
+        if let Some(provided) = object.get("baseline_resource_id")
+            && provided.as_str() != Some(resource_id.as_str())
+        {
+            return Err(CanonicalErrorEnvelope::new(
+                CanonicalErrorCode::InvalidRequest,
+                "payload baseline_resource_id does not match the ephemeral --baseline resource",
+                Some(operation),
+                Some("$.baseline_resource_id".to_string()),
+            ));
+        }
+        object.insert(
+            "baseline_resource_id".to_string(),
+            Value::String(resource_id.as_str().to_string()),
+        );
+    }
     let response = crate::operations::execute_operation_json(state, operation, payload).await?;
-    if is_write
-        && write_mode.as_deref() == Some("apply")
-        && matches!(
+    let should_export = mutable_resource
+        && (output.is_some() || in_place)
+        && !matches!(
             response.data["status"].as_str(),
-            Some("applied" | "partial")
-        )
-    {
-        let source = fork_path.expect("write binds an ephemeral fork");
-        let bind = bind.as_ref().expect("write bind validated");
+            Some("failed" | "rolled_back")
+        );
+    if should_export {
+        let source = fork_path.expect("mutable operations bind an ephemeral fork");
+        let bind = bind.as_ref().expect("mutable bind validated");
         let target = if in_place {
             runtime.normalize_existing_file(bind)
         } else {
@@ -4369,97 +4720,93 @@ pub async fn run() -> Result<()> {
         Err(error) => error.exit(),
     };
 
-    let result = match resolve_surface_command(surface.command) {
-        Ok(ResolvedSurfaceCommand::Command(command)) => {
-            run_with_options(
-                command,
-                surface.output_format,
-                surface.shape,
-                surface.compact,
-                surface.quiet,
-            )
-            .await
-        }
-        Ok(ResolvedSurfaceCommand::Operations) => {
-            let payload = crate::operations::operations_discovery(
-                &crate::operations::RuntimeCapabilities::native(),
-            );
-            if let Err(error) = emit_exact_json(&payload, false) {
-                emit_error_and_exit(error.into());
+    let result =
+        match resolve_surface_command(surface.command) {
+            Ok(ResolvedSurfaceCommand::Command(command)) => {
+                run_with_options(
+                    command,
+                    surface.output_format,
+                    surface.shape,
+                    surface.compact,
+                    surface.quiet,
+                )
+                .await
             }
-            Ok(())
-        }
-        Ok(ResolvedSurfaceCommand::Operation {
-            operation,
-            bind,
-            json,
-            output,
-            in_place,
-            force,
-        }) => match run_machine_operation(&operation, bind, json, output, in_place, force).await {
-            Ok(response) => {
-                if let Err(error) = emit_exact_json(&response, false) {
+            Ok(ResolvedSurfaceCommand::Operations) => {
+                let payload = crate::operations::operations_discovery_for(
+                    crate::operations::OperationAdapter::Cli,
+                    &crate::operations::RuntimeCapabilities::native(),
+                );
+                if let Err(error) = emit_exact_json(&payload, false) {
                     emit_error_and_exit(error.into());
                 }
-                // Automation policy: complete apply/preview/stage exits 0,
-                // failed or rolled-back work exits 1, and an exported
-                // non-atomic partial result exits 2.
-                match response.data["status"].as_str() {
-                    Some("failed" | "rolled_back") => std::process::exit(1),
-                    Some("partial") => std::process::exit(2),
-                    _ => Ok(()),
-                }
+                Ok(())
             }
-            Err(error) => emit_canonical_error_and_exit(error),
-        },
-        Ok(ResolvedSurfaceCommand::Schema(command)) => {
-            let payload = match command {
-                ResolvedDiscoverabilityCommand::Legacy(command) => {
-                    run_schema_command(command).unwrap_or_else(|error| emit_error_and_exit(error))
+            Ok(ResolvedSurfaceCommand::Registry) => {
+                let payload = crate::operations::registry_projection();
+                if let Err(error) = emit_exact_json(&payload, false) {
+                    emit_error_and_exit(error.into());
                 }
-                ResolvedDiscoverabilityCommand::Canonical(operation) => {
-                    crate::operations::operation_schema(&operation)
-                        .unwrap_or_else(|error| emit_canonical_error_and_exit(error))
-                }
-            };
-            if let Err(error) = emit_exact_json(&payload, false) {
-                emit_error_and_exit(error.into());
+                Ok(())
             }
-            Ok(())
-        }
-        Ok(ResolvedSurfaceCommand::Example(command)) => {
-            let payload = match command {
-                ResolvedDiscoverabilityCommand::Legacy(command) => {
-                    run_example_command(command).unwrap_or_else(|error| emit_error_and_exit(error))
-                }
-                ResolvedDiscoverabilityCommand::Canonical(operation) => {
-                    if operation == "write" {
-                        serde_json::json!({
-                            "resource_id": "fork:fork-example",
-                            "expected_revision": "sha256-revision",
-                            "mode": "preview",
-                            "atomic": true,
-                            "ops": [{
-                                "kind": "set_cells",
-                                "sheet_name": "Sheet1",
-                                "cells": {"A1": {"kind": "value", "value": 42}}
-                            }]
-                        })
-                    } else {
-                        emit_error_and_exit(anyhow::anyhow!(
-                            "canonical operation '{}' has schemas but no example fixture",
-                            operation
-                        ))
+            Ok(ResolvedSurfaceCommand::Operation {
+                operation,
+                bind,
+                baseline,
+                json,
+                output,
+                in_place,
+                force,
+            }) => match run_machine_operation(
+                &operation, bind, baseline, json, output, in_place, force,
+            )
+            .await
+            {
+                Ok(response) => {
+                    if let Err(error) = emit_exact_json(&response, false) {
+                        emit_error_and_exit(error.into());
+                    }
+                    // Automation policy: complete apply/preview/stage exits 0,
+                    // failed or rolled-back work exits 1, and an exported
+                    // non-atomic partial result exits 2.
+                    match response.data["status"].as_str() {
+                        Some("failed" | "rolled_back") => std::process::exit(1),
+                        Some("partial") => std::process::exit(2),
+                        _ => Ok(()),
                     }
                 }
-            };
-            if let Err(error) = emit_exact_json(&payload, false) {
-                emit_error_and_exit(error.into());
+                Err(error) => emit_canonical_error_and_exit(error),
+            },
+            Ok(ResolvedSurfaceCommand::Schema(command)) => {
+                let payload = match command {
+                    ResolvedDiscoverabilityCommand::Legacy(command) => run_schema_command(command)
+                        .unwrap_or_else(|error| emit_error_and_exit(error)),
+                    ResolvedDiscoverabilityCommand::Canonical(operation) => {
+                        crate::operations::operation_schema(&operation)
+                            .unwrap_or_else(|error| emit_canonical_error_and_exit(error))
+                    }
+                };
+                if let Err(error) = emit_exact_json(&payload, false) {
+                    emit_error_and_exit(error.into());
+                }
+                Ok(())
             }
-            Ok(())
-        }
-        Err(error) => emit_rewritten_clap_error_and_exit(error),
-    };
+            Ok(ResolvedSurfaceCommand::Example(command)) => {
+                let payload = match command {
+                    ResolvedDiscoverabilityCommand::Legacy(command) => run_example_command(command)
+                        .unwrap_or_else(|error| emit_error_and_exit(error)),
+                    ResolvedDiscoverabilityCommand::Canonical(operation) => {
+                        canonical_operation_example(&operation)
+                            .unwrap_or_else(|error| emit_canonical_error_and_exit(error))
+                    }
+                };
+                if let Err(error) = emit_exact_json(&payload, false) {
+                    emit_error_and_exit(error.into());
+                }
+                Ok(())
+            }
+            Err(error) => emit_rewritten_clap_error_and_exit(error),
+        };
 
     if result.is_ok() && !surface.quiet {
         for warning in &warnings {

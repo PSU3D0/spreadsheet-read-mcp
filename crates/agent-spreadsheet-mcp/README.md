@@ -134,57 +134,21 @@ agent-spreadsheet-mcp --workspace-root /path/to/workbooks
 
 ---
 
-## Tool families
+## Canonical tool surface
 
-### Always-available read tools
-- `list_workbooks`
-- `describe_workbook`
-- `list_sheets`
-- `workbook_summary`
-- `sheet_overview`
-- `sheet_page`
-- `read_table`
-- `range_values`
-- `named_ranges`
-- `sheet_styles`
-- `workbook_style_summary`
-- `find_value`
-- `find_formula`
-- `sheet_formula_map`
-- `formula_trace`
-- `scan_volatiles`
-- `table_profile`
-- `sheet_statistics`
-- `get_manifest_stub`
+The default router is generated from the canonical operation registry. Each available descriptor becomes one MCP tool with the descriptor's closed input schema, canonical envelope, and worst-case risk annotations.
 
-### Opt-in write/recalc tools
-Enable with `--recalc-enabled`.
+The baseline write-capable surface has 27 operations:
 
-Includes:
-- fork lifecycle
-- checkpoints
-- `edit_batch`
-- `transform_batch`
-- `style_batch`
-- `apply_formula_pattern`
-- `structure_batch`
-- `column_size_batch`
-- `sheet_layout_batch`
-- `rules_batch`
-- `recalculate`
-- `get_changeset`
-- `save_fork`
-- staged-change management
-- `screenshot_sheet`
+- discovery/read: `list_workbooks`, `describe_workbook`, `list_sheets`, `sheet_overview`, `read_cells`, `inspect_cells`, `read_table`, `read_layout`, `export_grid`, `named_ranges`
+- analysis: `analyze_styles`, `search_values`, `search_formulas`, `formula_trace`, `formula_map`, `profile_table`, `sheet_statistics`
+- write/lifecycle: `write`, `create_fork`, `list_forks`, `recalculate`, `verify_workbook`, `export_fork`, `discard_fork`, `get_changes`, `checkpoint`, `staged_change`
 
-### Opt-in VBA tools
-Enable with `--vba-enabled`.
+Capability-backed deployments can add `screenshot_sheet`, `sheetport_manifest`, `execute_sheetport`, and `inspect_vba`, for up to 31 tools. Read-only deployments omit write/lifecycle descriptors, screenshot requires its rendering backend, and VBA requires `--vba-enabled`. `close_workbook` is not canonical because cache eviction is runtime administration.
 
-Includes:
-- `vba_project_summary`
-- `vba_module_source`
+### 0.13 compatibility
 
----
+Set `SPREADSHEET_MCP_SLIM_SURFACE=false` (or `--slim-surface=false`) during the compatibility window to add the legacy 0.13 tool names. Legacy routes win when a name is shared, preserving 0.13 schemas and envelopes without registering names twice. The default slim surface contains canonical tools only.
 
 ## Deployment modes
 
@@ -211,6 +175,7 @@ All flags also support `SPREADSHEET_MCP_` environment variables.
 | `--output-profile token-dense|verbose` | Output verbosity profile |
 | `--http-bind <ADDR>` | HTTP bind address |
 | `--enabled-tools <csv>` | Tool allowlist |
+| `--slim-surface <BOOL>` | Canonical-only by default; `false` adds legacy 0.13 compatibility tools |
 | `--tool-timeout-ms <MS>` | Per-tool timeout |
 | `--max-response-bytes <N>` | Response size guard |
 

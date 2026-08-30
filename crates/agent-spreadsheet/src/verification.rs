@@ -215,6 +215,84 @@ pub async fn evaluate_workbook_for_verification(
     bail!("verification requires the recalc-formualizer feature")
 }
 
+#[cfg(feature = "recalc-formualizer")]
+pub fn verify_workbook_bytes(
+    baseline_label: &str,
+    baseline_bytes: &[u8],
+    baseline_revision: &str,
+    current_label: &str,
+    current_bytes: &[u8],
+    current_revision: &str,
+    options: &VerifyOptions,
+) -> Result<VerifyResponse> {
+    let (baseline_result, baseline_evaluated) =
+        crate::recalc::recalculate_bytes_sync(baseline_bytes, None)?;
+    let (current_result, current_evaluated) =
+        crate::recalc::recalculate_bytes_sync(current_bytes, None)?;
+    let config = std::sync::Arc::new(crate::config::ServerConfig {
+        workspace_root: std::path::PathBuf::new(),
+        screenshot_dir: std::path::PathBuf::new(),
+        path_mappings: Vec::new(),
+        cache_capacity: 2,
+        supported_extensions: vec!["xlsx".to_string(), "xlsm".to_string()],
+        single_workbook: None,
+        enabled_tools: None,
+        transport: crate::config::TransportKind::Stdio,
+        http_bind_address: "127.0.0.1:0".parse().expect("static address"),
+        recalc_enabled: true,
+        recalc_backend: crate::config::RecalcBackendKind::Formualizer,
+        vba_enabled: false,
+        max_concurrent_recalcs: 1,
+        tool_timeout_ms: None,
+        max_response_bytes: None,
+        output_profile: crate::config::OutputProfile::TokenDense,
+        max_payload_bytes: None,
+        max_cells: None,
+        max_items: None,
+        allow_overwrite: false,
+        slim_surface: true,
+    });
+    let baseline = WorkbookContext::load_from_bytes(
+        &config,
+        "baseline.xlsx",
+        &baseline_evaluated,
+        crate::model::WorkbookId("baseline".to_string()),
+        "baseline".to_string(),
+        Some(baseline_revision.to_string()),
+    )?;
+    let current = WorkbookContext::load_from_bytes(
+        &config,
+        "current.xlsx",
+        &current_evaluated,
+        crate::model::WorkbookId("current".to_string()),
+        "current".to_string(),
+        Some(current_revision.to_string()),
+    )?;
+    let baseline_named = options
+        .include_named_range_deltas
+        .then(|| baseline.named_items())
+        .transpose()?;
+    let current_named = options
+        .include_named_range_deltas
+        .then(|| current.named_items())
+        .transpose()?;
+    let mut baseline_coverage = baseline_result.evaluation_coverage;
+    baseline_coverage.revision_id = baseline_revision.to_string();
+    let mut current_coverage = current_result.evaluation_coverage;
+    current_coverage.revision_id = current_revision.to_string();
+    compare_workbooks_with_coverage(
+        baseline_label,
+        current_label,
+        &baseline,
+        &current,
+        options,
+        baseline_named.as_deref(),
+        current_named.as_deref(),
+        baseline_coverage,
+        current_coverage,
+    )
+}
+
 impl VerifyOptions {
     pub fn validate(&self) -> Result<()> {
         if self.errors_only && self.targets_only {
@@ -268,6 +346,7 @@ pub fn compare_workbooks(
     )
 }
 
+#[allow(clippy::too_many_arguments)] // Public parity API keeps both sides explicit.
 pub fn compare_workbooks_with_coverage(
     baseline_label: impl Into<String>,
     current_label: impl Into<String>,

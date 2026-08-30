@@ -3,3 +3,6 @@
 # main-thread default and avoids stack overflows in clap derive tests.
 [env]
 RUST_MIN_STACK = "8388608"
+
+[target.wasm32-unknown-unknown]
+runner = "wasm-bindgen-test-runner"

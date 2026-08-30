@@ -40,6 +40,8 @@ fn preserve_empty_array_for_key(key: &str) -> bool {
         key,
         "warnings"
             | "matches"
+            | "context"
+            | "changes"
             | "target_deltas"
             | "changed_targets"
             | "new_errors"
@@ -87,5 +89,26 @@ pub fn prune_non_structural_empties(value: &mut Value) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prune_non_structural_empties;
+    use serde_json::json;
+
+    #[test]
+    fn preserves_empty_legacy_contract_arrays() {
+        let mut value = json!({
+            "matches": [{ "context": [] }],
+            "changes": [],
+            "optional": []
+        });
+
+        prune_non_structural_empties(&mut value);
+
+        assert_eq!(value["matches"][0]["context"], json!([]));
+        assert_eq!(value["changes"], json!([]));
+        assert!(value.get("optional").is_none());
     }
 }

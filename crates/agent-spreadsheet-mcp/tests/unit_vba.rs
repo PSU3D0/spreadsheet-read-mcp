@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
-use rmcp::ServerHandler;
 use agent_spreadsheet_mcp::tools::vba::{VbaModuleSourceParams, VbaProjectSummaryParams};
 use agent_spreadsheet_mcp::tools::{ListWorkbooksParams, list_workbooks};
 use agent_spreadsheet_mcp::{SpreadsheetServer, tools};
+use anyhow::Result;
+use rmcp::ServerHandler;
 
 mod support;
 
@@ -69,24 +69,29 @@ async fn vba_tools_parse_xlsm_fixture() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn server_instructions_reflect_vba_flag() -> Result<()> {
+async fn initialize_instructions_are_concise_and_vba_is_capability_gated() -> Result<()> {
     let workspace = support::TestWorkspace::new();
 
-    let disabled_config = workspace.config_with(|cfg| {
-        cfg.vba_enabled = false;
-    });
+    let disabled_config = workspace.config_with(|cfg| cfg.vba_enabled = false);
     let disabled = SpreadsheetServer::new(Arc::new(disabled_config)).await?;
-    let disabled_info = disabled.get_info();
-    let disabled_instructions = disabled_info.instructions.unwrap_or_default();
-    assert!(disabled_instructions.contains("VBA tools disabled"));
+    let instructions = disabled.get_info().instructions.unwrap_or_default();
+    assert!(instructions.len() < 700);
+    assert!(instructions.contains("canonical"));
+    assert!(
+        !disabled
+            .tool_names()
+            .iter()
+            .any(|name| name == "inspect_vba")
+    );
 
-    let enabled_config = workspace.config_with(|cfg| {
-        cfg.vba_enabled = true;
-    });
+    let enabled_config = workspace.config_with(|cfg| cfg.vba_enabled = true);
     let enabled = SpreadsheetServer::new(Arc::new(enabled_config)).await?;
-    let enabled_info = enabled.get_info();
-    let enabled_instructions = enabled_info.instructions.unwrap_or_default();
-    assert!(enabled_instructions.contains("vba_project_summary"));
+    assert!(
+        enabled
+            .tool_names()
+            .iter()
+            .any(|name| name == "inspect_vba")
+    );
 
     Ok(())
 }

@@ -27,9 +27,9 @@ use std::io::{Cursor, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, OnceLock};
-use std::time::Instant;
 use umya_spreadsheet::reader::xlsx;
 use umya_spreadsheet::{DefinedName, Spreadsheet, Worksheet};
+use web_time::Instant;
 
 const KV_MAX_WIDTH_FOR_DENSITY_CHECK: u32 = 6;
 const KV_SAMPLE_ROWS: u32 = 20;

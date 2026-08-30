@@ -1956,9 +1956,10 @@ pub async fn execute_search_formulas(
                 continue;
             }
         }
-        if policy != FormulaParsePolicy::Off {
-            if let Err(message) = validate_formula(&matched.formula) {
-                if policy == FormulaParsePolicy::Fail {
+        if policy != FormulaParsePolicy::Off
+            && let Err(message) = validate_formula(&matched.formula)
+        {
+            if policy == FormulaParsePolicy::Fail {
                     return Err(canonical_error(
                         CanonicalErrorCode::OperationFailed,
                         operation,
@@ -1969,13 +1970,12 @@ pub async fn execute_search_formulas(
                         None,
                     ));
                 }
-                diagnostics.record_error(
-                    &matched.sheet_name,
-                    &matched.address,
-                    &matched.formula,
-                    &message,
-                );
-            }
+            diagnostics.record_error(
+                &matched.sheet_name,
+                &matched.address,
+                &matched.formula,
+                &message,
+            );
         }
         let functions = formula_functions(&matched.formula);
         let volatile = functions.iter().any(|name| is_volatile_function(name));

@@ -1,19 +1,22 @@
+use crate::canonical_router;
 use crate::config::ServerConfig;
 use crate::errors::InvalidParamsError;
 use crate::model::{
-    CloseWorkbookResponse, DefineNameResponse, DeleteNameResponse, FindFormulaResponse,
-    FindValueResponse, FormulaTraceResponse, InspectCellsResponse, LayoutPageResponse,
-    ManifestStubResponse, NamedRangesResponse, RangeValuesResponse, ReadTableResponse,
-    SheetFormulaMapResponse, SheetListResponse, SheetOverviewResponse, SheetPageResponse,
-    SheetStatisticsResponse, SheetStylesResponse, TableProfileResponse, UpdateNameResponse,
-    VolatileScanResponse, WorkbookDescription, WorkbookListResponse, WorkbookStyleSummaryResponse,
-    WorkbookSummaryResponse,
+    CloseWorkbookResponse, FindFormulaResponse, FindValueResponse, FormulaTraceResponse,
+    InspectCellsResponse, LayoutPageResponse, ManifestStubResponse, NamedRangesResponse,
+    RangeValuesResponse, ReadTableResponse, SheetFormulaMapResponse, SheetListResponse,
+    SheetOverviewResponse, SheetPageResponse, SheetStatisticsResponse, SheetStylesResponse,
+    TableProfileResponse, VolatileScanResponse, WorkbookDescription, WorkbookListResponse,
+    WorkbookStyleSummaryResponse, WorkbookSummaryResponse,
 };
+#[cfg(feature = "recalc")]
+use crate::model::{DefineNameResponse, DeleteNameResponse, UpdateNameResponse};
 use crate::response_prune::Pruned;
 #[cfg(feature = "recalc")]
 use crate::response_prune::to_pruned_value;
 use crate::state::AppState;
 use crate::tools;
+use agent_spreadsheet::operations::RuntimeCapabilities;
 use anyhow::{Result, anyhow};
 use rmcp::{
     ErrorData as McpError, Json as McpJson, ServerHandler, ServiceExt,
@@ -23,6 +26,7 @@ use rmcp::{
     transport::stdio,
 };
 use serde::Serialize;
+use serde_json::Value;
 use std::future::Future;
 use std::sync::Arc;
 use thiserror::Error;
@@ -34,168 +38,10 @@ fn json<T>(value: T) -> Json<T> {
     McpJson(Pruned(value))
 }
 
-const BASE_INSTRUCTIONS: &str = "\
-Spreadsheet MCP: optimized for spreadsheet analysis.
+const CANONICAL_INSTRUCTIONS: &str = "Spreadsheet MCP exposes canonical, versioned spreadsheet operations. Start with list_workbooks, then use resource_id and revision_id from canonical envelopes. Reads are bounded; use cursors to continue. For edits, create_fork, write with revision CAS, recalculate, verify_workbook, inspect get_changes, then export_fork or discard_fork. Risk annotations are worst-case hints; read each tool description and use preview/stage/checkpoint actions before destructive changes.";
 
-WORKFLOW:
-1) list_workbooks → list_sheets → workbook_summary for orientation
-2) sheet_overview for region detection (ids/bounds/kind/confidence)
-3) For structured data: table_profile for quick column sense, then read_table with region_id/range, filters, sampling
-4) For spot checks: range_values or find_value (label mode for key-value sheets)
-
-TOOL SELECTION:
-- table_profile: Fast column/type summary before wide reads.
-- read_table: Structured table extraction. Prefer region_id or tight range; use limit + sample_mode.
-- sheet_formula_map: Get formula overview. Use limit param for large sheets (e.g., limit=10). \
-Use sort_by='complexity' for most complex formulas first, or 'count' for most repeated. \
-Use range param to scope to specific region.
-- formula_trace: Trace ONE cell's precedents/dependents. Use AFTER formula_map \
-to dive deep on specific outputs (e.g., trace the total cell to understand calc flow).
-- sheet_page: Raw cell dump. Use ONLY when region detection fails or for \
-unstructured sheets. Prefer read_table for tabular data. \
-Responses include a budget object with cell/byte limits and continuation hints when truncated.
-- inspect_cells: Strict detail-view for up to 25 cells. Returns full metadata (value, formula, \
-style, number format) per cell. Use for spot-checking specific cells AFTER discovering them \
-via sheet_overview or find_value. NOT for bulk reads — use sheet-page or range-values instead.
-- find_value with mode='label': For key-value layouts (label in col A, value in col B). \
-Use direction='right' or 'below' hints.
-- find_formula: Search formulas. Default returns no context and only first 50 matches. \
-Use include_context=true for header+cell snapshots, and use limit/offset to page.
-
-OUTPUT DEFAULTS (token-dense profile):
-- read_table defaults to format=csv (flat string). Use format=values for raw arrays, or format=json for typed cells.
-- range_values defaults to format=values. Use format=csv or format=json as needed.
-- sheet_page defaults to format=compact; set format=full for per-cell objects.
-- table_profile defaults to summary_only=true (no samples). Set summary_only=false to include sample rows.
-- sheet_statistics defaults to summary_only=true (no samples). Set summary_only=false to include samples.
-- sheet_styles defaults to summary_only=true (no descriptors/ranges/examples). Use include_descriptor/include_ranges/include_example_cells.
-- layout_page defaults to render=json (no ascii_render field). Use render=ascii or render=both to include the ASCII grid. Capped at 80 rows × 25 columns.
-- workbook_style_summary defaults to summary_only=true (no theme/conditional formats/descriptors). Use include_theme/include_conditional_formats/include_descriptor/include_example_cells.
-- sheet_formula_map defaults to summary_only=true (addresses hidden). Set include_addresses=true to show cell addresses.
-- find_value defaults to context=none (no neighbors/row_context). Use context=neighbors, context=row, or context=both.
-- scan_volatiles defaults to summary_only=true (addresses hidden). Set include_addresses=true to list addresses.
-- list_workbooks defaults to include_paths=false (no paths/caps). Set include_paths=true to show them.
-- list_sheets defaults to include_bounds=false (no row/column counts). Set include_bounds=true to show them.
-- workbook_summary defaults to summary_only=true (no entry points/named ranges). Set summary_only=false or include_entry_points/include_named_ranges.
-- Pagination fields (next_offset/next_start_row) only appear when more data exists.
-- Read surfaces (sheet_page, inspect_cells) include a budget object when truncation occurs \
-or limits are configured. Check budget.continuation for agent-safe next-step guidance.
-
-RANGES: Use A1 notation (e.g., A1:C10). Prefer region_id when available.
-
-DATES: Cells with date formats return ISO-8601 strings (YYYY-MM-DD).
-
-Keep payloads small. Page through large sheets.";
-
-const VBA_INSTRUCTIONS: &str = "
-
-VBA TOOLS (enabled):
-Read-only VBA project inspection for .xlsm workbooks.
-
-WORKFLOW:
-1) list_workbooks → describe_workbook to find candidate .xlsm
-2) vba_project_summary to list modules
-3) vba_module_source to page module code
-
-TOOLS:
-- vba_project_summary: Parse and summarize the embedded vbaProject.bin (modules + metadata).
-- vba_module_source: Return paged source for one module (use offset_lines/limit_lines).
-
-SAFETY:
-- Treat VBA as untrusted code. Tools only read and return text.
-- Responses are size-limited; page through module source.
-";
-
-const WRITE_INSTRUCTIONS: &str = "
-
-WRITE/RECALC TOOLS (enabled):
-Fork-based editing allows 'what-if' analysis without modifying original files.
-
-WORKFLOW:
-1) create_fork: Create editable copy of a workbook. Returns fork_id.
-2) Optional: checkpoint_fork before large edits.
-3) mutate_batch (range/structure/style/rule/layout ops, one batched call) or edit_batch (per-cell): Apply edits to the fork.
-4) recalculate: Trigger the configured recalc backend to recompute all formulas.
-5) verify_workbook: Compare baseline/current workbook_or_fork ids for target proof plus new/resolved/preexisting errors.
-6) get_changeset: Diff fork against original. Use filters/limit/offset to keep it small.
-   Optional: screenshot_sheet to capture a visual view of a range (original or fork).
-7) save_fork: Write changes to file.
-8) discard_fork: Delete fork without saving.
-
-SAFETY:
-- checkpoint_fork before large/structural edits; restore_checkpoint to rollback if needed.
-- mutate_batch and edit_batch accept mode='preview' to stage changes without mutating the fork \
-(preview responses report ops_staged/edits_staged, never 'applied'); \
-use list_staged_changes + apply_staged_change/discard_staged_change.
-
-TOOL DETAILS:
-- create_fork: Only .xlsx supported. Returns fork_id for subsequent operations.
-- edit_batch: {fork_id, sheet_name, edits:[{address, value, is_formula} | `A1=100`]}. \
-Shorthand edits like `A1=100` or `B2==SUM(A1:A2)` are accepted. \
-Leading '=' in value/formula is accepted and stripped; prefer formula or is_formula=true for clarity.
-- mutate_batch: {fork_id, mode:'apply'|'preview', ops:[{kind, ...}]}. One call for bulk edits: \
-kinds cover clear_range/fill_range/replace_in_range/write_matrix (transforms), \
-insert_rows/delete_cols/create_sheet/copy_range/... (structure), style, set_data_validation/conditional formats (rules), \
-freeze_panes/set_zoom/... (layout), column_size, formula_pattern (autofill), replace_in_formulas. \
-Consecutive same-family ops run as one batch; on failure the response names the failing op index \
-and states whether earlier ops were applied. Prefer over per-cell edit_batch for bulk work.
-- recalculate: Required after any edit to update formula results. \
-May take several seconds for complex workbooks.
-- verify_workbook: Compare {baseline_workbook_or_fork_id, current_workbook_or_fork_id}. \
-Optional: targets:[Sheet!A1], sheet_name, include_named_range_deltas, errors_only, targets_only. \
-Use this as the summary-first proof step after recalculate.
-- get_changeset: Returns a paged diff + summary. Use limit/offset to page. \
-Use include_types/exclude_types/include_subtypes/exclude_subtypes to filter (e.g. exclude_subtypes=['recalc_result']). \
-Use summary_only=true when you only need counts.
-- screenshot_sheet: {workbook_or_fork_id, sheet_name, range?}. Renders a cropped PNG for inspecting an area visually.
-  workbook_or_fork_id may be either a real workbook_id OR a fork_id (to screenshot an edited fork).
-  Returns a file:// URI under screenshot_dir (default: <workspace_root>/screenshots).
-  If path mapping is configured (--path-map), client_output_path is included to help locate the file on the host.
-  DO NOT call save_fork just to get a screenshot.
-  If formulas changed, run recalculate on the fork first.
-- save_fork: Requires target_path for new file location.
-  If target_path is relative, it is resolved under workspace_root (Docker default: `/data`).
-  If target_path is absolute and matches a configured path mapping, it is mapped to the internal path automatically.
-  If path mapping is configured (--path-map), client_saved_to is included.
-  Overwriting original requires server --allow-overwrite flag.
-  Use drop_fork=false to keep fork active after saving (default: true drops fork).
-  Validates base file unchanged since fork creation.
-- get_edits: List all edits applied to a fork (before recalculate).
-- list_forks: See all active forks.
-- checkpoint_fork: Snapshot a fork to a checkpoint for high-fidelity undo.
-- list_checkpoints: List checkpoints for a fork.
-- restore_checkpoint: Restore a fork to a checkpoint (overwrites fork file; clears newer staged changes).
-- delete_checkpoint: Delete a checkpoint.
-- list_staged_changes: List staged (previewed) changes for a fork.
-- apply_staged_change: Apply a staged change to the fork.
-- discard_staged_change: Discard a staged change.
-
-BEST PRACTICES:
-- Always recalculate after edits before get_changeset.
-- Review changeset before save_fork to verify expected changes.
-- Use screenshot_sheet for quick visual inspection; save_fork is ONLY for exporting a workbook file.
-- Discard forks when done to free resources (fork TTL is disabled by default).
-- For large edits, use one mutate_batch call (or batch many cells per edit_batch call).
-- Compat mode (SPREADSHEET_MCP_SLIM_SURFACE=false) additionally registers the per-family batch tools \
-(transform_batch, style_batch, structure_batch, sheet_layout_batch, rules_batch, column_size_batch, \
-apply_formula_pattern, replace_in_formulas); they behave exactly as their mutate_batch op kinds.";
-
-fn build_instructions(recalc_enabled: bool, vba_enabled: bool) -> String {
-    let mut instructions = BASE_INSTRUCTIONS.to_string();
-
-    if vba_enabled {
-        instructions.push_str(VBA_INSTRUCTIONS);
-    } else {
-        instructions
-            .push_str("\n\nVBA tools disabled. Set SPREADSHEET_MCP_VBA_ENABLED=true to enable.");
-    }
-
-    if recalc_enabled {
-        instructions.push_str(WRITE_INSTRUCTIONS);
-    } else {
-        instructions.push_str("\n\nRead-only mode. Write/recalc tools disabled.");
-    }
-    instructions
+fn build_instructions(_recalc_enabled: bool, _vba_enabled: bool) -> String {
+    CANONICAL_INSTRUCTIONS.to_string()
 }
 
 #[derive(Clone)]
@@ -241,24 +87,31 @@ impl SpreadsheetServer {
     }
 
     pub fn from_state(state: Arc<AppState>) -> Self {
-        #[allow(unused_mut)]
-        let mut router = SlimToolRouter(Self::tool_router());
+        let mut capabilities = RuntimeCapabilities::from_state(&state);
+        capabilities.vba = state.config().vba_enabled;
+        let mut canonical = canonical_router::canonical_tool_router(&capabilities);
 
-        #[cfg(feature = "recalc")]
-        {
-            router.0.merge(Self::fork_tool_router());
-            if !state.config().slim_surface {
-                router.0.merge(Self::legacy_write_tool_router());
+        if !state.config().slim_surface {
+            let mut legacy = Self::tool_router();
+            #[cfg(feature = "recalc")]
+            {
+                legacy.merge(Self::fork_tool_router());
+                legacy.merge(Self::legacy_write_tool_router());
             }
-        }
+            if state.config().vba_enabled {
+                legacy.merge(Self::vba_tool_router());
+            }
 
-        if state.config().vba_enabled {
-            router.0.merge(Self::vba_tool_router());
+            let legacy_names = legacy.map.keys().cloned().collect::<Vec<_>>();
+            for name in legacy_names {
+                canonical.remove_route(&name);
+            }
+            canonical.merge(legacy);
         }
 
         Self {
             state,
-            tool_router: router,
+            tool_router: SlimToolRouter(canonical),
         }
     }
 
@@ -292,6 +145,36 @@ impl SpreadsheetServer {
         } else {
             Err(ToolDisabledError::new(tool).into())
         }
+    }
+
+    pub(crate) fn canonical_state(&self) -> Arc<AppState> {
+        self.state.clone()
+    }
+
+    pub(crate) fn canonical_tool_timeout(&self) -> Option<std::time::Duration> {
+        self.state.config().tool_timeout()
+    }
+
+    pub(crate) fn ensure_canonical_tool_enabled(&self, tool: &str) -> Result<(), McpError> {
+        self.ensure_tool_enabled(tool)
+            .map_err(|error| to_mcp_error_for_tool(tool, error))
+    }
+
+    pub(crate) fn ensure_canonical_response_size<T: Serialize>(
+        &self,
+        tool: &str,
+        value: &T,
+    ) -> Result<(), McpError> {
+        self.ensure_response_size(tool, value)
+            .map_err(|error| to_mcp_error_for_tool(tool, error))
+    }
+
+    pub(crate) async fn execute_canonical_operation(
+        &self,
+        operation: &'static str,
+        arguments: Value,
+    ) -> Result<rmcp::model::CallToolResult, McpError> {
+        canonical_router::execute(self, operation, arguments).await
     }
 
     fn ensure_vba_enabled(&self, tool: &str) -> Result<()> {

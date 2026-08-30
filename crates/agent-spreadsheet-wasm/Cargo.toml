@@ -17,5 +17,14 @@ serde_json = "1.0"
 thiserror = "1.0"
 agent-spreadsheet = { path = "../agent-spreadsheet", default-features = false, features = ["recalc-formualizer"] }
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen-futures = "0.4"
+
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 umya-spreadsheet = "2.3.2"
+tokio = { version = "1.37", features = ["macros", "rt"] }
+tempfile = "3.10"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"

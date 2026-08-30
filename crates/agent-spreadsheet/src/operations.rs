@@ -1,4 +1,4 @@
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 use crate::canonical_lifecycle::*;
 #[cfg(feature = "recalc-formualizer")]
 use crate::canonical_optional::{
@@ -8,7 +8,7 @@ use crate::canonical_optional::{InspectVbaData, InspectVbaRequest};
 #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
 use crate::canonical_optional::{ScreenshotSheetData, ScreenshotSheetRequest};
 pub use crate::canonical_reads::*;
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 use crate::canonical_write::{WriteRequest, WriteResponseData};
 use crate::model::{
     FindValueResponse, InspectCellsResponse, NamedRangesResponse, ReadTableResponse,
@@ -121,6 +121,74 @@ pub struct CapabilityMetadata {
     pub description: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AdapterBindingKind {
+    None,
+    SingleRead,
+    SingleMutable,
+    TwoResource,
+    DurableOrchestration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AdapterPersistence {
+    None,
+    ExportRequired,
+    DurableRequired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AdapterSupportStatus {
+    Supported,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct AdapterOperationMetadata {
+    pub binding_kind: AdapterBindingKind,
+    pub persistence: AdapterPersistence,
+    pub support_status: AdapterSupportStatus,
+}
+
+impl AdapterOperationMetadata {
+    pub const fn supported(
+        binding_kind: AdapterBindingKind,
+        persistence: AdapterPersistence,
+    ) -> Self {
+        Self {
+            binding_kind,
+            persistence,
+            support_status: AdapterSupportStatus::Supported,
+        }
+    }
+
+    pub const fn unsupported(
+        binding_kind: AdapterBindingKind,
+        persistence: AdapterPersistence,
+    ) -> Self {
+        Self {
+            binding_kind,
+            persistence,
+            support_status: AdapterSupportStatus::Unsupported,
+        }
+    }
+
+    pub fn is_supported(self) -> bool {
+        self.support_status == AdapterSupportStatus::Supported
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct DescriptorAdapterMetadata {
+    pub cli: AdapterOperationMetadata,
+    pub mcp: AdapterOperationMetadata,
+    pub wasm: AdapterOperationMetadata,
+    pub just_bash: AdapterOperationMetadata,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RuntimeCapabilities {
     pub workbook_discovery: bool,
@@ -169,6 +237,7 @@ pub struct OperationDescriptor {
     pub description: &'static str,
     pub capability: CapabilityMetadata,
     pub capability_predicate: fn(&RuntimeCapabilities) -> bool,
+    pub adapters: DescriptorAdapterMetadata,
     pub cost: OperationCost,
     pub risk_ceiling: OperationRisk,
     pub risk_for: fn(&SpreadsheetOperation) -> OperationRisk,
@@ -181,7 +250,11 @@ impl OperationDescriptor {
         (self.capability_predicate)(capabilities)
     }
     pub fn discovery_json(&self, capabilities: &RuntimeCapabilities) -> Value {
-        json!({"name":self.name,"schema_version":self.schema_version,"description":self.description,"capability":self.capability,"available":self.is_available(capabilities),"cost":self.cost,"risk_ceiling":self.risk_ceiling})
+        json!({"name":self.name,"schema_version":self.schema_version,"description":self.description,"capability":self.capability,"available":self.is_available(capabilities),"adapters":self.adapters,"cost":self.cost,"risk_ceiling":self.risk_ceiling})
+    }
+
+    pub fn registry_json(&self) -> Value {
+        json!({"name":self.name,"schema_version":self.schema_version,"description":self.description,"capability":self.capability,"adapters":self.adapters,"cost":self.cost,"risk_ceiling":self.risk_ceiling,"input_schema":(self.input_schema)(),"output_schema":(self.output_schema)()})
     }
 }
 
@@ -508,7 +581,7 @@ fn sheetport(capabilities: &RuntimeCapabilities) -> bool {
 fn vba(capabilities: &RuntimeCapabilities) -> bool {
     capabilities.workbook_read && capabilities.vba
 }
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 fn workbook_write(capabilities: &RuntimeCapabilities) -> bool {
     capabilities.workbook_write
 }
@@ -537,6 +610,11 @@ fn write_risk(operation: &SpreadsheetOperation) -> OperationRisk {
         SpreadsheetOperation::DiscardFork(_) => OperationRisk::Destructive,
         _ => OperationRisk::Low,
     }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "recalc"))]
+fn write_risk(_operation: &SpreadsheetOperation) -> OperationRisk {
+    OperationRisk::Destructive
 }
 
 fn closed_schema<T: JsonSchema>() -> Value {
@@ -908,7 +986,7 @@ schemas!(
     InspectVbaData,
     "inspect_vba"
 );
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 fn write_input_schema() -> Value {
     fn apply_write_bounds(value: &mut Value, property: Option<&str>) {
         if let Some(object) = value.as_object_mut() {
@@ -999,7 +1077,7 @@ fn list_forks_input_schema() -> Value {
 fn list_forks_output_schema() -> Value {
     discovery_output_schema::<ListForksData>("list_forks")
 }
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 schemas!(
     recalculate_input_schema,
     recalculate_output_schema,
@@ -1007,7 +1085,7 @@ schemas!(
     RecalculateData,
     "recalculate"
 );
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 schemas!(
     verify_workbook_input_schema,
     verify_workbook_output_schema,
@@ -1056,7 +1134,7 @@ schemas!(
     "staged_change"
 );
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 fn write_output_schema() -> Value {
     let mut schema = resource_output_schema::<WriteResponseData>("write");
     if let Some(variants) = schema
@@ -1119,7 +1197,7 @@ const VBA: CapabilityMetadata = CapabilityMetadata {
     name: "vba",
     description: "Inspect bounded VBA project metadata and module source",
 };
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 const WORKBOOK_WRITE: CapabilityMetadata = CapabilityMetadata {
     name: "workbook_write",
     description: "Mutate an isolated fork or session resource with revision CAS",
@@ -1137,14 +1215,145 @@ const EXPENSIVE_READ: OperationCost = OperationCost {
     bounded_by: &["sheets", "cells", "items", "payload_bytes"],
 };
 
+const NONE: AdapterPersistence = AdapterPersistence::None;
+#[cfg(feature = "recalc")]
+const EXPORT_REQUIRED: AdapterPersistence = AdapterPersistence::ExportRequired;
+const DURABLE_REQUIRED: AdapterPersistence = AdapterPersistence::DurableRequired;
+const CLI_NONE: AdapterOperationMetadata =
+    AdapterOperationMetadata::supported(AdapterBindingKind::None, NONE);
+const CLI_READ: AdapterOperationMetadata =
+    AdapterOperationMetadata::supported(AdapterBindingKind::SingleRead, NONE);
+#[cfg(feature = "recalc")]
+const CLI_MUTABLE: AdapterOperationMetadata =
+    AdapterOperationMetadata::supported(AdapterBindingKind::SingleMutable, EXPORT_REQUIRED);
+#[cfg(feature = "recalc")]
+const CLI_TWO_RESOURCE: AdapterOperationMetadata =
+    AdapterOperationMetadata::supported(AdapterBindingKind::TwoResource, NONE);
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+const CLI_DURABLE_UNSUPPORTED: AdapterOperationMetadata = AdapterOperationMetadata::unsupported(
+    AdapterBindingKind::DurableOrchestration,
+    DURABLE_REQUIRED,
+);
+const MCP_NONE: AdapterOperationMetadata =
+    AdapterOperationMetadata::supported(AdapterBindingKind::None, NONE);
+const MCP_READ: AdapterOperationMetadata =
+    AdapterOperationMetadata::supported(AdapterBindingKind::SingleRead, DURABLE_REQUIRED);
+#[cfg(feature = "recalc")]
+const MCP_MUTABLE: AdapterOperationMetadata =
+    AdapterOperationMetadata::supported(AdapterBindingKind::SingleMutable, DURABLE_REQUIRED);
+#[cfg(feature = "recalc")]
+const MCP_TWO_RESOURCE: AdapterOperationMetadata =
+    AdapterOperationMetadata::supported(AdapterBindingKind::TwoResource, DURABLE_REQUIRED);
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+const MCP_DURABLE: AdapterOperationMetadata =
+    AdapterOperationMetadata::supported(AdapterBindingKind::DurableOrchestration, DURABLE_REQUIRED);
+const WASM_NONE_UNSUPPORTED: AdapterOperationMetadata =
+    AdapterOperationMetadata::unsupported(AdapterBindingKind::None, NONE);
+const WASM_READ: AdapterOperationMetadata =
+    AdapterOperationMetadata::supported(AdapterBindingKind::SingleRead, NONE);
+const WASM_READ_UNSUPPORTED: AdapterOperationMetadata =
+    AdapterOperationMetadata::unsupported(AdapterBindingKind::SingleRead, NONE);
+#[cfg(feature = "recalc")]
+const WASM_MUTABLE: AdapterOperationMetadata =
+    AdapterOperationMetadata::supported(AdapterBindingKind::SingleMutable, NONE);
+#[cfg(feature = "recalc")]
+const WASM_TWO_RESOURCE: AdapterOperationMetadata =
+    AdapterOperationMetadata::supported(AdapterBindingKind::TwoResource, NONE);
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+const WASM_DURABLE_UNSUPPORTED: AdapterOperationMetadata = AdapterOperationMetadata::unsupported(
+    AdapterBindingKind::DurableOrchestration,
+    DURABLE_REQUIRED,
+);
+const fn just_bash_adapter(
+    wasm: AdapterOperationMetadata,
+    persistence: AdapterPersistence,
+) -> AdapterOperationMetadata {
+    match wasm.support_status {
+        AdapterSupportStatus::Supported => {
+            AdapterOperationMetadata::supported(wasm.binding_kind, persistence)
+        }
+        AdapterSupportStatus::Unsupported => {
+            AdapterOperationMetadata::unsupported(wasm.binding_kind, persistence)
+        }
+    }
+}
+const JUST_BASH_NONE_UNSUPPORTED: AdapterOperationMetadata =
+    just_bash_adapter(WASM_NONE_UNSUPPORTED, NONE);
+const JUST_BASH_READ: AdapterOperationMetadata = just_bash_adapter(WASM_READ, NONE);
+const JUST_BASH_READ_UNSUPPORTED: AdapterOperationMetadata =
+    just_bash_adapter(WASM_READ_UNSUPPORTED, NONE);
+#[cfg(feature = "recalc")]
+const JUST_BASH_MUTABLE: AdapterOperationMetadata =
+    just_bash_adapter(WASM_MUTABLE, EXPORT_REQUIRED);
+#[cfg(feature = "recalc")]
+const JUST_BASH_TWO_RESOURCE: AdapterOperationMetadata = just_bash_adapter(WASM_TWO_RESOURCE, NONE);
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+const JUST_BASH_DURABLE_UNSUPPORTED: AdapterOperationMetadata =
+    just_bash_adapter(WASM_DURABLE_UNSUPPORTED, DURABLE_REQUIRED);
+const SHARED_READ_ADAPTERS: DescriptorAdapterMetadata = DescriptorAdapterMetadata {
+    cli: CLI_READ,
+    mcp: MCP_READ,
+    wasm: WASM_READ,
+    just_bash: JUST_BASH_READ,
+};
+const DISCOVERY_ADAPTERS: DescriptorAdapterMetadata = DescriptorAdapterMetadata {
+    cli: CLI_NONE,
+    mcp: MCP_NONE,
+    wasm: WASM_NONE_UNSUPPORTED,
+    just_bash: JUST_BASH_NONE_UNSUPPORTED,
+};
+const NATIVE_READ_ADAPTERS: DescriptorAdapterMetadata = DescriptorAdapterMetadata {
+    cli: CLI_READ,
+    mcp: MCP_READ,
+    wasm: WASM_READ_UNSUPPORTED,
+    just_bash: JUST_BASH_READ_UNSUPPORTED,
+};
+#[cfg(feature = "recalc")]
+const MUTABLE_ADAPTERS: DescriptorAdapterMetadata = DescriptorAdapterMetadata {
+    cli: CLI_MUTABLE,
+    mcp: MCP_MUTABLE,
+    wasm: WASM_MUTABLE,
+    just_bash: JUST_BASH_MUTABLE,
+};
+#[cfg(feature = "recalc")]
+const TWO_RESOURCE_ADAPTERS: DescriptorAdapterMetadata = DescriptorAdapterMetadata {
+    cli: CLI_TWO_RESOURCE,
+    mcp: MCP_TWO_RESOURCE,
+    wasm: WASM_TWO_RESOURCE,
+    just_bash: JUST_BASH_TWO_RESOURCE,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+const DURABLE_ADAPTERS: DescriptorAdapterMetadata = DescriptorAdapterMetadata {
+    cli: CLI_DURABLE_UNSUPPORTED,
+    mcp: MCP_DURABLE,
+    wasm: WASM_DURABLE_UNSUPPORTED,
+    just_bash: JUST_BASH_DURABLE_UNSUPPORTED,
+};
+
 macro_rules! descriptor {
     ($name:literal, $description:literal, $capability:expr, $predicate:expr, $cost:expr, $input:ident, $output:ident) => {
+        descriptor_adapters!(
+            $name,
+            $description,
+            $capability,
+            $predicate,
+            SHARED_READ_ADAPTERS,
+            $cost,
+            $input,
+            $output
+        )
+    };
+}
+
+macro_rules! descriptor_adapters {
+    ($name:literal, $description:literal, $capability:expr, $predicate:expr, $adapters:expr, $cost:expr, $input:ident, $output:ident) => {
         OperationDescriptor {
             name: $name,
             schema_version: CANONICAL_SCHEMA_VERSION,
             description: $description,
             capability: $capability,
             capability_predicate: $predicate,
+            adapters: $adapters,
             cost: $cost,
             risk_ceiling: OperationRisk::Low,
             risk_for: read_risk,
@@ -1155,11 +1364,12 @@ macro_rules! descriptor {
 }
 
 static REGISTRY: &[OperationDescriptor] = &[
-    descriptor!(
+    descriptor_adapters!(
         "list_workbooks",
         "Discover workbook resources available to this runtime.",
         WORKBOOK_DISCOVERY,
         workbook_discovery,
+        DISCOVERY_ADAPTERS,
         CHEAP_READ,
         list_workbooks_input_schema,
         list_workbooks_output_schema
@@ -1309,51 +1519,56 @@ static REGISTRY: &[OperationDescriptor] = &[
         sheet_statistics_output_schema
     ),
     #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
-    descriptor!(
+    descriptor_adapters!(
         "screenshot_sheet",
         "Render a bounded sheet range to a content-addressed PNG artifact without exposing a server path.",
         SCREENSHOT_RENDERING,
         screenshot_rendering,
+        NATIVE_READ_ADAPTERS,
         EXPENSIVE_READ,
         screenshot_sheet_input_schema,
         screenshot_sheet_output_schema
     ),
     #[cfg(feature = "recalc-formualizer")]
-    descriptor!(
+    descriptor_adapters!(
         "sheetport_manifest",
         "Discover, inspect, validate, normalize, or bind-check portable SheetPort manifest content.",
         SHEETPORT,
         sheetport,
+        NATIVE_READ_ADAPTERS,
         BOUNDED_READ,
         sheetport_manifest_input_schema,
         sheetport_manifest_output_schema
     ),
     #[cfg(feature = "recalc-formualizer")]
-    descriptor!(
+    descriptor_adapters!(
         "execute_sheetport",
         "Execute a portable SheetPort manifest with closed typed inputs, results, errors, and coverage.",
         SHEETPORT,
         sheetport,
+        NATIVE_READ_ADAPTERS,
         EXPENSIVE_READ,
         execute_sheetport_input_schema,
         execute_sheetport_output_schema
     ),
-    descriptor!(
+    descriptor_adapters!(
         "inspect_vba",
         "Inspect a VBA project summary or bounded module source with revision-bound opaque paging.",
         VBA,
         vba,
+        NATIVE_READ_ADAPTERS,
         BOUNDED_READ,
         inspect_vba_input_schema,
         inspect_vba_output_schema
     ),
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(feature = "recalc")]
     OperationDescriptor {
         name: "write",
         schema_version: CANONICAL_SCHEMA_VERSION,
-        description: "Preview, stage, or apply an ordered batch of canonical mutations with revision CAS and atomic rollback by default.",
+        description: "Preview or apply an ordered batch of canonical mutations with revision CAS and atomic rollback by default; stage requires a durable adapter and is invalid for in-memory WASM sessions.",
         capability: WORKBOOK_WRITE,
         capability_predicate: workbook_write,
+        adapters: MUTABLE_ADAPTERS,
         cost: OperationCost {
             class: OperationCostClass::Expensive,
             bounded_by: &["ops", "cells", "payload_bytes"],
@@ -1370,6 +1585,7 @@ static REGISTRY: &[OperationDescriptor] = &[
         description: "Create an isolated mutable fork from a revision-bound resource.",
         capability: WORKBOOK_WRITE,
         capability_predicate: workbook_write,
+        adapters: DURABLE_ADAPTERS,
         cost: EXPENSIVE_READ,
         risk_ceiling: OperationRisk::Moderate,
         risk_for: write_risk,
@@ -1377,22 +1593,24 @@ static REGISTRY: &[OperationDescriptor] = &[
         output_schema: create_fork_output_schema,
     },
     #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
-    descriptor!(
+    descriptor_adapters!(
         "list_forks",
         "Discover active forks without exposing server-local paths.",
         WORKBOOK_WRITE,
         workbook_write,
+        DURABLE_ADAPTERS,
         CHEAP_READ,
         list_forks_input_schema,
         list_forks_output_schema
     ),
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(feature = "recalc")]
     OperationDescriptor {
         name: "recalculate",
         schema_version: CANONICAL_SCHEMA_VERSION,
-        description: "Evaluate a fork with revision CAS and complete F1 coverage metadata.",
+        description: "Evaluate a mutable fork or in-memory session with revision CAS and complete F1 coverage metadata.",
         capability: WORKBOOK_WRITE,
         capability_predicate: workbook_write,
+        adapters: MUTABLE_ADAPTERS,
         cost: OperationCost {
             class: OperationCostClass::Expensive,
             bounded_by: &["formula_cells", "timeout_ms"],
@@ -1402,12 +1620,13 @@ static REGISTRY: &[OperationDescriptor] = &[
         input_schema: recalculate_input_schema,
         output_schema: recalculate_output_schema,
     },
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
-    descriptor!(
+    #[cfg(feature = "recalc")]
+    descriptor_adapters!(
         "verify_workbook",
         "Evaluate and compare baseline and current resources with sound proof states and coverage.",
         WORKBOOK_WRITE,
         workbook_write,
+        TWO_RESOURCE_ADAPTERS,
         EXPENSIVE_READ,
         verify_workbook_input_schema,
         verify_workbook_output_schema
@@ -1419,6 +1638,7 @@ static REGISTRY: &[OperationDescriptor] = &[
         description: "Export a revision-bound fork to a portable artifact destination.",
         capability: WORKBOOK_WRITE,
         capability_predicate: workbook_write,
+        adapters: DURABLE_ADAPTERS,
         cost: OperationCost {
             class: OperationCostClass::Expensive,
             bounded_by: &["workbook_bytes"],
@@ -1435,6 +1655,7 @@ static REGISTRY: &[OperationDescriptor] = &[
         description: "Destroy an isolated fork with revision CAS.",
         capability: WORKBOOK_WRITE,
         capability_predicate: workbook_write,
+        adapters: DURABLE_ADAPTERS,
         cost: CHEAP_READ,
         risk_ceiling: OperationRisk::Destructive,
         risk_for: write_risk,
@@ -1442,11 +1663,12 @@ static REGISTRY: &[OperationDescriptor] = &[
         output_schema: discard_fork_output_schema,
     },
     #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
-    descriptor!(
+    descriptor_adapters!(
         "get_changes",
         "Read either the canonical operation audit or a direct base-to-current net diff.",
         WORKBOOK_WRITE,
         workbook_write,
+        DURABLE_ADAPTERS,
         EXPENSIVE_READ,
         get_changes_input_schema,
         get_changes_output_schema
@@ -1458,6 +1680,7 @@ static REGISTRY: &[OperationDescriptor] = &[
         description: "Create, list, atomically restore, or delete fork checkpoints.",
         capability: WORKBOOK_WRITE,
         capability_predicate: workbook_write,
+        adapters: DURABLE_ADAPTERS,
         cost: OperationCost {
             class: OperationCostClass::Expensive,
             bounded_by: &["workbook_bytes", "checkpoints"],
@@ -1474,6 +1697,7 @@ static REGISTRY: &[OperationDescriptor] = &[
         description: "List, atomically apply, or discard canonical staged write bundles.",
         capability: WORKBOOK_WRITE,
         capability_predicate: workbook_write,
+        adapters: DURABLE_ADAPTERS,
         cost: OperationCost {
             class: OperationCostClass::Expensive,
             bounded_by: &["ops", "cells", "payload_bytes"],
@@ -1484,6 +1708,44 @@ static REGISTRY: &[OperationDescriptor] = &[
         output_schema: staged_change_output_schema,
     },
 ];
+
+pub const CANONICAL_OPERATION_NAMES: &[&str] = &[
+    "list_workbooks",
+    "describe_workbook",
+    "list_sheets",
+    "sheet_overview",
+    "read_cells",
+    "inspect_cells",
+    "read_table",
+    "read_layout",
+    "export_grid",
+    "named_ranges",
+    "analyze_styles",
+    "search_values",
+    "search_formulas",
+    "formula_trace",
+    "formula_map",
+    "profile_table",
+    "sheet_statistics",
+    "screenshot_sheet",
+    "sheetport_manifest",
+    "execute_sheetport",
+    "inspect_vba",
+    "write",
+    "create_fork",
+    "list_forks",
+    "recalculate",
+    "verify_workbook",
+    "export_fork",
+    "discard_fork",
+    "get_changes",
+    "checkpoint",
+    "staged_change",
+];
+
+pub fn is_canonical_operation_name(name: &str) -> bool {
+    CANONICAL_OPERATION_NAMES.contains(&name)
+}
 
 pub fn operation_registry() -> &'static [OperationDescriptor] {
     REGISTRY
@@ -1509,14 +1771,56 @@ pub fn operation_schema(name: &str) -> Result<Value, CanonicalErrorEnvelope> {
         json!({"schema_version":descriptor.schema_version,"operation":descriptor.name,"input_schema":(descriptor.input_schema)(),"output_schema":(descriptor.output_schema)(),"error_schema":canonical_error_schema()}),
     )
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationAdapter {
+    Cli,
+    Mcp,
+    Wasm,
+    JustBash,
+}
+
+impl OperationDescriptor {
+    pub fn adapter_metadata(&self, adapter: OperationAdapter) -> AdapterOperationMetadata {
+        match adapter {
+            OperationAdapter::Cli => self.adapters.cli,
+            OperationAdapter::Mcp => self.adapters.mcp,
+            OperationAdapter::Wasm => self.adapters.wasm,
+            OperationAdapter::JustBash => self.adapters.just_bash,
+        }
+    }
+
+    pub fn is_available_for(
+        &self,
+        adapter: OperationAdapter,
+        capabilities: &RuntimeCapabilities,
+    ) -> bool {
+        self.adapter_metadata(adapter).is_supported() && self.is_available(capabilities)
+    }
+}
+
 pub fn operations_discovery(capabilities: &RuntimeCapabilities) -> Value {
+    operations_discovery_for(OperationAdapter::Mcp, capabilities)
+}
+
+pub fn operations_discovery_for(
+    adapter: OperationAdapter,
+    capabilities: &RuntimeCapabilities,
+) -> Value {
     Value::Array(
         REGISTRY
             .iter()
-            .filter(|descriptor| descriptor.is_available(capabilities))
+            .filter(|descriptor| descriptor.is_available_for(adapter, capabilities))
             .map(|descriptor| descriptor.discovery_json(capabilities))
             .collect(),
     )
+}
+
+pub fn registry_projection() -> Value {
+    json!({
+        "schema_version": CANONICAL_SCHEMA_VERSION,
+        "operations": REGISTRY.iter().map(OperationDescriptor::registry_json).collect::<Vec<_>>(),
+        "error_schema": canonical_error_schema(),
+    })
 }
 
 macro_rules! decode {

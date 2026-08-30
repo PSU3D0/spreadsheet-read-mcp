@@ -19,7 +19,6 @@ use parking_lot::RwLock;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
-use tokio::task;
 
 pub struct AppState {
     config: Arc<ServerConfig>,
@@ -153,7 +152,8 @@ impl AppState {
         }
 
         let repo = self.repository.clone();
-        let workbook = task::spawn_blocking(move || repo.load_context(&resolved)).await??;
+        let workbook =
+            crate::runtime::maybe_blocking(move || repo.load_context(&resolved)).await??;
         let workbook = Arc::new(workbook);
 
         let mut cache = self.cache.write();

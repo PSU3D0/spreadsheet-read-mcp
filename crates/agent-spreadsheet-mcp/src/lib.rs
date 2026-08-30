@@ -1,4 +1,5 @@
 pub mod analysis;
+mod canonical_router;
 pub mod caps;
 pub mod cli;
 pub mod config;

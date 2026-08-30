@@ -305,7 +305,7 @@ pub async fn workbook_summary(
     let include_entry_points = params.include_entry_points.unwrap_or(!summary_only);
     let include_named_ranges = params.include_named_ranges.unwrap_or(!summary_only);
 
-    tokio::task::spawn_blocking(move || {
+    crate::runtime::maybe_blocking(move || {
         build_workbook_summary(workbook, include_entry_points, include_named_ranges)
     })
     .await?
@@ -469,7 +469,7 @@ pub(crate) async fn sheet_overview_semantic(
     let workbook = state.open_workbook(&params.workbook_or_fork_id).await?;
     let sheet_name = params.sheet_name.clone();
     let mut overview =
-        tokio::task::spawn_blocking(move || workbook.sheet_overview(&sheet_name)).await??;
+        crate::runtime::maybe_blocking(move || workbook.sheet_overview(&sheet_name)).await??;
 
     let max_regions = params
         .max_regions
@@ -1857,7 +1857,7 @@ pub async fn define_name(
     let refers_to = params.refers_to.clone();
     let scope_sheet = params.scope_sheet_name.clone();
 
-    tokio::task::spawn_blocking(move || {
+    crate::runtime::maybe_blocking(move || {
         define_name_in_file(
             &work_path,
             &name,
@@ -1906,7 +1906,7 @@ pub async fn update_name(
     let scope_sheet = params.scope_sheet_name.clone();
 
     let (previous_refers_to, effective_scope, effective_sheet) =
-        tokio::task::spawn_blocking(move || {
+        crate::runtime::maybe_blocking(move || {
             update_name_in_file(
                 &work_path,
                 &name,
@@ -1957,7 +1957,7 @@ pub async fn delete_name(
     let name = params.name.clone();
     let scope_sheet = params.scope_sheet_name.clone();
 
-    tokio::task::spawn_blocking(move || {
+    crate::runtime::maybe_blocking(move || {
         delete_name_in_file(&work_path, &name, scope_kind, scope_sheet.as_deref())
     })
     .await??;

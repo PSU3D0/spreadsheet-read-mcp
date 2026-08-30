@@ -27,6 +27,14 @@ pub struct WorkbookSession {
 }
 
 impl WorkbookSession {
+    pub(crate) fn from_spreadsheet(spreadsheet: Spreadsheet) -> Self {
+        Self { spreadsheet }
+    }
+
+    pub(crate) fn into_spreadsheet(self) -> Spreadsheet {
+        self.spreadsheet
+    }
+
     /// Open a workbook session from raw XLSX bytes.
     pub fn from_bytes(bytes: impl AsRef<[u8]>) -> Result<Self> {
         let workbook_bytes = bytes.as_ref();
@@ -237,6 +245,49 @@ impl WorkbookSession {
 
         if !found {
             return Err(anyhow!("named range '{}' not found", name));
+        }
+
+        // Umya appends address objects in set_address; rebuild the matching name so an update
+        // replaces the definition instead of creating a union.
+        if let Some(new_addr) = refers_to {
+            match effective_scope {
+                NamedRangeScope::Workbook => {
+                    book.get_defined_names_mut()
+                        .retain(|defined| defined.get_name() != name);
+                    let first_sheet = book
+                        .get_sheet_collection()
+                        .first()
+                        .map(|sheet| sheet.get_name().to_string())
+                        .ok_or_else(|| anyhow!("workbook has no sheets"))?;
+                    let sheet = book
+                        .get_sheet_by_name_mut(&first_sheet)
+                        .ok_or_else(|| anyhow!("sheet disappeared"))?;
+                    sheet
+                        .add_defined_name(name.to_string(), new_addr.to_string())
+                        .map_err(|error| anyhow!("failed to replace defined name: {error}"))?;
+                    if let Some(replacement) = sheet.get_defined_names_mut().pop() {
+                        book.add_defined_names(replacement);
+                    }
+                }
+                NamedRangeScope::Sheet => {
+                    let sheet_name = effective_sheet
+                        .as_deref()
+                        .ok_or_else(|| anyhow!("sheet-scoped name has no sheet"))?;
+                    let sheet_index = resolve_sheet_index_on_spreadsheet(book, sheet_name)?;
+                    let sheet = book
+                        .get_sheet_by_name_mut(sheet_name)
+                        .ok_or_else(|| anyhow!("sheet '{}' not found", sheet_name))?;
+                    sheet
+                        .get_defined_names_mut()
+                        .retain(|defined| defined.get_name() != name);
+                    sheet
+                        .add_defined_name(name.to_string(), new_addr.to_string())
+                        .map_err(|error| anyhow!("failed to replace defined name: {error}"))?;
+                    if let Some(replacement) = sheet.get_defined_names_mut().last_mut() {
+                        replacement.set_local_sheet_id(sheet_index);
+                    }
+                }
+            }
         }
 
         let final_refers_to = refers_to

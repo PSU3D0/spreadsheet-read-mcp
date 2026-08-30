@@ -1,8 +1,8 @@
 use agent_spreadsheet::model::WorkbookId;
 use agent_spreadsheet::operations::{
-    CanonicalErrorCode, CanonicalErrorEnvelope, CanonicalResponse, OperationRisk, ResourceId,
-    RuntimeCapabilities, canonical_error_schema, decode_operation, execute_operation_json,
-    operation_registry,
+    AdapterPersistence, CanonicalErrorCode, CanonicalErrorEnvelope, CanonicalResponse,
+    OperationAdapter, OperationRisk, ResourceId, RuntimeCapabilities, canonical_error_schema,
+    decode_operation, execute_operation_json, operation_registry,
 };
 use agent_spreadsheet::runtime::stateless::StatelessRuntime;
 use agent_spreadsheet::tools::{SheetOverviewParams, sheet_overview};
@@ -278,6 +278,56 @@ fn resource_ids_reject_untyped_path_dot_drive_and_file_forms() {
         "fork:fork-abc123"
     );
     assert!(ResourceId::bind_workbook(&WorkbookId("book.xlsx".to_string())).is_err());
+}
+
+#[test]
+fn ergonomic_read_aliases_project_canonical_dispatcher_data() {
+    let file = fixture();
+    let file = file.to_str().unwrap();
+    let cases: &[(&[&str], &str, Value)] = &[
+        (&["read", "sheets", file], "list_sheets", json!({})),
+        (
+            &["read", "overview", file, "Sheet1"],
+            "sheet_overview",
+            json!({"sheet_name":"Sheet1"}),
+        ),
+        (
+            &[
+                "read", "table", file, "--sheet", "Sheet1", "--range", "A1:C1",
+            ],
+            "read_table",
+            json!({"sheet_name":"Sheet1","range":"A1:C1"}),
+        ),
+        (&["read", "names", file], "named_ranges", json!({})),
+        (
+            &["analyze", "sheet-statistics", file, "Sheet1"],
+            "sheet_statistics",
+            json!({"sheet_name":"Sheet1"}),
+        ),
+    ];
+
+    for (alias, operation, request) in cases {
+        let ergonomic = assert_cmd::cargo::cargo_bin_cmd!("asp")
+            .args(*alias)
+            .output()
+            .unwrap();
+        assert!(
+            ergonomic.status.success(),
+            "{} failed: {}",
+            alias.join(" "),
+            String::from_utf8_lossy(&ergonomic.stderr)
+        );
+        let ergonomic: Value = serde_json::from_slice(&ergonomic.stdout).unwrap();
+        let canonical = asp_op(operation, request.clone()).unwrap();
+        let mut canonical_data = canonical["data"].clone();
+        agent_spreadsheet::response_prune::prune_non_structural_empties(&mut canonical_data);
+        assert_eq!(
+            ergonomic,
+            canonical_data,
+            "ergonomic alias {} diverged from {operation}",
+            alias.join(" ")
+        );
+    }
 }
 
 #[tokio::test]
@@ -600,6 +650,82 @@ fn malformed_unknown_and_missing_resource_errors_are_canonical() {
 }
 
 #[test]
+fn complete_registry_and_cli_discovery_are_distinct_projections() {
+    let registry = assert_cmd::cargo::cargo_bin_cmd!("asp")
+        .args(["registry", "--all"])
+        .output()
+        .unwrap();
+    assert!(registry.status.success());
+    let registry: Value = serde_json::from_slice(&registry.stdout).unwrap();
+    let descriptors = registry["operations"].as_array().unwrap();
+    assert_eq!(descriptors.len(), 31);
+    assert!(descriptors.iter().all(|descriptor| {
+        descriptor.get("input_schema").is_some()
+            && descriptor.get("output_schema").is_some()
+            && descriptor.get("available").is_none()
+            && descriptor.pointer("/adapters/cli/binding_kind").is_some()
+            && descriptor.pointer("/adapters/mcp/support_status").is_some()
+            && descriptor.pointer("/adapters/wasm/persistence").is_some()
+            && descriptor
+                .pointer("/adapters/just_bash/binding_kind")
+                .is_some()
+    }));
+
+    let operations = assert_cmd::cargo::cargo_bin_cmd!("asp")
+        .arg("operations")
+        .output()
+        .unwrap();
+    assert!(operations.status.success());
+    let operations: Value = serde_json::from_slice(&operations.stdout).unwrap();
+    let names = operations
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|descriptor| descriptor["name"].as_str())
+        .collect::<HashSet<_>>();
+    assert!(names.contains("write"));
+    assert!(names.contains("recalculate"));
+    assert!(names.contains("verify_workbook"));
+    for durable in [
+        "create_fork",
+        "list_forks",
+        "export_fork",
+        "discard_fork",
+        "get_changes",
+        "checkpoint",
+        "staged_change",
+    ] {
+        assert!(!names.contains(durable), "CLI advertised {durable}");
+    }
+}
+
+#[test]
+fn just_bash_registry_plan_is_the_portable_wasm_subset() {
+    for descriptor in operation_registry() {
+        let wasm = descriptor.adapter_metadata(OperationAdapter::Wasm);
+        let just_bash = descriptor.adapter_metadata(OperationAdapter::JustBash);
+        assert_eq!(
+            just_bash.support_status, wasm.support_status,
+            "{}",
+            descriptor.name
+        );
+        assert_eq!(
+            just_bash.binding_kind, wasm.binding_kind,
+            "{}",
+            descriptor.name
+        );
+        let expected = if matches!(descriptor.name, "write" | "recalculate") {
+            AdapterPersistence::ExportRequired
+        } else if just_bash.is_supported() {
+            AdapterPersistence::None
+        } else {
+            wasm.persistence
+        };
+        assert_eq!(just_bash.persistence, expected, "{}", descriptor.name);
+    }
+}
+
+#[test]
 fn machine_mode_accepts_stdin_json_and_discovery_commands_work() {
     assert_cmd::cargo::cargo_bin_cmd!("asp")
         .arg("operations")
@@ -614,6 +740,133 @@ fn machine_mode_accepts_stdin_json_and_discovery_commands_work() {
         .write_stdin("{}")
         .assert()
         .success();
+}
+
+#[test]
+fn canonical_schema_and_examples_are_registry_generated_and_collision_free() {
+    for descriptor in operation_registry() {
+        let schema_output = assert_cmd::cargo::cargo_bin_cmd!("asp")
+            .args(["schema", descriptor.name])
+            .output()
+            .expect("schema command");
+        assert!(schema_output.status.success(), "schema {}", descriptor.name);
+        let schema: Value = serde_json::from_slice(&schema_output.stdout).unwrap();
+        assert_eq!(schema["operation"], descriptor.name);
+        assert_eq!(schema["input_schema"], (descriptor.input_schema)());
+
+        let example_output = assert_cmd::cargo::cargo_bin_cmd!("asp")
+            .args(["example", descriptor.name])
+            .output()
+            .expect("example command");
+        if descriptor.is_available_for(
+            agent_spreadsheet::operations::OperationAdapter::Cli,
+            &RuntimeCapabilities::native(),
+        ) {
+            assert!(
+                example_output.status.success(),
+                "example {} failed: {}",
+                descriptor.name,
+                String::from_utf8_lossy(&example_output.stderr)
+            );
+            let example: Value = serde_json::from_slice(&example_output.stdout).unwrap();
+            jsonschema::validator_for(&(descriptor.input_schema)())
+                .unwrap()
+                .validate(&example)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "example for {} does not match its registry schema: {error}; {example}",
+                        descriptor.name
+                    )
+                });
+        } else {
+            assert!(!example_output.status.success());
+            let error: CanonicalErrorEnvelope =
+                serde_json::from_slice(&example_output.stderr).unwrap();
+            assert_eq!(error.error.code, CanonicalErrorCode::CapabilityUnavailable);
+        }
+    }
+}
+
+#[test]
+fn cli_mutable_export_and_two_resource_binding_are_explicit() {
+    let revision = agent_spreadsheet::utils::hash_file_sha256_hex(&fixture()).unwrap();
+    let recalculate = assert_cmd::cargo::cargo_bin_cmd!("asp")
+        .args([
+            "op",
+            "recalculate",
+            "--bind",
+            fixture().to_str().unwrap(),
+            "--json",
+            &json!({"expected_revision":revision}).to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!recalculate.status.success());
+    let error: CanonicalErrorEnvelope = serde_json::from_slice(&recalculate.stderr).unwrap();
+    assert_eq!(error.error.path.as_deref(), Some("adapter_flags"));
+
+    let verify = assert_cmd::cargo::cargo_bin_cmd!("asp")
+        .args([
+            "op",
+            "verify_workbook",
+            "--bind",
+            fixture().to_str().unwrap(),
+            "--baseline",
+            fixture().to_str().unwrap(),
+            "--json",
+            "{}",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        verify.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    let response: Value = serde_json::from_slice(&verify.stdout).unwrap();
+    assert_eq!(response["data"]["proof_status"], "proved");
+    assert!(
+        response["data"]["baseline_resource_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("wb:")
+    );
+}
+
+#[test]
+fn descriptor_schemas_drive_machine_binding_rules() {
+    let portable = assert_cmd::cargo::cargo_bin_cmd!("asp")
+        .args([
+            "op",
+            "sheetport_manifest",
+            "--bind",
+            fixture().to_str().unwrap(),
+            "--json",
+            r#"{"action":"schema"}"#,
+        ])
+        .output()
+        .unwrap();
+    assert!(!portable.status.success());
+    let portable_error: CanonicalErrorEnvelope = serde_json::from_slice(&portable.stderr).unwrap();
+    assert_eq!(
+        portable_error.error.code,
+        CanonicalErrorCode::InvalidRequest
+    );
+    assert_eq!(portable_error.error.path.as_deref(), Some("--bind"));
+
+    let bound = assert_cmd::cargo::cargo_bin_cmd!("asp")
+        .args([
+            "op",
+            "sheetport_manifest",
+            "--json",
+            r#"{"action":"candidates"}"#,
+        ])
+        .output()
+        .unwrap();
+    assert!(!bound.status.success());
+    let bound_error: CanonicalErrorEnvelope = serde_json::from_slice(&bound.stderr).unwrap();
+    assert_eq!(bound_error.error.code, CanonicalErrorCode::InvalidRequest);
+    assert_eq!(bound_error.error.path.as_deref(), Some("--bind"));
 }
 
 #[allow(dead_code)]

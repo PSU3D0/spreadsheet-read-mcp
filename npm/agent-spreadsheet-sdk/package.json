@@ -20,12 +20,33 @@
     "wasm"
   ],
   "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./just-bash": "./src/just-bash.js",
+    "./stateless-byte-adapter": "./src/stateless-byte-adapter.js",
+    "./package.json": "./package.json"
+  },
   "files": [
     "src",
+    "scripts/generate-canonical-registry.js",
     "README.md"
   ],
   "scripts": {
-    "test": "node --test"
+    "generate:registry": "node scripts/generate-canonical-registry.js",
+    "test": "node --test",
+    "test:browser": "node scripts/run-generated-wasm-browser.js"
+  },
+  "peerDependencies": {
+    "just-bash": "^3.4.2"
+  },
+  "peerDependenciesMeta": {
+    "just-bash": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "just-bash": "3.4.2",
+    "playwright-core": "1.62.1"
   },
   "engines": {
     "node": ">=18"
