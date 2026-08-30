@@ -24,6 +24,7 @@ async fn live_json_rpc_projects_every_available_canonical_descriptor() -> Result
         sheet.get_cell_mut((2, 1)).set_value("Amount".to_string());
         sheet.get_cell_mut((1, 2)).set_value("Alpha".to_string());
         sheet.get_cell_mut((2, 2)).set_value_number(42_f64);
+        sheet.get_cell_mut((3, 2)).set_formula("B2*2");
     });
 
     let root = workspace.root().to_path_buf();
@@ -131,6 +132,51 @@ async fn live_json_rpc_projects_every_available_canonical_descriptor() -> Result
     assert_eq!(sheets["resource_id"], resource_id);
     assert!(sheets["revision_id"].is_string());
     assert_eq!(sheets["data"]["sheets"][0]["name"], "Sheet1");
+
+    let source_revision = sheets["revision_id"].as_str().unwrap();
+    let fork = client
+        .call_tool(call_tool(
+            "create_fork",
+            json!({"resource_id":resource_id,"expected_revision":source_revision}),
+        ))
+        .await?;
+    let fork = extract_json(&fork)?;
+    let fork_id = fork["resource_id"].as_str().unwrap();
+    let recalculated = client
+        .call_tool(call_tool(
+            "recalculate",
+            json!({
+                "resource_id":fork_id,
+                "expected_revision":fork["revision_id"],
+                "backend":"formualizer"
+            }),
+        ))
+        .await?;
+    let recalculated = extract_json(&recalculated)?;
+    assert_eq!(recalculated["data"]["state"], "clean");
+    let recalculated_revision = recalculated["revision_id"].as_str().unwrap();
+    let read = client
+        .call_tool(call_tool(
+            "read_cells",
+            json!({
+                "resource_id":fork_id,
+                "sheet_name":"Sheet1",
+                "selection":{"kind":"range","ranges":["C2"]},
+                "format":"values"
+            }),
+        ))
+        .await?;
+    let read = extract_json(&read)?;
+    assert_eq!(read["revision_id"], recalculated_revision);
+    assert_eq!(read["data"]["calculation"]["state"], "clean");
+    assert_eq!(
+        read["data"]["calculation"]["revision_id"],
+        recalculated_revision
+    );
+    assert_eq!(
+        read["data"]["blocks"][0]["payload"]["values"][0][0].as_f64(),
+        Some(84.0)
+    );
 
     let malformed = client
         .call_tool(call_tool("list_sheets", json!({"resource_id":42})))

@@ -809,6 +809,47 @@ async fn malformed_late_address_is_invalid_before_non_atomic_effects() {
 }
 
 #[tokio::test]
+async fn structural_preview_does_not_readd_unchanged_inline_text_cells() {
+    let (_temp, state, resource, _fork_path, revision) = forked().await;
+    let seeded = execute_operation_json(
+        state.clone(),
+        "write",
+        request(
+            &resource,
+            &revision,
+            "apply",
+            true,
+            vec![json!({"kind":"set_cells","sheet_name":"Sheet1","cells":{"A1":{"kind":"value","value":"Header"}}})],
+        ),
+    )
+    .await
+    .unwrap();
+    let preview = execute_operation_json(
+        state,
+        "write",
+        request(
+            &resource,
+            seeded.data["revision_after"].as_str().unwrap(),
+            "preview",
+            true,
+            vec![json!({"kind":"insert_rows","sheet_name":"Sheet1","at_row":2,"count":1})],
+        ),
+    )
+    .await
+    .unwrap();
+    let changes = preview.data["diff"]["changes"].as_array().unwrap();
+    assert_eq!(
+        preview.data["diff"]["change_count"].as_u64().unwrap(),
+        changes.len() as u64
+    );
+    assert!(!changes.iter().any(|change| {
+        change["address"] == "A1"
+            && change["old_value"].is_null()
+            && change["new_value"] == "Header"
+    }));
+}
+
+#[tokio::test]
 async fn merge_preview_has_structured_effect_and_grid_merges_translate() {
     let (_temp, state, resource, fork_path, revision) = forked().await;
     let preview = execute_operation_json(
@@ -825,9 +866,18 @@ async fn merge_preview_has_structured_effect_and_grid_merges_translate() {
     .await
     .unwrap();
     assert_eq!(preview.data["status"], "previewed");
-    assert!(preview.data["diff"]["change_count"].as_u64().unwrap() > 0);
+    assert_eq!(preview.data["diff"]["change_count"], 0);
+    assert_eq!(preview.data["diff"]["exact"], false);
+    assert_eq!(
+        preview.data["diff"]["precision"],
+        "exact_cells_names_tables_plus_declared_effects"
+    );
+    assert_eq!(
+        preview.data["diff"]["change_count"].as_u64().unwrap(),
+        preview.data["diff"]["changes"].as_array().unwrap().len() as u64
+    );
     assert!(
-        preview.data["diff"]["changes"]
+        preview.data["diff"]["effects"]
             .as_array()
             .unwrap()
             .iter()
@@ -835,7 +885,7 @@ async fn merge_preview_has_structured_effect_and_grid_merges_translate() {
     );
 
     let applied = execute_operation_json(
-        state,
+        state.clone(),
         "write",
         request(
             &resource,
@@ -876,7 +926,7 @@ async fn update_name_replaces_definition_and_non_atomic_stage_is_rejected() {
     assert_eq!(stage_error.error.code, CanonicalErrorCode::InvalidRequest);
 
     let applied = execute_operation_json(
-        state,
+        state.clone(),
         "write",
         request(
             &resource,
@@ -892,6 +942,17 @@ async fn update_name_replaces_definition_and_non_atomic_stage_is_rejected() {
     .await
     .unwrap();
     assert_eq!(applied.data["status"], "applied");
+    let names = execute_operation_json(
+        state,
+        "named_ranges",
+        json!({"resource_id":resource.as_str(),"name_prefix":"Rate"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(names.data["items"].as_array().unwrap().len(), 1);
+    assert_eq!(names.data["items"][0]["scope_kind"], "workbook");
+    assert_eq!(names.data["items"][0]["scope_sheet_name"], Value::Null);
+    assert_eq!(names.data["items"][0]["sheet_name"], Value::Null);
     let book = umya_spreadsheet::reader::xlsx::read(&fork_path).unwrap();
     let address = book
         .get_defined_names()

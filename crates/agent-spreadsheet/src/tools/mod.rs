@@ -26,7 +26,7 @@ use crate::verification::{
 use crate::workbook::{WorkbookContext, cell_to_value};
 #[cfg(feature = "recalc")]
 use anyhow::Context;
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use regex::Regex;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -1028,7 +1028,7 @@ pub struct SheetFormulaMapParams {
     pub formula_parse_policy: Option<FormulaParsePolicy>,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FormulaSortBy {
     #[default]
@@ -1189,14 +1189,7 @@ pub(crate) async fn sheet_formula_map_semantic(
                 continue;
             }
         }
-
-        let address_count = group.addresses.len();
-
-        if summary_only || !include_addresses {
-            group.addresses.clear();
-        } else if !params.expand && address_count > addresses_limit as usize {
-            group.addresses.truncate(addresses_limit as usize);
-        }
+        group.addresses.sort_by(|a, b| compare_addresses(a, b));
 
         groups.push(group);
     }
@@ -1206,7 +1199,17 @@ pub(crate) async fn sheet_formula_map_semantic(
     let sort_by = params.sort_by.unwrap_or_default();
     match sort_by {
         FormulaSortBy::Address => {
-            groups.sort_by(|a, b| a.fingerprint.cmp(&b.fingerprint));
+            groups.sort_by(|a, b| {
+                let left = a.addresses.iter().min_by(|x, y| compare_addresses(x, y));
+                let right = b.addresses.iter().min_by(|x, y| compare_addresses(x, y));
+                match (left, right) {
+                    (Some(left), Some(right)) => compare_addresses(left, right)
+                        .then_with(|| a.fingerprint.cmp(&b.fingerprint)),
+                    (Some(_), None) => Ordering::Less,
+                    (None, Some(_)) => Ordering::Greater,
+                    (None, None) => a.fingerprint.cmp(&b.fingerprint),
+                }
+            });
         }
         FormulaSortBy::Complexity => {
             groups.sort_by(|a, b| b.formula.len().cmp(&a.formula.len()));
@@ -1235,6 +1238,14 @@ pub(crate) async fn sheet_formula_map_semantic(
         && groups.len() > max_items
     {
         groups.truncate(max_items);
+    }
+
+    for group in &mut groups {
+        if summary_only || !include_addresses {
+            group.addresses.clear();
+        } else if !params.expand && group.addresses.len() > addresses_limit as usize {
+            group.addresses.truncate(addresses_limit as usize);
+        }
     }
 
     if let Some(max_bytes) = max_payload_bytes {
@@ -3321,6 +3332,7 @@ fn summarize_columns(headers: &[String], rows: &[TableRow]) -> Vec<ColumnTypeSum
                 Some(Some(CellValue::Number(n))) => {
                     values.push(*n);
                     let key = n.to_string();
+                    distinct_set.insert(key.clone());
                     *top_counts.entry(key).or_default() += 1;
                 }
                 Some(Some(CellValue::Text(s))) => {
@@ -3390,6 +3402,7 @@ fn collect_value_matches(
     direction: &LabelDirection,
     params: &FindValueParams,
     region: Option<&DetectedRegion>,
+    table_bounds: Option<((u32, u32), (u32, u32))>,
     default_bounds: ((u32, u32), (u32, u32)),
     offset: u32,
     limit: u32,
@@ -3402,12 +3415,14 @@ fn collect_value_matches(
     } else {
         None
     };
-    let bounds = region
-        .as_ref()
-        .and_then(|r| parse_range(&r.bounds))
+    let bounds = table_bounds
+        .or_else(|| region.as_ref().and_then(|r| parse_range(&r.bounds)))
         .unwrap_or(default_bounds);
 
-    let header_row = region.and_then(|r| r.header_row).unwrap_or(1);
+    let header_row = table_bounds
+        .map(|bounds| bounds.0.1)
+        .or_else(|| region.and_then(|r| r.header_row))
+        .unwrap_or(1);
 
     let context_mode = params.context.unwrap_or_default();
     let include_neighbors = matches!(context_mode, FindContext::Neighbors | FindContext::Both);
@@ -4992,7 +5007,32 @@ pub(crate) async fn find_value_semantic(
     let match_mode = params.match_mode.unwrap_or_default();
     let direction = params.direction.clone().unwrap_or(LabelDirection::Any);
 
-    let target_sheets: Vec<String> = if let Some(sheet) = &params.sheet_name {
+    let table_target = if let Some(table_name) = params.table_name.as_deref() {
+        let item = workbook
+            .named_items()?
+            .into_iter()
+            .find(|item| {
+                item.kind == NamedItemKind::Table && item.name.eq_ignore_ascii_case(table_name)
+            })
+            .ok_or_else(|| anyhow!("table {table_name} not found"))?;
+        let sheet_name = item
+            .sheet_name
+            .ok_or_else(|| anyhow!("table {table_name} has no owning sheet"))?;
+        if let Some(requested_sheet) = params.sheet_name.as_deref()
+            && requested_sheet != sheet_name
+        {
+            bail!("table {table_name} is on sheet {sheet_name}, not {requested_sheet}");
+        }
+        let range = parse_range(item.refers_to.trim_start_matches('='))
+            .ok_or_else(|| anyhow!("table {table_name} has invalid bounds {}", item.refers_to))?;
+        Some((sheet_name, range))
+    } else {
+        None
+    };
+
+    let target_sheets: Vec<String> = if let Some((sheet, _)) = &table_target {
+        vec![sheet.clone()]
+    } else if let Some(sheet) = &params.sheet_name {
         vec![sheet.clone()]
     } else {
         workbook.sheet_names()
@@ -5020,6 +5060,7 @@ pub(crate) async fn find_value_semantic(
                     &direction,
                     &params,
                     region_bounds.as_ref(),
+                    table_target.as_ref().map(|(_, bounds)| *bounds),
                     default_bounds,
                     offset,
                     limit,
@@ -5213,6 +5254,7 @@ pub(crate) struct ResolvedTableProfile {
     pub bounds: String,
     pub header_row: u32,
     pub header_from_selector: bool,
+    pub rows_scanned: u32,
 }
 
 pub(crate) async fn table_profile_semantic(
@@ -5286,6 +5328,7 @@ pub(crate) async fn table_profile_semantic(
         headers.truncate(max_items);
     }
 
+    let rows_scanned = rows.len() as u32;
     let mut column_types = summarize_columns(&headers, &rows);
 
     let mut samples: Vec<TableRow> = if summary_only {
@@ -5387,6 +5430,7 @@ pub(crate) async fn table_profile_semantic(
         bounds,
         header_row,
         header_from_selector,
+        rows_scanned,
     })
 }
 
@@ -6303,9 +6347,9 @@ fn compare_addresses(left: &str, right: &str) -> Ordering {
             let left_coords = parse_address(&left_core.to_ascii_uppercase());
             let right_coords = parse_address(&right_core.to_ascii_uppercase());
             match (left_coords, right_coords) {
-                (Some((lc, lr)), Some((rc, rr))) => lc
-                    .cmp(&rc)
-                    .then_with(|| lr.cmp(&rr))
+                (Some((lc, lr)), Some((rc, rr))) => lr
+                    .cmp(&rr)
+                    .then_with(|| lc.cmp(&rc))
                     .then_with(|| left_core.cmp(&right_core)),
                 _ => left_core.cmp(&right_core),
             }

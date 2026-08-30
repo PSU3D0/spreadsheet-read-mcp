@@ -74,23 +74,35 @@ impl<'a, R: BufRead> CellIterator<'a, R> {
 
         loop {
             match self.reader.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) => {
-                    match e.name().as_ref() {
-                        b"v" => {
-                            let text = self.read_text_content(b"v")?;
-                            value = Some(text);
-                        }
-                        b"f" => {
-                            let text = self.read_text_content(b"f")?;
-                            formula = Some(text);
-                        }
-                        b"is" => {
-                            // Inline string - just skip for now or try to read text if simple
-                            // For now we might lose inline strings, but they are rare in recalc scenarios
-                        }
-                        _ => {}
+                Ok(Event::Start(ref e)) => match e.name().as_ref() {
+                    b"v" => {
+                        let text = self.read_text_content(b"v")?;
+                        value = Some(text);
                     }
-                }
+                    b"f" => {
+                        let text = self.read_text_content(b"f")?;
+                        formula = Some(text);
+                    }
+                    b"is" => {
+                        let mut inline = String::new();
+                        let mut inline_buf = Vec::new();
+                        loop {
+                            match self.reader.read_event_into(&mut inline_buf)? {
+                                Event::Start(ref child) if child.name().as_ref() == b"t" => {
+                                    inline.push_str(&self.read_text_content(b"t")?);
+                                }
+                                Event::End(ref child) if child.name().as_ref() == b"is" => break,
+                                Event::Eof => {
+                                    return Err(anyhow!("Unexpected EOF reading inline string"));
+                                }
+                                _ => {}
+                            }
+                            inline_buf.clear();
+                        }
+                        value = Some(inline);
+                    }
+                    _ => {}
+                },
                 Ok(Event::End(ref e)) if e.name().as_ref() == b"c" => {
                     break;
                 }

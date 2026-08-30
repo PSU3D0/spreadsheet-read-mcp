@@ -242,6 +242,11 @@ pub async fn recalculate(
         Ok(after)
     })?;
     result.evaluation_coverage.revision_id = revision_after.clone();
+    state.record_calculation(
+        &WorkbookId(fork_id.clone()),
+        &revision_after,
+        result.evaluation_coverage.clone(),
+    );
     let status = if result.state == EvaluationState::Clean {
         "completed"
     } else {
@@ -881,6 +886,7 @@ pub fn checkpoint(state: Arc<AppState>, request: CheckpointRequest) -> Result<Ch
             // Replace the workbook first. All following state changes are in-memory or
             // best-effort cleanup, so a failed copy leaves the fork fully unchanged.
             atomic_replace(&restore_source, &fork.work_path)?;
+            state.invalidate_calculation(&WorkbookId(fork_id.clone()));
             state.evict_by_path(&fork.work_path);
             let restored_file_revision = hash_file_sha256_hex(&fork.work_path)?;
             let staged = std::mem::take(&mut fork.staged_changes);
@@ -1062,6 +1068,7 @@ pub fn staged_change(
                 .collect::<Vec<_>>();
             let ops_applied =
                 crate::canonical_write::apply_bundle_atomically_to_path(&fork.work_path, &bundle)?;
+            state.invalidate_calculation(&WorkbookId(fork_id.clone()));
             state.evict_by_path(&fork.work_path);
             fork.content_revision = hash_file_sha256_hex(&fork.work_path)?;
             let after = fork.advance_state_revision();

@@ -252,6 +252,7 @@ struct SessionStore {
     virtual_keys: HashMap<String, String>,
     workbook_bytes: HashMap<String, usize>,
     revisions: HashMap<String, String>,
+    calculations: HashMap<String, (String, agent_spreadsheet::model::EvaluationCoverage)>,
 }
 
 #[derive(Clone, Default)]
@@ -517,6 +518,7 @@ impl SessionApi {
             store
                 .revisions
                 .insert(session_id.to_string(), revision_after.clone());
+            store.calculations.remove(session_id);
         }
         Ok(CanonicalResponse {
             schema_version: "1".to_string(),
@@ -654,6 +656,10 @@ impl SessionApi {
         store
             .revisions
             .insert(session_id.to_string(), revision_after.clone());
+        store.calculations.insert(
+            session_id.to_string(),
+            (revision_after.clone(), result.evaluation_coverage.clone()),
+        );
         Ok(CanonicalResponse {
             schema_version: "1".to_string(),
             operation: "recalculate".to_string(),
@@ -794,6 +800,7 @@ impl SessionApi {
                 agent_spreadsheet::utils::make_short_random_id("rev", 20)
             ),
         );
+        store.calculations.remove(session_id);
         Ok(())
     }
 
@@ -960,16 +967,34 @@ impl SessionApi {
                     None,
                 )
             })?);
-        response.revision_id = Some(
-            self.lock_store()
-                .map_err(|error| canonical_operation_error(operation_name, error.to_string()))?
-                .revisions
+        let (session_revision, calculation) = {
+            let store = self
+                .lock_store()
+                .map_err(|error| canonical_operation_error(operation_name, error.to_string()))?;
+            let revision = store.revisions.get(session_id).cloned().ok_or_else(|| {
+                canonical_operation_error(operation_name, "session revision is missing")
+            })?;
+            let calculation = store
+                .calculations
                 .get(session_id)
-                .cloned()
-                .ok_or_else(|| {
-                    canonical_operation_error(operation_name, "session revision is missing")
-                })?,
-        );
+                .filter(|(calculation_revision, _)| calculation_revision == &revision)
+                .map(|(_, coverage)| {
+                    json!({
+                        "state": coverage.state(),
+                        "revision_id": revision.clone(),
+                    })
+                });
+            (revision, calculation)
+        };
+        response.revision_id = Some(session_revision);
+        if matches!(
+            operation_name,
+            "read_cells" | "read_table" | "inspect_cells"
+        ) && let Some(calculation) = calculation
+            && let Some(slot) = response.data.get_mut("calculation")
+        {
+            *slot = calculation;
+        }
         serde_json::to_string(&response).map_err(|error| {
             canonical_error(
                 CanonicalErrorCode::OperationFailed,
@@ -1326,6 +1351,7 @@ impl SessionApi {
         store.virtual_keys.remove(session_id);
         store.workbook_bytes.remove(session_id);
         store.revisions.remove(session_id);
+        store.calculations.remove(session_id);
         Ok(removed)
     }
 

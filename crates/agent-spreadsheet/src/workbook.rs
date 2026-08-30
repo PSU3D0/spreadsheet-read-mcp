@@ -616,20 +616,26 @@ impl WorkbookContext {
                 // Avoid duplicates: skip if already present from workbook-level
                 let already_present = items.iter().any(|item| {
                     item.name == defined.get_name()
-                        && item.scope_kind == Some(NamedRangeScope::Sheet)
-                        && item.scope_sheet_name.as_deref() == Some(sheet_name_str.as_str())
+                        && item.refers_to == refers_to
+                        && (item.scope_kind == Some(NamedRangeScope::Workbook)
+                            || item.scope_sheet_name.as_deref() == Some(sheet_name_str.as_str()))
                 });
                 if already_present {
                     continue;
                 }
+                let is_sheet_scoped = defined.has_local_sheet_id();
                 items.push(NamedRangeDescriptor {
                     name: defined.get_name().to_string(),
-                    scope: Some(sheet_name_str.clone()),
-                    scope_kind: Some(NamedRangeScope::Sheet),
-                    scope_sheet_name: Some(sheet_name_str.clone()),
+                    scope: is_sheet_scoped.then(|| sheet_name_str.clone()),
+                    scope_kind: Some(if is_sheet_scoped {
+                        NamedRangeScope::Sheet
+                    } else {
+                        NamedRangeScope::Workbook
+                    }),
+                    scope_sheet_name: is_sheet_scoped.then(|| sheet_name_str.clone()),
                     refers_to,
                     kind,
-                    sheet_name: Some(sheet_name_str),
+                    sheet_name: is_sheet_scoped.then_some(sheet_name_str),
                     comment: None,
                 });
             }

@@ -570,7 +570,10 @@ pub struct WriteOpResult {
 #[serde(deny_unknown_fields)]
 pub struct WriteDiff {
     pub change_count: usize,
+    pub exact: bool,
+    pub precision: String,
     pub changes: Vec<Value>,
+    pub effects: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1272,7 +1275,10 @@ fn changes_to_write_diff(changes: Vec<crate::diff::Change>) -> Result<WriteDiff>
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(WriteDiff {
         change_count: values.len(),
+        exact: true,
+        precision: "exact_baseline_to_result".to_string(),
         changes: values,
+        effects: Vec::new(),
     })
 }
 
@@ -1282,7 +1288,7 @@ fn add_effect_manifest(diff: &mut WriteDiff, results: &[WriteOpResult]) {
             continue;
         }
         if let Some(effect) = &result.detail {
-            diff.changes.push(json!({
+            diff.effects.push(json!({
                 "kind": "operation_effect",
                 "op_index": result.index,
                 "op_kind": result.kind,
@@ -1290,7 +1296,10 @@ fn add_effect_manifest(diff: &mut WriteDiff, results: &[WriteOpResult]) {
             }));
         }
     }
-    diff.change_count = diff.changes.len();
+    if !diff.effects.is_empty() {
+        diff.exact = false;
+        diff.precision = "exact_cells_names_tables_plus_declared_effects".to_string();
+    }
 }
 
 fn summary_detail(summary: &ChangeSummary) -> Result<Value> {
@@ -2187,7 +2196,10 @@ fn execute_write_transaction<B: WriteTransactionBackend>(
                     rolled_back: true,
                     diff: WriteDiff {
                         change_count: 0,
+                        exact: true,
+                        precision: "exact_baseline_to_result".to_string(),
                         changes: Vec::new(),
+                        effects: Vec::new(),
                     },
                     impact,
                     results,
@@ -2360,7 +2372,9 @@ pub async fn execute_write(
         response,
         WriteResponseData::Applied { .. } | WriteResponseData::Partial { .. }
     ) {
-        let _ = state.close_workbook(&WorkbookId(fork_id));
+        let workbook_id = WorkbookId(fork_id);
+        state.invalidate_calculation(&workbook_id);
+        let _ = state.close_workbook(&workbook_id);
     }
     Ok(response)
 }

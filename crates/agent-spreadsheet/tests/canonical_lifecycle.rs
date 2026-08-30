@@ -317,6 +317,35 @@ async fn canonical_recalculate_and_verify_preserve_f1_proof_fields() {
         );
     }
 
+    for (operation, params) in [
+        (
+            "read_cells",
+            json!({"sheet_name":"Sheet1","selection":{"kind":"range","ranges":["A1:C3"]},"format":"values"}),
+        ),
+        (
+            "inspect_cells",
+            json!({"sheet_name":"Sheet1","targets":["A1"]}),
+        ),
+        (
+            "read_table",
+            json!({"sheet_name":"Sheet1","range":"A1:C3","limit":2}),
+        ),
+    ] {
+        let mut params = params;
+        params["resource_id"] = json!(current.as_str());
+        let read = execute_operation_json(state.clone(), operation, params)
+            .await
+            .unwrap();
+        assert_eq!(
+            read.data["calculation"]["revision_id"].as_str(),
+            recalculated.revision_id.as_deref()
+        );
+        assert_eq!(
+            read.data["calculation"]["state"],
+            recalculated.data["state"]
+        );
+    }
+
     let workbook_id = state
         .list_workbooks(agent_spreadsheet::tools::filters::WorkbookFilter::default())
         .unwrap()
