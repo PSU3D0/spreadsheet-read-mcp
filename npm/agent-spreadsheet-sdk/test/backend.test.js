@@ -27,7 +27,7 @@ test("MCP execute dispatches canonical input and preserves the envelope", async 
   }
   const expected = envelope("read_cells", "wb:wb-1", { blocks: [], next_cursor: null })
   const backend = new McpBackend({
-    operations: ["read_cells"],
+    supportedOperations: ["read_cells"],
     transport: {
       async invoke(operation, received) {
         assert.equal(operation, "read_cells")
@@ -44,7 +44,7 @@ test("MCP execute dispatches canonical input and preserves the envelope", async 
 test("MCP supports per-operation canonical transports", async () => {
   const expected = envelope("list_workbooks", undefined, { items: [] })
   const backend = new McpBackend({
-    operations: ["list_workbooks"],
+    supportedOperations: ["list_workbooks"],
     transport: {
       list_workbooks(input) {
         assert.deepEqual(input, {})
@@ -54,6 +54,49 @@ test("MCP supports per-operation canonical transports", async () => {
   })
 
   assert.strictEqual(await backend.execute("list_workbooks", {}), expected)
+})
+
+test("MCP negotiates tools before execute and refreshes live capabilities", async () => {
+  let advertised = ["read_cells"]
+  let invokes = 0
+  const backend = new McpBackend({
+    transport: {
+      async listTools() {
+        return { tools: advertised.map((name) => ({ name })) }
+      },
+      async invoke(operation, input) {
+        invokes += 1
+        return envelope(operation, input.resource_id)
+      }
+    }
+  })
+
+  assert.equal(backend.getCapabilities().initialized, false)
+  assert.deepEqual(backend.getCapabilities().operations, [])
+  assert.equal(backend.getCapabilities().supportsRangeValues, false)
+
+  await backend.readCells({ resource_id: "wb:one" })
+  assert.equal(invokes, 1)
+  assert.equal(backend.getCapabilities().initialized, true)
+  assert.deepEqual(backend.getCapabilities().operations, ["read_cells"])
+  assert.equal(backend.getCapabilities().supportsRangeValues, true)
+
+  advertised = ["write"]
+  await backend.refresh()
+  assert.deepEqual(backend.getCapabilities().operations, ["write"])
+  assert.equal(backend.getCapabilities().supportsRangeValues, false)
+  assert.equal(backend.getCapabilities().supportsTransformBatch, true)
+  await assert.rejects(backend.readCells({ resource_id: "wb:one" }), CapabilityError)
+  assert.equal(invokes, 1)
+})
+
+test("MCP without discovery or explicit support does not fall back to the manifest", async () => {
+  const backend = new McpBackend({ transport: { invoke() { throw new Error("must not invoke") } } })
+  assert.deepEqual(backend.getCapabilities().operations, [])
+  await assert.rejects(backend.execute("read_cells", {}), (error) => {
+    assert.equal(error.code, "INVALID_ARGUMENT")
+    return true
+  })
 })
 
 test("canonical error envelopes pass through without SDK normalization", async () => {
@@ -67,13 +110,13 @@ test("canonical error envelopes pass through without SDK normalization", async (
     }
   }
   const returned = new McpBackend({
-    operations: ["write"],
+    supportedOperations: ["write"],
     transport: { invoke: async () => errorEnvelope }
   })
   assert.strictEqual(await returned.execute("write", {}), errorEnvelope)
 
   const rejected = new McpBackend({
-    operations: ["write"],
+    supportedOperations: ["write"],
     transport: { invoke: async () => { throw errorEnvelope } }
   })
   await assert.rejects(rejected.execute("write", {}), (error) => error === errorEnvelope)
@@ -82,10 +125,10 @@ test("canonical error envelopes pass through without SDK normalization", async (
 test("WASM execute uses the canonical JSON dispatch binding", async () => {
   const expected = envelope("read_cells", "session:session-1", { blocks: [] })
   const backend = new WasmBackend({
-    operations: ["read_cells"],
     bindings: {
+      operations: () => JSON.stringify([{ name: "read_cells" }]),
       async executeOperation(sessionId, operation, paramsJson) {
-        assert.equal(sessionId, "session-1")
+        assert.equal(sessionId, "session:session-1")
         assert.equal(operation, "read_cells")
         assert.deepEqual(JSON.parse(paramsJson), {
           resource_id: "session:session-1",
@@ -110,8 +153,8 @@ test("WASM decodes canonical error envelopes from its JSON transport", async () 
     error: { code: "RESOURCE_NOT_FOUND", message: "missing", operation: "read_cells" }
   }
   const backend = new WasmBackend({
-    operations: ["read_cells"],
     bindings: {
+      operations: () => [{ name: "read_cells" }],
       async executeOperation() {
         throw JSON.stringify(errorEnvelope)
       }
@@ -124,11 +167,8 @@ test("WASM decodes canonical error envelopes from its JSON transport", async () 
   )
 })
 
-test("WASM capabilities require a real dispatcher and explicit operations", async () => {
-  const missingDispatcher = new WasmBackend({
-    operations: ["verify_workbook"],
-    bindings: {}
-  })
+test("WASM capabilities come from live binding discovery", async () => {
+  const missingDispatcher = new WasmBackend({ bindings: {} })
   assert.deepEqual(missingDispatcher.getCapabilities().operations, [])
   assert.equal(missingDispatcher.getCapabilities().supportsVerification, false)
 
@@ -142,8 +182,10 @@ test("WASM capabilities require a real dispatcher and explicit operations", asyn
   )
 
   const explicit = new WasmBackend({
-    operations: ["read_cells"],
-    bindings: { executeOperation() {} }
+    bindings: {
+      operations: () => [{ name: "read_cells" }],
+      executeOperation() {}
+    }
   })
   assert.deepEqual(explicit.getCapabilities().operations, ["read_cells"])
   assert.equal(explicit.getCapabilities().supportsRangeValues, true)
@@ -153,7 +195,7 @@ test("WASM capabilities require a real dispatcher and explicit operations", asyn
 test("unsupported canonical operations throw CapabilityError before transport", async () => {
   let called = false
   const backend = new McpBackend({
-    operations: ["list_sheets"],
+    supportedOperations: ["list_sheets"],
     transport: { invoke() { called = true } }
   })
 
@@ -164,12 +206,21 @@ test("unsupported canonical operations throw CapabilityError before transport", 
     return true
   })
   assert.equal(called, false)
+
+  const wasmBackend = new WasmBackend({
+    bindings: {
+      operations: () => [{ name: "list_sheets" }],
+      executeOperation() { called = true }
+    }
+  })
+  await assert.rejects(wasmBackend.execute("write", {}), CapabilityError)
+  assert.equal(called, false)
 })
 
 test("legacy read methods are deprecated data projections over execute", async () => {
   const seen = []
   const backend = new McpBackend({
-    operations: ["list_sheets", "read_cells", "search_values"],
+    supportedOperations: ["read_cells", "search_values"],
     transport: {
       async invoke(operation, input) {
         seen.push({ operation, input })
@@ -178,7 +229,6 @@ test("legacy read methods are deprecated data projections over execute", async (
     }
   })
 
-  assert.deepEqual(await backend.listSheets({ workbookId: "wb-1" }), { marker: "list_sheets" })
   assert.deepEqual(await backend.rangeValues({
     workbookId: "wb-1",
     sheetName: "Sheet1",
@@ -188,19 +238,15 @@ test("legacy read methods are deprecated data projections over execute", async (
     marker: "search_values"
   })
 
-  assert.deepEqual(seen[0], {
-    operation: "list_sheets",
-    input: { resource_id: "wb:wb-1" }
-  })
-  assert.deepEqual(seen[1].input.selection, { kind: "range", ranges: ["A1:B2"] })
-  assert.equal(seen[2].input.resource_id, "wb:wb-1")
-  assert.equal(seen[2].input.query, "alpha")
+  assert.deepEqual(seen[0].input.selection, { kind: "range", ranges: ["A1:B2"] })
+  assert.equal(seen[1].input.resource_id, "wb:wb-1")
+  assert.equal(seen[1].input.query, "alpha")
 })
 
 test("legacy write methods compile to canonical write operations", async () => {
   let received
   const backend = new McpBackend({
-    operations: ["write"],
+    supportedOperations: ["write"],
     transport: {
       async invoke(operation, input) {
         received = { operation, input }
@@ -230,7 +276,7 @@ test("WASM resource lifecycle capabilities reflect actual bindings", async () =>
     bindings: {
       createSession(bytes) {
         calls.push(["create", bytes])
-        return "session-1"
+        return "session:session-1"
       },
       exportWorkbook(id) {
         calls.push(["export", id])
@@ -247,9 +293,15 @@ test("WASM resource lifecycle capabilities reflect actual bindings", async () =>
   assert.deepEqual(await backend.bindWorkbook({ bytes: Uint8Array.from([1]) }), {
     resource_id: "session:session-1"
   })
+  assert.equal(await backend.createSession({ bytes: Uint8Array.from([2]) }), "session:session-1")
   assert.deepEqual(await backend.exportWorkbook({ resource_id: "session:session-1" }), Uint8Array.from([1, 2]))
   await backend.disposeSession({ resource_id: "session:session-1" })
-  assert.deepEqual(calls.map((call) => call[0]), ["create", "export", "dispose"])
+  assert.deepEqual(calls, [
+    ["create", Uint8Array.from([1])],
+    ["create", Uint8Array.from([2])],
+    ["export", "session:session-1"],
+    ["dispose", "session:session-1"]
+  ])
 })
 
 test("checked-in registry drives canonical convenience methods", () => {

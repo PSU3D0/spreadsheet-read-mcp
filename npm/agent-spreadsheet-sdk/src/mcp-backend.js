@@ -1,7 +1,7 @@
 const { createCapabilities } = require("./capabilities")
 const {
-  OPERATION_NAMES,
   declaredOperations,
+  discoveredOperations,
   requireOperation,
   installCanonicalMethods,
   projectData,
@@ -136,16 +136,67 @@ class McpBackend {
     }
     this.kind = "mcp"
     this._transport = params.transport
-    const operations = declaredOperations(params.capabilities || params, OPERATION_NAMES)
-    this._operationSet = new Set(operations)
-    this._capabilities = createCapabilities(this.kind, operations, { transport: "mcp" })
+    this._supportedOperations = params.supportedOperations === undefined
+      ? null
+      : declaredOperations(params.supportedOperations)
+    this._operationSet = new Set()
+    this._capabilities = createCapabilities(this.kind, [], {
+      transport: "mcp",
+      initialized: false
+    })
+    this._initialization = null
+    if (this._supportedOperations) this._setOperations(this._supportedOperations)
   }
 
   getCapabilities() {
     return this._capabilities
   }
 
+  _setOperations(operations) {
+    this._operationSet = new Set(operations)
+    this._capabilities = createCapabilities(this.kind, operations, {
+      transport: "mcp",
+      initialized: true
+    })
+    return this._capabilities
+  }
+
+  async _discoverOperations() {
+    if (typeof this._transport.listOperations === "function") {
+      return discoveredOperations(await this._transport.listOperations())
+    }
+    if (typeof this._transport.listTools === "function") {
+      return discoveredOperations(await this._transport.listTools())
+    }
+    if (typeof this._transport["tools/list"] === "function") {
+      return discoveredOperations(await this._transport["tools/list"]({}))
+    }
+    if (typeof this._transport.request === "function") {
+      return discoveredOperations(await this._transport.request({ method: "tools/list", params: {} }))
+    }
+    throw new SpreadsheetSdkError(
+      "McpBackend requires supportedOperations or a transport tools/list discovery method",
+      { code: "INVALID_ARGUMENT", backend: this.kind }
+    )
+  }
+
+  async initialize() {
+    if (this._capabilities.initialized) return this._capabilities
+    if (!this._initialization) {
+      this._initialization = this.refresh().finally(() => {
+        this._initialization = null
+      })
+    }
+    return this._initialization
+  }
+
+  async refresh() {
+    const operations = this._supportedOperations || await this._discoverOperations()
+    return this._setOperations(operations)
+  }
+
   async execute(operation, input = {}) {
+    await this.initialize()
     requireOperation(this, operation)
     if (!input || typeof input !== "object" || Array.isArray(input)) {
       throw new SpreadsheetSdkError("canonical operation input must be an object", {
@@ -183,6 +234,7 @@ class McpBackend {
 
 function installLegacyMethods(Backend) {
   for (const [method, [operation, mapInput]] of Object.entries(LEGACY_METHODS)) {
+    if (Object.prototype.hasOwnProperty.call(Backend.prototype, method)) continue
     Object.defineProperty(Backend.prototype, method, {
       configurable: true,
       value(input = {}) {

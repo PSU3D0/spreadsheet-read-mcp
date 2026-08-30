@@ -768,11 +768,7 @@ For the complete operation list and contracts, see [Canonical Operation Surface]
 
 `agent-spreadsheet-sdk` is the app-facing integration layer — the one surface JS/TS code should target.
 
-It normalizes:
-- method names
-- input aliases
-- output shapes
-- typed capability errors
+It provides generated canonical convenience methods, legacy input aliases, unchanged canonical envelopes, and typed capability errors. The complete 31-operation manifest supplies schemas and methods, while availability always comes from the selected live backend.
 
 **Backends** are a configuration choice, not separate APIs:
 - **MCP backend** — connect to a running `agent-spreadsheet-mcp` server (shared state, forks, multi-client)
@@ -784,7 +780,7 @@ Install:
 npm i agent-spreadsheet-sdk
 ```
 
-Backend status: MCP backend is stable; the embedded WASM backend is tested in-repo and shipping through the SDK as it hardens.
+Backend status: MCP backend is stable and negotiates operations through live tool discovery (or an explicit `supportedOperations` list); the embedded WASM backend derives support from its generated binding's `operations()` descriptors and is tested against the real wasm-bindgen Node package in CI.
 
 ---
 

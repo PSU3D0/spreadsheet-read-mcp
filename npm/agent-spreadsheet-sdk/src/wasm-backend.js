@@ -1,6 +1,6 @@
 const { createCapabilities } = require("./capabilities")
 const {
-  declaredOperations,
+  discoveredOperations,
   requireOperation,
   installCanonicalMethods
 } = require("./backend")
@@ -32,11 +32,24 @@ class WasmBackend {
     this.kind = "wasm"
     this._bindings = params.bindings
     const canExecute = typeof params.bindings.executeOperation === "function"
-    const advertised = params.operations || params.capabilities || params.bindings
-    const operations = canExecute ? declaredOperations(advertised, []) : []
+    if (canExecute && typeof params.bindings.operations !== "function") {
+      throw new SpreadsheetSdkError("WASM bindings with executeOperation must provide operations()", {
+        code: "INVALID_ARGUMENT",
+        backend: "wasm"
+      })
+    }
+    const advertised = canExecute ? params.bindings.operations() : []
+    if (advertised && typeof advertised.then === "function") {
+      throw new SpreadsheetSdkError("WASM bindings operations() must be synchronous", {
+        code: "INVALID_RESPONSE",
+        backend: "wasm"
+      })
+    }
+    const operations = canExecute ? discoveredOperations(advertised) : []
     this._operationSet = new Set(operations)
     this._capabilities = createCapabilities(this.kind, operations, {
       transport: "wasm-json",
+      initialized: canExecute,
       resourceBinding: typeof params.bindings.createSession === "function",
       resourceExport: typeof params.bindings.exportWorkbook === "function",
       sessionLifecycle: typeof params.bindings.createSession === "function" &&
@@ -58,12 +71,9 @@ class WasmBackend {
       })
     }
     const resourceId = input.resource_id
-    const sessionId = typeof resourceId === "string" && resourceId.startsWith("session:")
-      ? resourceId.slice("session:".length)
-      : resourceId
     try {
       const result = await this._bindings.executeOperation(
-        sessionId,
+        resourceId,
         operation,
         JSON.stringify(input)
       )
@@ -96,13 +106,13 @@ class WasmBackend {
         operation: "bindWorkbook"
       })
     }
-    const sessionId = await this._bindings.createSession(bytes)
-    return { resource_id: String(sessionId).startsWith("session:") ? sessionId : `session:${sessionId}` }
+    const resourceId = await this._bindings.createSession(bytes)
+    return { resource_id: resourceId }
   }
 
   async createSession(input = {}) {
     const bound = await this.bindWorkbook(input)
-    return bound.resource_id.slice("session:".length)
+    return bound.resource_id
   }
 
   async exportWorkbook(input = {}) {
@@ -121,7 +131,7 @@ class WasmBackend {
         operation: "exportWorkbook"
       })
     }
-    return this._bindings.exportWorkbook(resourceId.replace(/^session:/, ""))
+    return this._bindings.exportWorkbook(resourceId)
   }
 
   async disposeSession(input = {}) {
@@ -140,7 +150,7 @@ class WasmBackend {
         operation: "disposeSession"
       })
     }
-    return this._bindings.disposeSession(resourceId.replace(/^session:/, ""))
+    return this._bindings.disposeSession(resourceId)
   }
 }
 

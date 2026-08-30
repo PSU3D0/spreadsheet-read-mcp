@@ -22,7 +22,7 @@ const result = await backend.execute("read_cells", {
 })
 ```
 
-Convenience methods are installed from the checked-in canonical registry. For example, `read_cells` provides `readCells(input)`. Use `execute` when operation names are dynamic.
+Convenience methods are installed for all 31 operations in the checked-in canonical registry. For example, `read_cells` provides `readCells(input)`. Each method is still gated by the backend's live operation set. Use `execute` when operation names are dynamic.
 
 The Rust operation registry remains the taxonomy and schema source of truth. `src/generated/canonical-registry.json` is generated, not independently authored:
 
@@ -38,25 +38,27 @@ Generation consumes `asp operations` and `asp schema <operation>`. The Node drif
 ```js
 const backend = new McpBackend({
   transport: {
+    listTools() {
+      return mcpClient.listTools()
+    },
     invoke(operation, input) {
       return mcpClient.callTool(operation, input)
     }
-  },
-  operations: ["describe_workbook", "read_cells", "write"]
+  }
 })
+await backend.initialize()
 ```
 
-`operations` should contain the server's advertised canonical operations. When omitted, MCP defaults to the generated native registry for compatibility. A transport may instead implement methods named after canonical operations.
+MCP support is negotiated from the live server. The transport may expose `listOperations()`, `listTools()`, `"tools/list"()`, or `request({ method: "tools/list" })`. `execute` waits for initial negotiation automatically; `initialize()` makes it explicit and `refresh()` updates support after the server changes. Before negotiation, synchronous `getCapabilities()` truthfully returns `initialized: false` and an empty operation list.
+
+For transports without discovery, pass an explicit `supportedOperations` array. There is no fallback that treats all manifest operations as available. A transport may dispatch through `invoke(operation, input)` or methods named after canonical operations.
 
 ## WASM
 
-WASM capabilities are explicit: no canonical operation is advertised unless `executeOperation` exists and `operations` (or `bindings.supportedOperations`) declares it.
+WASM capabilities come directly from the generated binding's live `operations()` descriptors. Callers do not provide or default an operation list.
 
 ```js
-const backend = new WasmBackend({
-  bindings: wasmBindings,
-  operations: ["describe_workbook", "read_cells"]
-})
+const backend = new WasmBackend({ bindings: wasmBindings })
 
 const { resource_id } = await backend.bindWorkbook({ workbookBytes })
 const result = await backend.execute("describe_workbook", { resource_id })
@@ -68,7 +70,9 @@ The WASM JSON binding contract is:
 executeOperation(sessionId, operationName, paramsJson) -> resultJson
 ```
 
-The adapter strips the `session:` prefix for the binding, serializes only for transport, and parses the returned JSON. It does not reshape canonical responses. Resource binding, byte export, and session disposal remain adapter-specific.
+The binding returns a typed `session:` resource ID. The adapter passes that exact ID unchanged through canonical execution, export, and disposal, serializes only the canonical input for transport, and parses the returned JSON. It does not reshape canonical responses. Resource binding, byte export, and session disposal remain adapter-specific.
+
+Run `npm run test:wasm` to build the actual wasm-bindgen Node package with `wasm-pack` and exercise SDK read, write, recalculate, verify, export, and disposal end to end.
 
 ## Capabilities and errors
 

@@ -1,5 +1,3 @@
-const { OPERATION_NAMES } = require("./backend")
-
 const LEGACY_OPERATION_CAPABILITIES = Object.freeze({
   supportsDescribeWorkbook: ["describe_workbook"],
   supportsNamedRanges: ["named_ranges"],
@@ -24,6 +22,7 @@ function createCapabilities(kind, operations, adapter = {}) {
   const capabilities = {
     schemaVersion: "1",
     backend: kind,
+    initialized: adapter.initialized ?? true,
     operations: Object.freeze([...operations]),
     resourceBinding: Boolean(adapter.resourceBinding),
     resourceExport: Boolean(adapter.resourceExport),
@@ -38,8 +37,8 @@ function createCapabilities(kind, operations, adapter = {}) {
   return Object.freeze(capabilities)
 }
 
-const MCP_CAPABILITIES = createCapabilities("mcp", OPERATION_NAMES, { transport: "mcp" })
-const WASM_CAPABILITIES = createCapabilities("wasm", [], { transport: "wasm" })
+const MCP_CAPABILITIES = createCapabilities("mcp", [], { transport: "mcp", initialized: false })
+const WASM_CAPABILITIES = createCapabilities("wasm", [], { transport: "wasm-json", initialized: false })
 
 function freezeCapabilities(capabilities) {
   return Object.freeze({
