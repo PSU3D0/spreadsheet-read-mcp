@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-#[cfg(feature = "recalc-formualizer")]
+#[cfg(all(feature = "recalc-formualizer", feature = "sheetport"))]
 const MAX_MANIFEST_BYTES: usize = 1_048_576;
 const MAX_SHEETPORT_INPUTS: usize = 256;
 const MAX_SHEETPORT_TEXT_BYTES: usize = 65_536;
@@ -22,15 +22,15 @@ const MAX_VBA_MODULES_PER_PAGE: u32 = 100;
 const MAX_VBA_LINES_PER_PAGE: u32 = 1_000;
 const MAX_VBA_SOURCE_PAGE_BYTES: usize = 256 * 1024;
 const MAX_VBA_CURSOR_BYTES: usize = 2_048;
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 const MAX_SCREENSHOT_BYTES: usize = 16 * 1024 * 1024;
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 const MAX_SCREENSHOT_SHEET_NAME_BYTES: usize = 31;
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 const MAX_SCREENSHOT_RANGE_BYTES: usize = 32;
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 const MAX_SCREENSHOT_ROWS: u32 = 100;
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 const MAX_SCREENSHOT_COLS: u32 = 30;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -144,7 +144,7 @@ pub enum SheetportBindStage {
     Bind,
 }
 
-#[cfg(feature = "recalc-formualizer")]
+#[cfg(all(feature = "recalc-formualizer", feature = "sheetport"))]
 fn ensure_manifest_bound(manifest_yaml: &str) -> Result<()> {
     if manifest_yaml.len() > MAX_MANIFEST_BYTES {
         bail!("invalid request: manifest_yaml exceeds {MAX_MANIFEST_BYTES} bytes");
@@ -152,7 +152,7 @@ fn ensure_manifest_bound(manifest_yaml: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "recalc-formualizer")]
+#[cfg(all(feature = "recalc-formualizer", feature = "sheetport"))]
 fn issues_from_value(value: Value) -> Vec<SheetportIssue> {
     value
         .as_array()
@@ -173,18 +173,18 @@ fn issues_from_value(value: Value) -> Vec<SheetportIssue> {
         .collect()
 }
 
-#[cfg(feature = "recalc-formualizer")]
+#[cfg(all(feature = "recalc-formualizer", feature = "sheetport"))]
 pub fn sheetport_schema() -> Result<Value> {
     serde_json::from_str(formualizer::sheetport_spec::schema_json())
         .map_err(|error| anyhow!("failed to parse bundled SheetPort schema: {error}"))
 }
 
-#[cfg(not(feature = "recalc-formualizer"))]
+#[cfg(not(all(feature = "recalc-formualizer", feature = "sheetport")))]
 pub fn sheetport_schema() -> Result<Value> {
     bail!("SheetPort capability unavailable")
 }
 
-#[cfg(feature = "recalc-formualizer")]
+#[cfg(all(feature = "recalc-formualizer", feature = "sheetport"))]
 pub fn validate_manifest_content(manifest_yaml: &str) -> Result<Vec<SheetportIssue>> {
     ensure_manifest_bound(manifest_yaml)?;
     let manifest = match formualizer::sheetport_spec::Manifest::from_yaml_str(manifest_yaml) {
@@ -204,12 +204,12 @@ pub fn validate_manifest_content(manifest_yaml: &str) -> Result<Vec<SheetportIss
     })
 }
 
-#[cfg(not(feature = "recalc-formualizer"))]
+#[cfg(not(all(feature = "recalc-formualizer", feature = "sheetport")))]
 pub fn validate_manifest_content(_manifest_yaml: &str) -> Result<Vec<SheetportIssue>> {
     bail!("SheetPort capability unavailable")
 }
 
-#[cfg(feature = "recalc-formualizer")]
+#[cfg(all(feature = "recalc-formualizer", feature = "sheetport"))]
 pub fn normalize_manifest_content(manifest_yaml: &str) -> Result<(String, Vec<SheetportIssue>)> {
     ensure_manifest_bound(manifest_yaml)?;
     let mut manifest = formualizer::sheetport_spec::Manifest::from_yaml_str(manifest_yaml)
@@ -222,12 +222,12 @@ pub fn normalize_manifest_content(manifest_yaml: &str) -> Result<(String, Vec<Sh
     Ok((normalized, issues))
 }
 
-#[cfg(not(feature = "recalc-formualizer"))]
+#[cfg(not(all(feature = "recalc-formualizer", feature = "sheetport")))]
 pub fn normalize_manifest_content(_manifest_yaml: &str) -> Result<(String, Vec<SheetportIssue>)> {
     bail!("SheetPort capability unavailable")
 }
 
-#[cfg(feature = "recalc-formualizer")]
+#[cfg(all(feature = "recalc-formualizer", feature = "sheetport"))]
 pub async fn bind_check_manifest_content(
     state: Arc<AppState>,
     workbook_id: WorkbookId,
@@ -294,7 +294,7 @@ pub async fn bind_check_manifest_content(
     )
 }
 
-#[cfg(not(feature = "recalc-formualizer"))]
+#[cfg(not(all(feature = "recalc-formualizer", feature = "sheetport")))]
 pub async fn bind_check_manifest_content(
     _state: Arc<AppState>,
     _workbook_id: WorkbookId,
@@ -610,7 +610,7 @@ struct ManifestPortSets {
     outputs: BTreeSet<String>,
 }
 
-#[cfg(feature = "recalc-formualizer")]
+#[cfg(all(feature = "recalc-formualizer", feature = "sheetport"))]
 fn manifest_port_sets(manifest_yaml: &str) -> Result<ManifestPortSets> {
     ensure_manifest_bound(manifest_yaml)?;
     let manifest = formualizer::sheetport_spec::Manifest::from_yaml_str(manifest_yaml)
@@ -638,7 +638,7 @@ fn manifest_port_sets(manifest_yaml: &str) -> Result<ManifestPortSets> {
     })
 }
 
-#[cfg(not(feature = "recalc-formualizer"))]
+#[cfg(not(all(feature = "recalc-formualizer", feature = "sheetport")))]
 fn manifest_port_sets(_manifest_yaml: &str) -> Result<ManifestPortSets> {
     bail!("SheetPort capability unavailable")
 }
@@ -853,7 +853,7 @@ pub async fn execute_sheetport(
     })
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScreenshotSheetRequest {
@@ -868,7 +868,7 @@ pub struct ScreenshotSheetRequest {
     pub range: Option<String>,
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactHandle {
@@ -878,7 +878,7 @@ pub struct ArtifactHandle {
     pub media_type: String,
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScreenshotSheetData {
@@ -888,7 +888,7 @@ pub struct ScreenshotSheetData {
     pub duration_ms: u64,
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 fn safe_artifact_root(workspace_root: &std::path::Path) -> Result<std::path::PathBuf> {
     use std::fs;
     let workspace = workspace_root.canonicalize()?;
@@ -908,7 +908,7 @@ fn safe_artifact_root(workspace_root: &std::path::Path) -> Result<std::path::Pat
     Ok(canonical)
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 fn validate_screenshot_directory(state: &AppState) -> Result<std::path::PathBuf> {
     use std::fs;
     let config = state.config();
@@ -947,7 +947,7 @@ fn validate_screenshot_directory(state: &AppState) -> Result<std::path::PathBuf>
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 fn persist_png_artifact(workspace_root: &std::path::Path, bytes: &[u8]) -> Result<ArtifactHandle> {
     use std::fs;
     use std::io::Write;
@@ -989,7 +989,7 @@ fn persist_png_artifact(workspace_root: &std::path::Path, bytes: &[u8]) -> Resul
     })
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 pub(crate) fn validate_screenshot_request(request: &ScreenshotSheetRequest) -> Result<()> {
     let sheet_name = request.sheet_name.as_str();
     if sheet_name.is_empty()
@@ -1026,7 +1026,7 @@ pub(crate) fn validate_screenshot_request(request: &ScreenshotSheetRequest) -> R
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 pub async fn screenshot_sheet(
     state: Arc<AppState>,
     request: ScreenshotSheetRequest,

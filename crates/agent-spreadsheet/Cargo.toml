@@ -36,21 +36,21 @@ pkg-url = "{ repo }/releases/download/v{ version }/agent-spreadsheet-windows-x86
 [[bin]]
 name = "agent-spreadsheet"
 path = "src/bin/agent-spreadsheet.rs"
-required-features = ["recalc"]
+required-features = ["recalc", "cli"]
 
 [[bin]]
 name = "asp"
 path = "src/bin/asp.rs"
-required-features = ["recalc"]
+required-features = ["recalc", "cli"]
 
 [dependencies]
 anyhow = "1.0"
 thiserror = "1.0"
-clap = { version = "4.5", features = ["derive", "env"] }
+clap = { version = "4.5", features = ["derive", "env"], optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_with = "3.8"
-serde_yaml = "0.9"
+serde_yaml = { version = "0.9", optional = true }
 tokio = { version = "1.37", features = ["macros", "rt", "sync", "time"] }
 parking_lot = "0.12"
 lru = "0.12"
@@ -59,15 +59,15 @@ smallvec = "1.13"
 umya-spreadsheet = "2.3.2"
 ovba = "0.7.1"
 formualizer-parse = { version = "3.0.0" }
-formualizer = { version = "0.8.4", default-features = false, features = ["eval", "workbook", "umya", "sheetport", "common"], optional = true }
+formualizer = { version = "0.8.4", default-features = false, features = ["eval", "workbook", "umya", "common"], optional = true }
 web-time = "1.1"
-walkdir = "2.5"
-globset = "0.4"
+walkdir = { version = "2.5", optional = true }
+globset = { version = "0.4", optional = true }
 rand = "0.8"
 sha2 = "0.10"
 once_cell = "1.19"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"], optional = true }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 indexmap = "2.2"
 regex = "1.10"
@@ -81,7 +81,7 @@ uuid = { version = "1.10", features = ["v4", "js"], optional = true }
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 quick-xml = { version = "0.31", optional = true }
 xxhash-rust = { version = "0.8", features = ["xxh64"], optional = true }
-tempfile = "3.10"
+tempfile = { version = "3.10", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1.37", features = ["rt-multi-thread", "fs", "signal", "net", "process"] }
@@ -93,10 +93,26 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 formualizer = { version = "0.8.4", default-features = false, features = ["js-runtime"], optional = true }
 
 [features]
-default = ["recalc-formualizer"]
-recalc = ["async-trait", "uuid", "quick-xml", "xxhash-rust", "image", "base64"]
+# Native consumers get the historical surface: recalc + CLI arg parsing + a
+# real filesystem. The wasm32 byte/session adapter opts out of `cli` and
+# `native-fs` so clap, serde_yaml, tracing-subscriber, walkdir, globset and
+# tempfile are never compiled for the browser bundle.
+default = ["recalc-formualizer", "sheetport", "cli", "native-fs"]
+
+# Human/argv surface: clap arg definitions, YAML config files, log formatting.
+cli = ["native-fs", "dep:clap", "dep:serde_yaml", "dep:tracing-subscriber"]
+
+# Host filesystem surface: path-backed workspace discovery, temp-file staging.
+native-fs = ["dep:tempfile", "dep:walkdir", "dep:globset"]
+
+recalc = ["async-trait", "uuid", "quick-xml", "xxhash-rust"]
 recalc-formualizer = ["recalc", "dep:formualizer"]
-recalc-libreoffice = ["recalc"]
+# SheetPort manifests. `formualizer/sheetport` drags `sheetport-spec` in, which
+# carries its own clap/serde_yaml CLI surface; the wasm bundle does not need it.
+sheetport = ["recalc-formualizer", "formualizer/sheetport"]
+# Screenshot/PNG post-processing is LibreOffice-only, so image/png stay out of
+# the default and wasm builds.
+recalc-libreoffice = ["recalc", "native-fs", "dep:image", "dep:base64"]
 
 [dev-dependencies]
 assert_cmd = "2.0"

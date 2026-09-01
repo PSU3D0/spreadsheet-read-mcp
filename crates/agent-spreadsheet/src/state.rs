@@ -10,7 +10,9 @@ use crate::recalc::FormualizerBackend;
 use crate::recalc::{GlobalRecalcLock, GlobalScreenshotLock, RecalcBackend};
 #[cfg(feature = "recalc-libreoffice")]
 use crate::recalc::{LibreOfficeBackend, RecalcConfig};
-use crate::repository::{PathWorkspaceRepository, WorkbookRepository};
+#[cfg(feature = "native-fs")]
+use crate::repository::PathWorkspaceRepository;
+use crate::repository::WorkbookRepository;
 use crate::tools::filters::WorkbookFilter;
 use crate::workbook::WorkbookContext;
 use anyhow::Result;
@@ -41,6 +43,9 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Build state backed by the path workspace repository. Host-filesystem
+    /// only; byte/session hosts use [`AppState::new_with_repository`].
+    #[cfg(feature = "native-fs")]
     pub fn new(config: Arc<ServerConfig>) -> Self {
         #[cfg(feature = "recalc")]
         let components = init_recalc_components(&config);

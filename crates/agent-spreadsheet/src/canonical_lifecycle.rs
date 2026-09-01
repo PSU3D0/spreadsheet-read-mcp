@@ -182,7 +182,7 @@ fn atomic_replace(source: &Path, destination: &Path) -> Result<()> {
     let parent = destination
         .parent()
         .ok_or_else(|| anyhow!("fork path has no parent"))?;
-    let temporary = tempfile::NamedTempFile::new_in(parent)?;
+    let temporary = crate::hostfs::NamedTempFile::new_in(parent)?;
     fs::copy(source, temporary.path())?;
     temporary
         .persist(destination)
@@ -206,7 +206,7 @@ pub async fn recalculate(
         Ok((fork.work_path.clone(), current))
     })?;
 
-    let temp_dir = tempfile::tempdir()?;
+    let temp_dir = crate::hostfs::tempdir()?;
     let evaluated_path = temp_dir.path().join("evaluated.xlsx");
     fs::copy(&work_path, &evaluated_path)?;
     let backend = state
@@ -298,11 +298,12 @@ pub struct VerifyWorkbookData {
     pub warnings: Vec<Warning>,
 }
 
+#[cfg(feature = "native-fs")]
 pub async fn verify_workbook(
     state: Arc<AppState>,
     request: VerifyWorkbookRequest,
 ) -> Result<VerifyWorkbookData> {
-    let snapshot_dir = tempfile::tempdir()?;
+    let snapshot_dir = crate::hostfs::tempdir()?;
     let resources = [&request.baseline_resource_id, &request.resource_id];
     let fork_ids = resources
         .iter()
@@ -456,7 +457,7 @@ fn persist_content_artifact(root: &Path, sha256: &str, contents: &[u8]) -> Resul
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let mut temporary = tempfile::NamedTempFile::new_in(root)?;
+            let mut temporary = crate::hostfs::NamedTempFile::new_in(root)?;
             temporary.write_all(contents)?;
             temporary.as_file().sync_all()?;
             if let Err(error) = temporary.persist_noclobber(&target) {
@@ -652,7 +653,7 @@ pub async fn get_changes(
             offset,
             limit,
         } => {
-            let snapshot_dir = tempfile::tempdir()?;
+            let snapshot_dir = crate::hostfs::tempdir()?;
             let snapshot = registry
                 .snapshot_forks(std::slice::from_ref(&fork_id), snapshot_dir.path())?
                 .pop()

@@ -78,10 +78,15 @@ impl StatelessRuntime {
         current: &Path,
         baseline: &Path,
         operation: Option<&str>,
-    ) -> Result<(tempfile::TempDir, Arc<AppState>, WorkbookId, WorkbookId)> {
+    ) -> Result<(
+        crate::hostfs::TempDir,
+        Arc<AppState>,
+        WorkbookId,
+        WorkbookId,
+    )> {
         let current = self.normalize_existing_file(current)?;
         let baseline = self.normalize_existing_file(baseline)?;
-        let temp = tempfile::tempdir()?;
+        let temp = crate::hostfs::tempdir()?;
         let current_ext = current
             .extension()
             .and_then(|value| value.to_str())

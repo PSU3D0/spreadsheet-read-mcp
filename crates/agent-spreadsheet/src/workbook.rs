@@ -5,11 +5,14 @@ use crate::analysis::{
 };
 use crate::caps::BackendCaps;
 use crate::config::ServerConfig;
+#[cfg(feature = "native-fs")]
+use crate::model::WorkbookListResponse;
 use crate::model::{
     FormulaParseDiagnostics, FormulaParseDiagnosticsBuilder, FormulaParsePolicy, NamedItemKind,
     NamedRangeDescriptor, NamedRangeScope, SheetClassification, SheetOverviewResponse,
-    SheetSummary, WorkbookDescription, WorkbookId, WorkbookListResponse,
+    SheetSummary, WorkbookDescription, WorkbookId,
 };
+#[cfg(feature = "native-fs")]
 use crate::tools::filters::WorkbookFilter;
 use crate::utils::{
     hash_bytes_sha256_hex, hash_file_sha256_hex, hash_path_identity, make_short_workbook_id,
@@ -1939,6 +1942,10 @@ fn gather_named_ranges(
         .collect()
 }
 
+/// Scan the configured workspace root for workbooks. Host-filesystem only:
+/// the wasm32 byte/session adapter registers workbooks explicitly through
+/// [`crate::repository::VirtualWorkspaceRepository`].
+#[cfg(feature = "native-fs")]
 pub fn build_workbook_list(
     config: &Arc<ServerConfig>,
     filter: &WorkbookFilter,
@@ -2041,6 +2048,7 @@ pub fn build_workbook_list(
     })
 }
 
+#[cfg(feature = "native-fs")]
 fn derive_folder(config: &Arc<ServerConfig>, path: &Path) -> Option<String> {
     path.strip_prefix(&config.workspace_root)
         .ok()
@@ -2049,6 +2057,7 @@ fn derive_folder(config: &Arc<ServerConfig>, path: &Path) -> Option<String> {
         .map(|os| os.to_string_lossy().to_string())
 }
 
+#[cfg(feature = "native-fs")]
 fn has_supported_extension(allowed: &[String], path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())

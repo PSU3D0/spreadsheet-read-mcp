@@ -1,4 +1,6 @@
 pub mod session;
+/// Path-bound stateless runtime used by the CLI adapter. Host-filesystem only.
+#[cfg(feature = "native-fs")]
 pub mod stateless;
 
 /// Run synchronous work away from async executor threads on native targets.

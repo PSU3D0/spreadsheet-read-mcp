@@ -8,7 +8,7 @@ pub mod canonical_reads;
 #[cfg(feature = "recalc")]
 pub mod canonical_write;
 pub mod caps;
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc", feature = "cli"))]
 pub mod cli;
 pub mod config;
 pub mod core;
@@ -18,6 +18,7 @@ pub mod errors;
 #[cfg(feature = "recalc")]
 pub mod fork;
 pub mod formula;
+pub mod hostfs;
 pub mod model;
 pub mod operations;
 pub mod read;

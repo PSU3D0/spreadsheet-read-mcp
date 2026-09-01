@@ -13,9 +13,8 @@ const FORMULA_PREVIEW_MAX_BYTES: usize = 80;
 pub const FORMULA_PARSE_FAILED: &str = "FORMULA_PARSE_FAILED";
 pub const FORMULA_PARSE_FAILED_PREFIX: &str = "formula parse failed: ";
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, clap::ValueEnum, Default,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 #[serde(rename_all = "snake_case")]
 pub enum FormulaParsePolicy {
     /// Abort on any formula parse failure.
