@@ -1,0 +1,39 @@
+[package]
+name = "agent-spreadsheet-render"
+version = "0.14.0"
+edition = "2024"
+description = "Bounded native raster renderer for spreadsheet ranges — scene extraction and deterministic PNG rasterization with structured fidelity warnings"
+authors = ["Frankie Colson"]
+repository = "https://github.com/PSU3D0/agent-spreadsheet"
+homepage = "https://github.com/PSU3D0/agent-spreadsheet"
+license = "Apache-2.0"
+readme = "README.md"
+keywords = ["spreadsheet", "xlsx", "render", "raster", "png"]
+categories = ["graphics", "rendering"]
+
+# No filesystem, process, tokio, MCP, image or Typst dependency. This crate must
+# compile for wasm32-unknown-unknown.
+[dependencies]
+umya-spreadsheet = "2.3.2"
+tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }
+png = "0.18"
+ab_glyph = "0.2"
+quick-xml = "0.31"
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "1.0"
+
+# wasm32 needs two randomness backends selected, neither of which this crate
+# uses itself: umya depends on getrandom 0.2 (its `js` feature selects the wasm
+# backend) and on ahash, which depends on getrandom 0.3 (`wasm_js`, plus
+# `RUSTFLAGS=--cfg getrandom_backend="wasm_js"`). Both mirror what
+# `agent-spreadsheet` already declares.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+umya-spreadsheet = { version = "2.3.2", features = ["js"] }
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
+[dev-dependencies]
+serde_json = "1.0"
+sha2 = "0.10"
+# Test-only: the library itself opens no archives. Fixtures need `xl/styles.xml`
+# pulled out of the .xlsx and handed to `RenderOptions::styles_xml`.
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
