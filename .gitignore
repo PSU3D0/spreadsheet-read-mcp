@@ -28,3 +28,5 @@ tickets/**
 .venv/
 .pi
 ref-libs/
+!tickets/50-sdk-rework-and-native-rendering/
+!tickets/50-sdk-rework-and-native-rendering/**
