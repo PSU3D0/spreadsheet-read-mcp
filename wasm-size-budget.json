@@ -1,0 +1,17 @@
+{
+  "$comment": [
+    "Ceilings for the published WASM web bundle, enforced by scripts/check-wasm-size.js.",
+    "Measured on the tranche-50 dependency diet (agent-spreadsheet 0.14.0) and set at",
+    "the measured size plus 10 percent. These are meant to ratchet down: raising one",
+    "requires a reason in the commit message.",
+    "Measured: raw 8576619, brotli 2059359.",
+    "wasm-opt trades transfer size for compile size: at -Oz raw drops 16 percent but",
+    "brotli grows about 6 percent (unoptimized: raw 10239646, brotli 1936120)."
+  ],
+  "target": "web",
+  "profile": "wasm-release",
+  "wasm_opt_level": "-Oz",
+  "out_dir": "target/sdk-wasm-web",
+  "max_raw_bytes": 9434281,
+  "max_brotli_bytes": 2265295
+}
