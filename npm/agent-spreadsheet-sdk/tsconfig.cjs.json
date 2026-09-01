@@ -4,7 +4,10 @@
     "module": "commonjs",
     "outDir": "dist/cjs",
     "rootDir": "src",
-    "declaration": false
+    "declaration": false,
+    "sourceMap": false
   },
-  "include": ["src/**/*.ts"]
+  "include": [
+    "src/**/*.ts"
+  ]
 }
