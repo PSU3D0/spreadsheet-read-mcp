@@ -10494,6 +10494,74 @@ fn asp_render_and_asp_op_agree_byte_for_byte() {
 
 #[cfg(feature = "render")]
 #[test]
+fn asp_op_screenshot_sheet_honours_png_level_and_reports_geometry() {
+    let dir = tempdir().expect("tempdir");
+    let workbook = dir.path().join("book.xlsx");
+    write_fixture(&workbook);
+
+    let mut sizes = Vec::new();
+    for level in ["fast", "balanced"] {
+        let output = dir.path().join(format!("op-{level}.png"));
+        let result = run_asp(&[
+            "op",
+            "screenshot_sheet",
+            "--bind",
+            workbook.to_str().unwrap(),
+            "--json",
+            &format!(r#"{{"sheet_name":"Sheet1","range":"A1:C6","png_level":"{level}"}}"#),
+            "--output",
+            output.to_str().unwrap(),
+        ]);
+        assert!(
+            result.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let data = parse_stdout_json(&result)["data"].clone();
+        assert_eq!(data["png_level"], level);
+        sizes.push((
+            data["width"].as_u64().unwrap(),
+            data["height"].as_u64().unwrap(),
+            data["artifact"]["bytes"].as_u64().unwrap(),
+        ));
+    }
+    assert_eq!(sizes[0].0, sizes[1].0, "width must not depend on png level");
+    assert_eq!(sizes[0].1, sizes[1].1, "height must not depend on png level");
+    assert!(
+        sizes[0].2 > sizes[1].2,
+        "fast should be larger than balanced: {sizes:?}"
+    );
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn asp_op_screenshot_sheet_rejects_png_level_on_the_libreoffice_backend() {
+    let dir = tempdir().expect("tempdir");
+    let workbook = dir.path().join("book.xlsx");
+    write_fixture(&workbook);
+
+    let result = run_asp(&[
+        "op",
+        "screenshot_sheet",
+        "--bind",
+        workbook.to_str().unwrap(),
+        "--json",
+        r#"{"sheet_name":"Sheet1","backend":"libreoffice","png_level":"fast"}"#,
+    ]);
+    assert!(!result.status.success());
+    let error = parse_stderr_json(&result);
+    assert_eq!(error["error"]["code"], "INVALID_REQUEST");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("png_level applies to the native backend only"),
+        "error={error}"
+    );
+}
+
+#[cfg(feature = "render")]
+#[test]
 fn asp_render_rejects_png_level_on_the_libreoffice_backend() {
     let dir = tempdir().expect("tempdir");
     let workbook = dir.path().join("book.xlsx");

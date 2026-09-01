@@ -874,6 +874,29 @@ impl ScreenshotBackend {
     }
 }
 
+/// PNG encoder effort. Encoding dominates render time, so this is the one
+/// renderer knob worth exposing: `fast` trades bytes for latency, `best`
+/// trades latency for bytes. Geometry never depends on it.
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreenshotPngLevel {
+    Fast,
+    Balanced,
+    Best,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+impl ScreenshotPngLevel {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ScreenshotPngLevel::Fast => "fast",
+            ScreenshotPngLevel::Balanced => "balanced",
+            ScreenshotPngLevel::Best => "best",
+        }
+    }
+}
+
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -891,6 +914,10 @@ pub struct ScreenshotSheetRequest {
     /// `libreoffice` otherwise.
     #[serde(default)]
     pub backend: Option<ScreenshotBackend>,
+    /// PNG encoder effort for the native backend. Defaults to `balanced`.
+    /// Rejected by the LibreOffice backend, which owns its own encoder.
+    #[serde(default)]
+    pub png_level: Option<ScreenshotPngLevel>,
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
@@ -946,6 +973,17 @@ pub struct ScreenshotSheetData {
     pub fidelity: ScreenshotFidelity,
     #[serde(default)]
     pub warnings: Vec<ScreenshotWarning>,
+    /// Rendered image geometry in device pixels. Reported by renderers that
+    /// know it before encoding; `null` for the LibreOffice path, which does
+    /// not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    /// The PNG encoder effort the render actually used, `null` when the
+    /// backend does not expose one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub png_level: Option<ScreenshotPngLevel>,
     /// Calculation state at the rendered revision. Rendering never
     /// recalculates, so this is how a caller learns whether what it is looking
     /// at is current.
@@ -1124,7 +1162,12 @@ pub async fn screenshot_sheet(
     validate_screenshot_request(&request)?;
     match resolve_backend(request.backend) {
         ScreenshotBackend::Native => screenshot_sheet_native(state, request).await,
-        ScreenshotBackend::Libreoffice => screenshot_sheet_libreoffice(state, request).await,
+        ScreenshotBackend::Libreoffice => {
+            if request.png_level.is_some() {
+                bail!("invalid request: png_level applies to the native backend only");
+            }
+            screenshot_sheet_libreoffice(state, request).await
+        }
     }
 }
 
@@ -1161,11 +1204,12 @@ async fn screenshot_sheet_native(
         .as_deref()
         .unwrap_or(DEFAULT_SCREENSHOT_RANGE)
         .to_string();
+    let png_level = request.png_level.unwrap_or(ScreenshotPngLevel::Balanced);
     let rendered = crate::render::render_sheet(
         &workbook,
         &request.sheet_name,
         &range,
-        crate::render::PngLevel::Balanced,
+        map_png_level(png_level),
     )
     .map_err(|_| anyhow!("screenshot rendering failed"))?;
     let artifact = persist_png_artifact(&state.config().workspace_root, &rendered.png)
@@ -1186,8 +1230,21 @@ async fn screenshot_sheet_native(
             .iter()
             .map(|warning| map_render_warning(*warning))
             .collect(),
+        width: Some(rendered.width),
+        height: Some(rendered.height),
+        png_level: Some(png_level),
         calculation: calculation_for(&state, &workbook),
     })
+}
+
+/// Canonical PNG level to the renderer's own enum.
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc", feature = "render"))]
+pub(crate) fn map_png_level(level: ScreenshotPngLevel) -> crate::render::PngLevel {
+    match level {
+        ScreenshotPngLevel::Fast => crate::render::PngLevel::Fast,
+        ScreenshotPngLevel::Balanced => crate::render::PngLevel::Balanced,
+        ScreenshotPngLevel::Best => crate::render::PngLevel::Best,
+    }
 }
 
 #[cfg(all(
@@ -1280,6 +1337,9 @@ async fn screenshot_sheet_libreoffice(
         // what it dropped; it reports no warnings rather than guessing.
         fidelity: ScreenshotFidelity::Full,
         warnings: Vec::new(),
+        width: None,
+        height: None,
+        png_level: None,
         calculation: calculation_for(&state, &workbook),
     })
 }

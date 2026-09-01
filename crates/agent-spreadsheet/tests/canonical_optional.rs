@@ -740,6 +740,7 @@ async fn screenshot_validation_is_invalid_request_path_free_and_does_not_precrea
             sheet_name: "Sheet1".to_string(),
             range: Some("../secret".to_string()),
             backend: None,
+            png_level: None,
         },
     )
     .await
@@ -812,6 +813,7 @@ async fn screenshot_validation_is_invalid_request_path_free_and_does_not_precrea
             sheet_name: "Sheet1".to_string(),
             range: None,
             backend: Some(ScreenshotBackend::Libreoffice),
+            png_level: None,
         },
     )
     .await
@@ -841,6 +843,7 @@ async fn screenshot_rejects_symlinked_workspace_output_before_rendering() {
             sheet_name: "Sheet1".to_string(),
             range: None,
             backend: Some(ScreenshotBackend::Libreoffice),
+            png_level: None,
         },
     )
     .await
