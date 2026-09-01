@@ -244,6 +244,18 @@ impl From<SheetPageParams> for SessionSheetPageParams {
     }
 }
 
+/// Parsed workbook state kept alive for the lifetime of a session.
+///
+/// `AppState` owns an LRU of parsed `WorkbookContext`s, so holding it per
+/// session is what makes repeated canonical reads avoid re-parsing the
+/// workbook. It is derived state only: `session_bytes` remains the source of
+/// truth for `exportWorkbook` and revision hashing, and any path that replaces
+/// those bytes drops the resident entry.
+struct ResidentState {
+    state: Arc<AppState>,
+    workbook_id: agent_spreadsheet::model::WorkbookId,
+}
+
 #[derive(Default)]
 struct SessionStore {
     next_id: u64,
@@ -253,6 +265,15 @@ struct SessionStore {
     workbook_bytes: HashMap<String, usize>,
     revisions: HashMap<String, String>,
     calculations: HashMap<String, (String, agent_spreadsheet::model::EvaluationCoverage)>,
+    resident: HashMap<String, ResidentState>,
+}
+
+impl SessionStore {
+    /// Drop the parsed workbook for a session. Call this from every path that
+    /// replaces `session_bytes`.
+    fn invalidate_resident(&mut self, session_id: &str) {
+        self.resident.remove(session_id);
+    }
 }
 
 #[derive(Clone, Default)]
@@ -425,7 +446,9 @@ impl SessionApi {
         }
         store.next_id += 1;
         let virtual_key = format!("session-{:016x}", store.next_id);
-        let (_, workbook_id) = virtual_state(virtual_key.clone(), workbook_bytes.to_vec());
+        // Bind the repository to the materialized bytes, which is what every
+        // later read observes, and keep the state resident from the start.
+        let (state, workbook_id) = virtual_state(virtual_key.clone(), materialized.clone());
         let resource_id = format!("session:{}", workbook_id.as_str());
         serde_json::from_value::<ResourceId>(json!(resource_id)).map_err(|error| {
             SessionApiError::Internal {
@@ -441,6 +464,9 @@ impl SessionApi {
             .workbook_bytes
             .insert(resource_id.clone(), materialized.len());
         store.revisions.insert(resource_id.clone(), revision);
+        store
+            .resident
+            .insert(resource_id.clone(), ResidentState { state, workbook_id });
         Ok(resource_id)
     }
 
@@ -519,6 +545,7 @@ impl SessionApi {
                 .revisions
                 .insert(session_id.to_string(), revision_after.clone());
             store.calculations.remove(session_id);
+            store.invalidate_resident(session_id);
         }
         Ok(CanonicalResponse {
             schema_version: "1".to_string(),
@@ -660,6 +687,7 @@ impl SessionApi {
             session_id.to_string(),
             (revision_after.clone(), result.evaluation_coverage.clone()),
         );
+        store.invalidate_resident(session_id);
         Ok(CanonicalResponse {
             schema_version: "1".to_string(),
             operation: "recalculate".to_string(),
@@ -801,7 +829,75 @@ impl SessionApi {
             ),
         );
         store.calculations.remove(session_id);
+        store.invalidate_resident(session_id);
         Ok(())
+    }
+
+    /// Return the resident parsed state for a session, building it on first use.
+    fn resident_state(
+        &self,
+        session_id: &str,
+        operation_name: &str,
+    ) -> Result<(Arc<AppState>, agent_spreadsheet::model::WorkbookId), CanonicalErrorEnvelope> {
+        let mut store = self.lock_store().map_err(|error| {
+            canonical_error(
+                CanonicalErrorCode::OperationFailed,
+                Some(operation_name),
+                error.to_string(),
+                None,
+            )
+        })?;
+
+        let byte_length = *store.workbook_bytes.get(session_id).ok_or_else(|| {
+            canonical_error(
+                CanonicalErrorCode::ResourceNotFound,
+                Some(operation_name),
+                format!("session resource '{session_id}' not found"),
+                Some("$.sessionId"),
+            )
+        })?;
+        if byte_length > MAX_WORKBOOK_BYTES {
+            return Err(canonical_error(
+                CanonicalErrorCode::CapabilityUnavailable,
+                Some(operation_name),
+                "session workbook exceeds the WASM materialization limit",
+                None,
+            ));
+        }
+
+        if let Some(resident) = store.resident.get(session_id) {
+            return Ok((resident.state.clone(), resident.workbook_id.clone()));
+        }
+
+        let bytes = store
+            .session_bytes
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| {
+                canonical_error(
+                    CanonicalErrorCode::ResourceNotFound,
+                    Some(operation_name),
+                    format!("session resource '{session_id}' not found"),
+                    Some("$.sessionId"),
+                )
+            })?;
+        let virtual_key = store.virtual_keys.get(session_id).cloned().ok_or_else(|| {
+            canonical_error(
+                CanonicalErrorCode::OperationFailed,
+                Some(operation_name),
+                "session resource metadata is missing",
+                None,
+            )
+        })?;
+        let (state, workbook_id) = virtual_state(virtual_key, bytes);
+        store.resident.insert(
+            session_id.to_string(),
+            ResidentState {
+                state: state.clone(),
+                workbook_id: workbook_id.clone(),
+            },
+        );
+        Ok((state, workbook_id))
     }
 
     fn ensure_replacement_fits(
@@ -905,47 +1001,7 @@ impl SessionApi {
                 .map_err(|error| canonical_operation_error(operation_name, error.to_string()));
         }
 
-        let (bytes, virtual_key) = {
-            let store = self.lock_store().map_err(|error| {
-                canonical_error(
-                    CanonicalErrorCode::OperationFailed,
-                    Some(operation_name),
-                    error.to_string(),
-                    None,
-                )
-            })?;
-            let bytes = store
-                .session_bytes
-                .get(session_id)
-                .cloned()
-                .ok_or_else(|| {
-                    canonical_error(
-                        CanonicalErrorCode::ResourceNotFound,
-                        Some(operation_name),
-                        format!("session resource '{session_id}' not found"),
-                        Some("$.sessionId"),
-                    )
-                })?;
-            if bytes.len() > MAX_WORKBOOK_BYTES {
-                return Err(canonical_error(
-                    CanonicalErrorCode::CapabilityUnavailable,
-                    Some(operation_name),
-                    "session workbook exceeds the WASM materialization limit",
-                    None,
-                ));
-            }
-            let key = store.virtual_keys.get(session_id).cloned().ok_or_else(|| {
-                canonical_error(
-                    CanonicalErrorCode::OperationFailed,
-                    Some(operation_name),
-                    "session resource metadata is missing",
-                    None,
-                )
-            })?;
-            (bytes, key)
-        };
-
-        let (state, workbook_id) = virtual_state(virtual_key, bytes);
+        let (state, workbook_id) = self.resident_state(session_id, operation_name)?;
         let expected_opaque = session_id.split_once(':').map(|(_, value)| value);
         if expected_opaque != Some(workbook_id.as_str()) {
             return Err(canonical_error(
@@ -1347,6 +1403,7 @@ impl SessionApi {
     pub fn dispose_session(&self, session_id: &str) -> SessionResult<bool> {
         let mut store = self.lock_store()?;
         let removed = store.sessions.remove(session_id).is_some();
+        store.invalidate_resident(session_id);
         store.session_bytes.remove(session_id);
         store.virtual_keys.remove(session_id);
         store.workbook_bytes.remove(session_id);
