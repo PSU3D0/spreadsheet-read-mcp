@@ -39,6 +39,7 @@ dependencies = [
 name = "agent-spreadsheet"
 version = "0.14.0"
 dependencies = [
+ "agent-spreadsheet-render",
  "ahash",
  "anyhow",
  "assert_cmd",

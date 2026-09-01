@@ -11,7 +11,7 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use common::{FIXTURES, GOLDEN_RANGE, golden_dir, render_fixture, sha256_hex, updating};
+use common::{FIXTURES, GOLDEN_RANGE, golden_dir, pixel_signature, render_fixture, updating};
 
 #[test]
 fn scene_goldens_match() {
@@ -45,21 +45,22 @@ fn scene_goldens_match() {
     );
 }
 
+/// Pixel goldens: sha256 of the decoded RGBA buffer, plus the image size.
+///
+/// Deliberately not a hash of the PNG bytes. The compressed stream depends on
+/// which deflate backend `flate2` resolves to, and Cargo decides that by
+/// unifying features across the entire build — the same fixture encodes to
+/// different PNG bytes under `cargo test -p agent-spreadsheet-render` and
+/// under `cargo test --workspace`, with pixel-identical output both times.
+/// What this crate guarantees, and what these goldens pin, is the pixels.
+/// `determinism.rs` covers PNG-byte stability within one build.
 #[test]
-fn png_hash_goldens_match() {
-    let path = golden_dir().join("png-sha256.txt");
+fn pixel_goldens_match() {
+    let path = golden_dir().join("pixels-sha256.txt");
     let mut actual: BTreeMap<String, String> = BTreeMap::new();
     for (name, _) in FIXTURES {
         let (_, output) = render_fixture(name);
-        actual.insert(
-            name.to_string(),
-            format!(
-                "{} {}x{}",
-                sha256_hex(&output.png),
-                output.width,
-                output.height
-            ),
-        );
+        actual.insert(name.to_string(), pixel_signature(&output));
     }
     let rendered: String = actual
         .iter()
@@ -68,9 +69,11 @@ fn png_hash_goldens_match() {
     if updating() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let header = format!(
-            "# sha256 and pixel size of the PNG each fixture renders over {}..{} x {}..{},\n\
-             # at PngLevel::Balanced. No system fonts are used, so these are reproducible\n\
-             # across machines and across native and wasm32.\n",
+            "# sha256 of the decoded RGBA buffer, and the pixel size, for each fixture\n\
+             # rendered over {}..{} x {}..{}. No system fonts are used, so these are\n\
+             # reproducible across machines and across native and wasm32.\n\
+             # NOT a hash of the PNG bytes: the deflate stream depends on which backend\n\
+             # Cargo's feature unification picks for flate2. See tests/goldens.rs.\n",
             GOLDEN_RANGE.first_col,
             GOLDEN_RANGE.last_col,
             GOLDEN_RANGE.first_row,
@@ -88,7 +91,7 @@ fn png_hash_goldens_match() {
         .collect();
     assert_eq!(
         expected, rendered,
-        "PNG goldens differ (rerun with UPDATE_GOLDENS=1 after reviewing)"
+        "pixel goldens differ (rerun with UPDATE_GOLDENS=1 after reviewing)"
     );
 }
 

@@ -84,7 +84,7 @@ one of nine closed `Warning` variants, and any warning at all downgrades
 ## Fonts
 
 Subset Carlito Regular and Bold, 149,492 bytes for the pair, compiled in. No
-system fonts are ever loaded, which is what makes the PNG goldens reproducible
+system fonts are ever loaded, which is what makes the pixel goldens reproducible
 across machines and across native and wasm32. A codepoint outside the subset
 draws a visible `.notdef` box and raises `font_substituted` — it is never
 dropped. See `assets/README.md` for the licence and the `pyftsubset` command.
@@ -119,14 +119,32 @@ context. `Fast` is roughly 8x quicker and 5x larger.
 cargo test -p agent-spreadsheet-render --config 'build.rustc-wrapper=""'
 ```
 
-* `tests/goldens.rs` — a scene JSON golden and a PNG sha256 golden per fixture.
-  Regenerate with `UPDATE_GOLDENS=1`; inspect with `DUMP_PNG_DIR=/some/dir`.
+* `tests/goldens.rs` — a scene JSON golden and a pixel sha256 golden per
+  fixture. Regenerate with `UPDATE_GOLDENS=1`; inspect with
+  `DUMP_PNG_DIR=/some/dir`.
 * `tests/determinism.rs` — every fixture rendered twice in one process and once
   more in a freshly spawned process, with all three hashes required to agree.
 * `tests/text_shape.rs` — the multi-contour glyph golden and the `.notdef` path.
 * `tests/warnings.rs` — one test per warning variant.
 * `tests/fixtures/generate.py` — regenerates the fixtures the bake-off corpus
   does not cover.
+
+### Why the goldens hash pixels, not PNG bytes
+
+The renderer is deterministic. The PNG *container* is not, across builds: the
+compressed stream depends on which deflate backend `flate2` resolves to, and
+Cargo decides that by unifying features across the whole build. The same
+fixture encodes to different PNG bytes under `cargo test -p
+agent-spreadsheet-render` than under `cargo test --workspace`, with
+pixel-identical output both times, because the workspace build pulls in a crate
+that turns on flate2's zlib backend.
+
+So the goldens pin the decoded RGBA buffer and the image size, which is what
+this crate actually determines, and `determinism.rs` additionally requires the
+PNG bytes to be identical across runs and across processes *within* one build.
+A practical consequence worth knowing: content-addressed screenshot artifacts
+are stable within a deployment, not necessarily across two builds with
+different flate2 backends.
 
 ## Provenance
 

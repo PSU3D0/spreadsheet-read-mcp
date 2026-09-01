@@ -125,6 +125,35 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+/// Decode a PNG back to its raw RGBA buffer.
+///
+/// Goldens hash this, not the PNG container. The container's compressed
+/// stream depends on which deflate backend `flate2` resolves to, and that is
+/// decided by Cargo feature unification across the whole build: rendering the
+/// same fixture under `cargo test -p agent-spreadsheet-render` and under
+/// `cargo test --workspace` produced pixel-identical images with entirely
+/// different PNG bytes, because the workspace build pulls in a crate that
+/// turns on flate2's zlib backend. The renderer is deterministic; the zlib
+/// stream is not something the renderer decides.
+pub fn decode_pixels(png_bytes: &[u8]) -> Vec<u8> {
+    let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
+    let mut reader = decoder.read_info().expect("golden PNG decodes");
+    let mut buffer = vec![0; reader.output_buffer_size().unwrap()];
+    let info = reader.next_frame(&mut buffer).expect("golden PNG frame");
+    buffer.truncate(info.buffer_size());
+    buffer
+}
+
+/// The stable identity of a render: the pixels and their dimensions.
+pub fn pixel_signature(output: &RenderOutput) -> String {
+    format!(
+        "{} {}x{}",
+        sha256_hex(&decode_pixels(&output.png)),
+        output.width,
+        output.height
+    )
+}
+
 /// Set `UPDATE_GOLDENS=1` to rewrite the checked-in goldens.
 pub fn updating() -> bool {
     std::env::var("UPDATE_GOLDENS").is_ok_and(|v| v == "1")

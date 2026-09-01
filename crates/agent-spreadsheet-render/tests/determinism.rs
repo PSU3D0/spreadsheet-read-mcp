@@ -17,10 +17,13 @@ mod common;
 
 use std::process::Command;
 
-use common::{FIXTURES, render_fixture, sha256_hex};
+use common::{FIXTURES, pixel_signature, render_fixture, sha256_hex};
 
 const CHILD_ENV: &str = "RENDER_DETERMINISM_CHILD";
 
+/// Pixel identity plus PNG-byte identity. Within one build the deflate
+/// backend is fixed, so both must hold; across builds only the pixels are a
+/// promise (see `goldens.rs`).
 fn hashes() -> Vec<(String, String)> {
     FIXTURES
         .iter()
@@ -29,10 +32,9 @@ fn hashes() -> Vec<(String, String)> {
             (
                 name.to_string(),
                 format!(
-                    "{} {}x{}",
-                    sha256_hex(&output.png),
-                    output.width,
-                    output.height
+                    "{} png:{}",
+                    pixel_signature(&output),
+                    sha256_hex(&output.png)
                 ),
             )
         })
@@ -41,6 +43,7 @@ fn hashes() -> Vec<(String, String)> {
 
 #[test]
 fn two_renders_in_one_process_are_byte_identical() {
+    // Covers both the pixels and the encoded PNG bytes.
     let first = hashes();
     let second = hashes();
     assert_eq!(

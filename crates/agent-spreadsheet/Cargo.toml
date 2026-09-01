@@ -79,6 +79,7 @@ base64 = { version = "0.22", optional = true }
 async-trait = { version = "0.1", optional = true }
 uuid = { version = "1.10", features = ["v4", "js"], optional = true }
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
+agent-spreadsheet-render = { version = "0.14.0", path = "../agent-spreadsheet-render", optional = true }
 quick-xml = { version = "0.31", optional = true }
 xxhash-rust = { version = "0.8", features = ["xxh64"], optional = true }
 tempfile = "3.10"
@@ -93,10 +94,13 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 formualizer = { version = "0.8.4", default-features = false, features = ["js-runtime"], optional = true }
 
 [features]
-default = ["recalc-formualizer"]
+default = ["recalc-formualizer", "render"]
 recalc = ["async-trait", "uuid", "quick-xml", "xxhash-rust", "image", "base64"]
 recalc-formualizer = ["recalc", "dep:formualizer"]
 recalc-libreoffice = ["recalc"]
+# The native raster screenshot backend. Compiling it in is what makes
+# `screenshot_rendering` available without LibreOffice.
+render = ["dep:agent-spreadsheet-render"]
 
 [dev-dependencies]
 assert_cmd = "2.0"
