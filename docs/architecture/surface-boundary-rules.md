@@ -45,12 +45,12 @@ Primary adapter boundary:
 Primary adapter boundary:
 - `crates/agent-spreadsheet-wasm/**`
 
-### 5) SDK is transport/backend abstraction, not a semantics fork
+### 5) SDK is a programmatic object model over canonical runtimes, not a semantics fork
 
-- SDK backends expose `execute(operation, input)` with canonical request/response JSON.
-- Typed convenience methods are generated/thin wrappers over `execute`.
-- SDK must not hand-normalize canonical response semantics, fabricate unsupported success, or advertise capabilities not registered by its backend.
-- Backend-specific concerns are resource creation/export, transport, and explicit capabilities.
+- Every SDK runtime exposes `canonical.execute(operation, input)` with canonical request/response JSON; workbook, fork, and view objects are generated or thin wrappers over it that only inject resource identity and tracked revisions.
+- The SDK has exactly two runtimes: local (WASM byte sessions) and server (the canonical `/v1` HTTP route on the MCP server process). It is not an MCP client; MCP hosts use an MCP client.
+- SDK must not hand-normalize canonical response semantics, fabricate unsupported success, or advertise operations not listed by its live runtime.
+- Runtime-specific concerns are resource creation/export, transport, error status projection, image bytes for screenshots, and explicit capabilities.
 
 Primary adapter boundary:
 - `npm/agent-spreadsheet-sdk/**`
