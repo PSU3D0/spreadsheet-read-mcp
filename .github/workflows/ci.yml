@@ -114,13 +114,19 @@ jobs:
       - name: Install wasm-pack
         run: command -v wasm-pack >/dev/null || cargo install wasm-pack --locked
 
+      - name: Build the MCP server for the SDK server-runtime integration
+        run: cargo build --locked -p agent-spreadsheet-mcp
+
       - name: Run SDK tests and generated WASM integration
         run: |
           npm install --ignore-scripts --package-lock=false
           npm test
           node scripts/run-generated-wasm-integration.js
+          npm run test:server
           npm pack --dry-run
         working-directory: npm/agent-spreadsheet-sdk
+        env:
+          SPREADSHEET_MCP_BINARY: ${{ github.workspace }}/target/debug/agent-spreadsheet-mcp
 
       - name: Run parity harness
         run: node scripts/parity-harness.js
