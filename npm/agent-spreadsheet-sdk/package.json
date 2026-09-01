@@ -55,8 +55,7 @@
     "generate:registry": "node scripts/generate-canonical-registry.js",
     "generate:types": "node scripts/generate-types.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "pretest": "npm run build && npm run typecheck",
-    "test": "node --test",
+    "test": "npm run build && npm run typecheck && node --test",
     "test:wasm": "node scripts/run-generated-wasm-integration.js",
     "test:browser": "node scripts/run-generated-wasm-browser.js",
     "test:server": "node --test test/server-runtime.integration.test.js"

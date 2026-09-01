@@ -63,6 +63,13 @@ test("client-level operations post to /v1/op and return the envelope", async () 
   })
 })
 
+test("listForks reaches the durable fork registry from the client", async () => {
+  const { fake, client } = connect()
+  const forks = await client.listForks()
+  assert.equal(forks.operation, "list_forks")
+  assert.deepEqual(fake.state.calls[0], { operation: "list_forks", input: {}, method: "POST" })
+})
+
 test("a remote workbook is a non-owning read handle that tracks its revision", async () => {
   const { fake, client } = connect()
   const workbook = client.workbook("wb:wb-1")

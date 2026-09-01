@@ -308,6 +308,17 @@ export class ServerClient extends GeneratedClientSurface {
     this.#runtime.refresh()
   }
 
+  /**
+   * Durable forks this process is holding.
+   *
+   * `list_forks` takes no resource and is client-level in practice, but the registry
+   * classifies it as durable orchestration, so it is written here rather than
+   * generated into the shared client surface.
+   */
+  listForks(input: InputOf<"list_forks"> = {}): Promise<OutputOf<"list_forks">> {
+    return executeCanonical(this.#runtime, "list_forks", input as Record<string, unknown>)
+  }
+
   /** A non-owning read handle on a workspace workbook. */
   workbook(resourceId: string, revisionId?: string): RemoteWorkbook {
     if (typeof resourceId !== "string" || resourceId.length === 0) {

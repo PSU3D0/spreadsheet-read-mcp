@@ -11,6 +11,7 @@ const DEFAULT_OPERATIONS = [
   "recalculate",
   "verify_workbook",
   "create_fork",
+  "list_forks",
   "get_changes",
   "checkpoint",
   "staged_change",
