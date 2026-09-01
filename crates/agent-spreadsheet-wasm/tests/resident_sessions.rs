@@ -42,7 +42,10 @@ async fn reads_after_a_write_observe_the_new_revision_and_values() {
     let session = api.create_session(WORKBOOK).expect("session");
 
     let before = read_a1(&api, &session).await;
-    let revision_before = before["revision_id"].as_str().expect("revision").to_string();
+    let revision_before = before["revision_id"]
+        .as_str()
+        .expect("revision")
+        .to_string();
     assert!(
         !serde_json::to_string(&before["data"])
             .unwrap()
@@ -66,7 +69,10 @@ async fn reads_after_a_write_observe_the_new_revision_and_values() {
     )
     .await;
     assert_eq!(written["data"]["status"], json!("applied"));
-    let revision_after = written["revision_id"].as_str().expect("revision").to_string();
+    let revision_after = written["revision_id"]
+        .as_str()
+        .expect("revision")
+        .to_string();
     assert_ne!(revision_before, revision_after);
 
     // Three consecutive reads all have to see post-write state, not a stale
@@ -94,7 +100,10 @@ async fn reads_after_a_compatibility_mutation_observe_the_new_values() {
     let session = api.create_session(WORKBOOK).expect("session");
 
     let before = read_a1(&api, &session).await;
-    let revision_before = before["revision_id"].as_str().expect("revision").to_string();
+    let revision_before = before["revision_id"]
+        .as_str()
+        .expect("revision")
+        .to_string();
 
     api.transform_batch(
         &session,
