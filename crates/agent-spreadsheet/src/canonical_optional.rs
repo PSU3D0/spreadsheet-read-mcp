@@ -1111,7 +1111,9 @@ fn resolve_backend(requested: Option<ScreenshotBackend>) -> ScreenshotBackend {
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+// Only the native path applies this default; the LibreOffice path gets its own
+// from `tools::fork`.
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc", feature = "render"))]
 const DEFAULT_SCREENSHOT_RANGE: &str = "A1:M40";
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
