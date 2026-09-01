@@ -34,6 +34,7 @@
   "scripts": {
     "generate:registry": "node scripts/generate-canonical-registry.js",
     "test": "node --test",
+    "build:wasm:web": "node ../../scripts/build-wasm-package.js --target web --profile wasm-release --no-opt --out-dir ../../target/sdk-wasm-web",
     "test:browser": "node scripts/run-generated-wasm-browser.js"
   },
   "peerDependencies": {

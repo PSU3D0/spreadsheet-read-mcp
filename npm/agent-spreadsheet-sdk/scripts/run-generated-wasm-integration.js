@@ -8,13 +8,19 @@ const packageRoot = path.resolve(__dirname, "..")
 const repositoryRoot = path.resolve(packageRoot, "..", "..")
 const outputDirectory = path.join(repositoryRoot, "target", "sdk-wasm-node")
 
+// Default to the profile the package actually ships. `dev` is available for a
+// fast local loop; `wasm-opt` is skipped here because the size gate owns it and
+// it costs minutes without adding behavioural coverage.
+const profile = process.env.AGENT_SPREADSHEET_WASM_PROFILE || "wasm-release"
+const optimize = process.env.AGENT_SPREADSHEET_WASM_OPT === "1"
+
 fs.rmSync(outputDirectory, { recursive: true, force: true })
-const build = spawnSync("wasm-pack", [
-  "build",
-  "crates/agent-spreadsheet-wasm",
+const build = spawnSync(process.execPath, [
+  path.join(repositoryRoot, "scripts", "build-wasm-package.js"),
   "--target", "nodejs",
-  "--dev",
-  "--out-dir", outputDirectory
+  "--profile", profile,
+  "--out-dir", outputDirectory,
+  ...(optimize ? [] : ["--no-opt"])
 ], {
   cwd: repositoryRoot,
   encoding: "utf8",

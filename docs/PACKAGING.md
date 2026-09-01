@@ -5,7 +5,7 @@
 | Surface | Crate name | npm name | Binary name |
 | --- | --- | --- | --- |
 | Core primitives | `agent-spreadsheet` | — | — |
-| WASM adapter/runtime | `agent-spreadsheet-wasm` | `agent-spreadsheet-wasm` (planned distribution package) | — |
+| WASM adapter/runtime | `agent-spreadsheet-wasm` | `agent-spreadsheet-wasm` | — |
 | MCP server | `agent-spreadsheet-mcp` | — | `agent-spreadsheet-mcp` |
 | CLI | `agent-spreadsheet` | `agent-spreadsheet` | `agent-spreadsheet` |
 | JS SDK backend abstraction | — | `agent-spreadsheet-sdk` | — |
@@ -23,7 +23,7 @@ The workspace umbrella name is **agent-spreadsheet**. The GitHub repo is `PSU3D0
 Release ordering for tranche-35 surfaces:
 
 1. publish core crates in dependency order (`agent-spreadsheet` → `agent-spreadsheet-wasm` → `agent-spreadsheet-mcp`)
-2. publish npm packages (`agent-spreadsheet`, `agent-spreadsheet-sdk`, and `agent-spreadsheet-wasm` when enabled)
+2. publish npm packages (`agent-spreadsheet`, `agent-spreadsheet-sdk`, `agent-spreadsheet-wasm`)
 3. run smoke tests against SDK MCP + WASM backends before final release promotion
 
 ### Tag lanes
@@ -31,6 +31,7 @@ Release ordering for tranche-35 surfaces:
 - `vX.Y.Z` → Rust release lane (GitHub release assets + crates publish)
 - `cli-vX.Y.Z` → npm `agent-spreadsheet` publish lane
 - `sdk-vX.Y.Z` → npm `agent-spreadsheet-sdk` publish lane
+- `wasm-vX.Y.Z` → npm `agent-spreadsheet-wasm` publish lane (`.github/workflows/publish-npm-wasm.yml`); version tracks the SDK line
 
 ### npm dist-tag policy
 
@@ -69,7 +70,7 @@ WASM + SDK artifacts are published as package artifacts:
 | --- | --- |
 | crate `agent-spreadsheet-wasm` | Rust/WASM adapter crate |
 | npm `agent-spreadsheet-sdk` | JS SDK backend abstraction |
-| npm `agent-spreadsheet-wasm` (planned) | JS/WASM runtime distribution |
+| npm `agent-spreadsheet-wasm` | JS/WASM runtime distribution (`--target web` bundle + loader) |
 
 ## Default features
 
@@ -107,3 +108,48 @@ Override download source with `AGENT_SPREADSHEET_DOWNLOAD_BASE_URL`. Use a pre-b
 | `crates/agent-spreadsheet/README.md` | CLI users | `agent-spreadsheet` binary usage and command surface |
 | `npm/agent-spreadsheet/README.md` | npm CLI users | Install, platform matrix, troubleshooting, env vars |
 | `npm/agent-spreadsheet-sdk/README.md` | npm SDK users | Backend abstraction, capabilities, typed errors |
+
+## WASM build lane
+
+The npm `agent-spreadsheet-wasm` package ships the `--target web` wasm-bindgen
+output plus a loader (`createWasmRuntime`) that reads the `.wasm` from disk on
+Node 18+ and fetches it in browsers. `pkg/` is generated; run
+`npm run build` in `npm/agent-spreadsheet-wasm` to refresh it.
+
+### Profile
+
+Size settings live in the workspace `[profile.wasm-release]`
+(`opt-level = "z"`, `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`,
+`strip = true`). Cargo has no per-target profiles, so this is a **custom**
+profile rather than a change to `release`: the native `release` profile still
+builds the GitHub release binaries at cargo defaults, with unwinding intact and
+no fat-LTO link cost.
+
+Build with `node scripts/build-wasm-package.js --target web|nodejs
+--profile wasm-release`. That wrapper drives `wasm-pack --no-opt` and then runs
+`wasm-opt` itself, because binaryen releases up to 117 reject the WebAssembly
+features rustc now emits by default unless `--enable-bulk-memory` and friends
+are passed explicitly. Set `WASM_OPT=/path/to/wasm-opt` if it is not on `PATH`;
+the wrapper also finds the copy wasm-pack downloads into `~/.cache/.wasm-pack`.
+
+### Features
+
+The core crate carves host-only dependencies out of the wasm32 build:
+
+| Feature | Pulls in | Needed by |
+| --- | --- | --- |
+| `cli` | clap, serde_yaml, tracing-subscriber | `asp`, `agent-spreadsheet`, `agent-spreadsheet-mcp` |
+| `native-fs` | tempfile, walkdir, globset | path workspace discovery, fork/staging temp files |
+| `sheetport` | `formualizer/sheetport` (→ sheetport-spec) | SheetPort manifest operations |
+| `recalc-libreoffice` | image, png | screenshot post-processing |
+
+All four are in the core crate's `default` feature set. `agent-spreadsheet-wasm`
+depends on the core crate with `default-features = false` and only
+`recalc-formualizer`, so none of them reach the browser bundle.
+
+### Size gate
+
+`wasm-size-budget.json` records the raw and brotli ceilings for the release web
+bundle; `node scripts/check-wasm-size.js` builds and enforces them, and the
+`wasm-size-gate` CI job runs it on every PR. Ceilings ratchet down — raising one
+needs a reason in the commit message.

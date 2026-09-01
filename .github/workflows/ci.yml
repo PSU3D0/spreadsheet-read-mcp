@@ -157,13 +157,97 @@ jobs:
         working-directory: npm/agent-spreadsheet-sdk
 
       - name: Build web WASM package
-        run: wasm-pack build crates/agent-spreadsheet-wasm --target web --dev --out-dir "$PWD/target/sdk-wasm-web"
+        run: |
+          node scripts/build-wasm-package.js \
+            --target web --profile wasm-release --no-opt \
+            --out-dir "$PWD/target/sdk-wasm-web"
 
       - name: Run actual-browser WASM integration
         env:
           CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
         run: npm run test:browser
         working-directory: npm/agent-spreadsheet-sdk
+
+  wasm-size-gate:
+    name: WASM Size Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: wasm32-unknown-unknown
+
+      - name: Cache Cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-wasm-size-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install wasm-pack
+        run: command -v wasm-pack >/dev/null || cargo install wasm-pack --locked
+
+      - name: Install binaryen
+        run: |
+          set -euo pipefail
+          version=version_123
+          curl --fail --location --silent --show-error \
+            "https://github.com/WebAssembly/binaryen/releases/download/${version}/binaryen-${version}-x86_64-linux.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP"
+          echo "WASM_OPT=$RUNNER_TEMP/binaryen-${version}/bin/wasm-opt" >> "$GITHUB_ENV"
+
+      - name: Check release web bundle against the size budget
+        run: node scripts/check-wasm-size.js
+
+  wasm-npm-package:
+    name: WASM npm package smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: wasm32-unknown-unknown
+
+      - name: Cache Cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-wasm-npm-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install wasm-pack
+        run: command -v wasm-pack >/dev/null || cargo install wasm-pack --locked
+
+      - name: Build and smoke test the npm package
+        run: |
+          npm run build
+          npm test
+          npm pack --dry-run
+        working-directory: npm/agent-spreadsheet-wasm
 
   docker-integration:
     name: Docker Integration Tests
