@@ -4,7 +4,7 @@ const test = require("node:test")
 const {
   executeStatelessByteOperation,
   validateStatelessByteRequest
-} = require("agent-spreadsheet-sdk/stateless-byte-adapter")
+} = require("agent-spreadsheet-sdk/compat")
 
 function backend(status = "applied") {
   const state = { created: [], disposed: [], request: null }

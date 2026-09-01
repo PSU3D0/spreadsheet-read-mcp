@@ -4,14 +4,14 @@ const { spawnSync } = require("node:child_process")
 const path = require("node:path")
 
 const REPO_ROOT = path.resolve(__dirname, "..")
-const SDK_TEST_PATH = path.join(REPO_ROOT, "npm/agent-spreadsheet-sdk/test/backend.test.js")
+const SDK_TEST_PATH = path.join(REPO_ROOT, "npm/agent-spreadsheet-sdk/test/compat/backend.test.js")
 
 const CHECKS = [
   {
     id: "basic-read-parity",
     surfaces: ["core", "wasm", "mcp", "sdk"],
     status: "automated",
-    note: "SDK backend shared-method parity (MCP wrapper vs WASM wrapper)",
+    note: "Deprecated 0.14 backend shared-method parity (agent-spreadsheet-sdk/compat)",
     runner: "sdk-backend-tests"
   },
   {

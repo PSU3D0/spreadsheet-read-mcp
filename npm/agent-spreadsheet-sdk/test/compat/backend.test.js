@@ -7,7 +7,7 @@ const {
   CapabilityError,
   CANONICAL_REGISTRY,
   OPERATION_NAMES
-} = require("../src")
+} = require("agent-spreadsheet-sdk/compat")
 
 function canonicalTool(operation, markerOperation = operation) {
   return {

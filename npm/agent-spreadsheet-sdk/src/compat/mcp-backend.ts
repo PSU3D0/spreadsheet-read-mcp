@@ -1,5 +1,8 @@
-const { createCapabilities } = require("./capabilities")
-const {
+/* Legacy 0.14 MCP backend and method layer. Dropped from the 0.15 object model:
+ * MCP hosts use an MCP client, and the SDK speaks the canonical HTTP route instead. */
+
+import { createCapabilities, type LegacyCapabilities } from "./capabilities.js"
+import {
   declaredOperations,
   discoveredOperations,
   discoveredCanonicalTools,
@@ -7,10 +10,10 @@ const {
   installCanonicalMethods,
   projectData,
   legacyResourceId
-} = require("./backend")
-const { CapabilityError, SpreadsheetSdkError } = require("./errors")
+} from "./backend.js"
+import { CapabilityError, SpreadsheetSdkError } from "./errors.js"
 
-function snakeCaseInput(value) {
+function snakeCaseInput(value: any): any {
   if (Array.isArray(value)) return value.map(snakeCaseInput)
   if (!value || typeof value !== "object") return value
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [
@@ -19,7 +22,7 @@ function snakeCaseInput(value) {
   ]))
 }
 
-function withResource(backend, input, mutation = false) {
+function withResource(backend: any, input: any, mutation = false): any {
   const result = snakeCaseInput(input)
   delete result.workbook_id
   delete result.fork_id
@@ -28,7 +31,7 @@ function withResource(backend, input, mutation = false) {
   return result
 }
 
-const LEGACY_METHODS = {
+const LEGACY_METHODS: Record<string, [string, (backend: any, input: any) => any]> = {
   describeWorkbook: ["describe_workbook", withResource],
   namedRanges: ["named_ranges", withResource],
   sheetOverview: ["sheet_overview", withResource],
@@ -36,7 +39,7 @@ const LEGACY_METHODS = {
   readTable: ["read_table", withResource],
   findValue: ["search_values", withResource],
   gridExport: ["export_grid", withResource],
-  createFork: ["create_fork", (backend, input) => {
+  createFork: ["create_fork", (backend: any, input: any) => {
     const source = input.resource_id || input.workbookOrForkId || input.workbook_or_fork_id ||
       input.workbookId || input.workbook_id || input.contextId || input.context_id
     const resourceId = legacyResourceId(backend.kind, {
@@ -49,20 +52,20 @@ const LEGACY_METHODS = {
       expected_revision: input.expectedRevision ?? input.expected_revision
     }
   }],
-  listForks: ["list_forks", (_, input) => snakeCaseInput(input)],
-  saveFork: ["export_fork", (backend, input) => withResource(backend, input, true)],
-  discardFork: ["discard_fork", (backend, input) => withResource(backend, input, true)],
-  listStagedChanges: ["staged_change", (backend, input) => ({ ...withResource(backend, input, true), action: "list" })],
-  applyStagedChange: ["staged_change", (backend, input) => ({ ...withResource(backend, input, true), action: "apply" })],
-  discardStagedChange: ["staged_change", (backend, input) => ({ ...withResource(backend, input, true), action: "discard" })],
-  rangeValues: ["read_cells", (backend, input) => ({
+  listForks: ["list_forks", (_: any, input: any) => snakeCaseInput(input)],
+  saveFork: ["export_fork", (backend: any, input: any) => withResource(backend, input, true)],
+  discardFork: ["discard_fork", (backend: any, input: any) => withResource(backend, input, true)],
+  listStagedChanges: ["staged_change", (backend: any, input: any) => ({ ...withResource(backend, input, true), action: "list" })],
+  applyStagedChange: ["staged_change", (backend: any, input: any) => ({ ...withResource(backend, input, true), action: "apply" })],
+  discardStagedChange: ["staged_change", (backend: any, input: any) => ({ ...withResource(backend, input, true), action: "discard" })],
+  rangeValues: ["read_cells", (backend: any, input: any) => ({
     resource_id: legacyResourceId(backend.kind, input),
     sheet_name: input.sheetName || input.sheet_name,
     selection: { kind: "range", ranges: Array.isArray(input.ranges) ? input.ranges : [input.ranges] },
     include_formulas: input.includeFormulas ?? input.include_formulas,
     format: input.format
   })],
-  sheetPage: ["read_cells", (backend, input) => ({
+  sheetPage: ["read_cells", (backend: any, input: any) => ({
     resource_id: legacyResourceId(backend.kind, input),
     sheet_name: input.sheetName || input.sheet_name,
     selection: {
@@ -77,18 +80,18 @@ const LEGACY_METHODS = {
     include_styles: input.includeStyles ?? input.include_styles,
     format: input.format
   })],
-  transformBatch: ["write", (backend, input) => ({
+  transformBatch: ["write", (backend: any, input: any) => ({
     resource_id: legacyResourceId(backend.kind, input, true),
     expected_revision: input.expectedRevision ?? input.expected_revision,
     mode: input.options?.dryRun ? "preview" : (input.mode || "apply"),
     atomic: input.atomic,
     ops: snakeCaseInput(input.ops || [])
   })],
-  structureBatch: ["write", (backend, input) => ({
+  structureBatch: ["write", (backend: any, input: any) => ({
     ...withResource(backend, input, true),
     ops: snakeCaseInput(input.ops || [])
   })],
-  replaceInFormulas: ["write", (backend, input) => ({
+  replaceInFormulas: ["write", (backend: any, input: any) => ({
     resource_id: legacyResourceId(backend.kind, input, true),
     expected_revision: input.expectedRevision ?? input.expected_revision,
     mode: input.options?.dryRun ? "preview" : (input.mode || "apply"),
@@ -102,15 +105,15 @@ const LEGACY_METHODS = {
       case_sensitive: input.caseSensitive ?? input.case_sensitive ?? true
     }]
   })],
-  defineName: ["write", (backend, input) => nameWrite(backend, input, "define_name")],
-  updateName: ["write", (backend, input) => nameWrite(backend, input, "update_name")],
-  deleteName: ["write", (backend, input) => nameWrite(backend, input, "delete_name")],
+  defineName: ["write", (backend: any, input: any) => nameWrite(backend, input, "define_name")],
+  updateName: ["write", (backend: any, input: any) => nameWrite(backend, input, "update_name")],
+  deleteName: ["write", (backend: any, input: any) => nameWrite(backend, input, "delete_name")],
   verifyWorkbook: ["verify_workbook", verifyInput],
-  verifyTargets: ["verify_workbook", (backend, input) => ({ ...verifyInput(backend, input), targets_only: true })],
-  verifyErrors: ["verify_workbook", (backend, input) => ({ ...verifyInput(backend, input), errors_only: true })]
+  verifyTargets: ["verify_workbook", (backend: any, input: any) => ({ ...verifyInput(backend, input), targets_only: true })],
+  verifyErrors: ["verify_workbook", (backend: any, input: any) => ({ ...verifyInput(backend, input), errors_only: true })]
 }
 
-function nameWrite(backend, input, kind) {
+function nameWrite(backend: any, input: any, kind: string): any {
   return {
     resource_id: legacyResourceId(backend.kind, input, true),
     expected_revision: input.expectedRevision ?? input.expected_revision,
@@ -125,7 +128,7 @@ function nameWrite(backend, input, kind) {
   }
 }
 
-function verifyInput(backend, input) {
+function verifyInput(backend: any, input: any): any {
   const current = input.currentResourceId || input.current_resource_id || input.currentWorkbookOrForkId || input.current_workbook_or_fork_id || input.currentId || input.current_id
   const baseline = input.baselineResourceId || input.baseline_resource_id || input.baselineWorkbookOrForkId || input.baseline_workbook_or_fork_id || input.baselineId || input.baseline_id
   const prefix = backend.kind === "wasm" ? "session" : "fork"
@@ -140,8 +143,17 @@ function verifyInput(backend, input) {
   }
 }
 
-class McpBackend {
-  constructor(params) {
+/** @deprecated The MCP client adapter was dropped in 0.15; use an MCP client, or `connectSpreadsheetServer`. */
+export class McpBackend {
+  kind: string
+  private _transport: any
+  private _supportedOperations: string[] | null
+  private _operationSet: Set<string>
+  private _capabilities: LegacyCapabilities
+  private _initialization: Promise<LegacyCapabilities> | null;
+  [method: string]: any
+
+  constructor(params: any) {
     if (!params || !params.transport || typeof params.transport !== "object") {
       throw new SpreadsheetSdkError("McpBackend requires a transport object", {
         code: "INVALID_ARGUMENT",
@@ -166,7 +178,7 @@ class McpBackend {
     return this._capabilities
   }
 
-  _setOperations(operations) {
+  _setOperations(operations: string[]) {
     this._operationSet = new Set(operations)
     this._capabilities = createCapabilities(this.kind, operations, {
       transport: "mcp",
@@ -209,7 +221,7 @@ class McpBackend {
     return this._setOperations(operations)
   }
 
-  async execute(operation, input = {}) {
+  async execute(operation: string, input: any = {}) {
     await this.initialize()
     requireOperation(this, operation)
     if (!input || typeof input !== "object" || Array.isArray(input)) {
@@ -246,18 +258,19 @@ class McpBackend {
   }
 }
 
-function isCanonicalInput(operation, input) {
+function isCanonicalInput(operation: string, input: any): boolean {
   return operation !== "list_forks" &&
     input && typeof input === "object" && !Array.isArray(input) &&
     Object.prototype.hasOwnProperty.call(input, "resource_id")
 }
 
-function installLegacyMethods(Backend) {
+/** @deprecated The 0.13/0.14 camel-case method projections. */
+export function installLegacyMethods(Backend: any): void {
   for (const [method, [operation, mapInput]] of Object.entries(LEGACY_METHODS)) {
     const collidesWithCanonicalMethod = Object.prototype.hasOwnProperty.call(Backend.prototype, method)
     Object.defineProperty(Backend.prototype, method, {
       configurable: true,
-      value(input = {}) {
+      value(this: any, input: any = {}) {
         if (collidesWithCanonicalMethod && isCanonicalInput(operation, input)) {
           return this.execute(operation, input)
         }
@@ -269,5 +282,3 @@ function installLegacyMethods(Backend) {
 
 installCanonicalMethods(McpBackend)
 installLegacyMethods(McpBackend)
-
-module.exports = { McpBackend, installLegacyMethods }

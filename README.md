@@ -23,9 +23,9 @@ agent-spreadsheet ships a unified spreadsheet interaction layer across three sur
 | --- | --- | --- | --- |
 | **CLI** | `agent-spreadsheet` / `asp` | Stateless | One-shot reads, safe edits, pipelines, CI, agent tool calls |
 | **MCP server** | `agent-spreadsheet-mcp` | Stateful | Multi-turn agent sessions, workbook caching, fork/recalc workflows |
-| **JS SDK** | `agent-spreadsheet-sdk` | Library | App integrations — talks to the MCP server, or runs fully in-process via the embedded WASM engine (no server required) |
+| **TypeScript SDK** | `agent-spreadsheet-sdk` | Library | App integrations — drives the server's canonical `/v1` route, or runs fully in-process via the embedded WASM engine (no server required) |
 
-The WASM build (`agent-spreadsheet-wasm`) is the SDK's in-process backend, not a separate product surface: JS code targets the SDK API and the execution substrate (server vs embedded engine) is a configuration choice.
+The WASM build (`agent-spreadsheet-wasm`) is the SDK's local runtime, not a separate product surface: JS and TypeScript code targets one object model and the execution substrate (server vs embedded engine) is a configuration choice.
 
 Supported workbook modes:
 
