@@ -24,6 +24,9 @@ pub mod operations;
 pub mod read;
 #[cfg(feature = "recalc")]
 pub mod recalc;
+/// Native raster screenshot backend. Present only with the `render` feature.
+#[cfg(feature = "render")]
+pub mod render;
 pub mod repository;
 pub mod response_prune;
 pub mod rules;

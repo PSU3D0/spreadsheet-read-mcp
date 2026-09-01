@@ -853,6 +853,27 @@ pub async fn execute_sheetport(
     })
 }
 
+/// Which renderer to use. `native` is the in-process raster renderer; it needs
+/// no external process and is the default wherever it is compiled in.
+/// `libreoffice` is the legacy macro-to-PDF-to-PNG path and stays opt-in.
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreenshotBackend {
+    Native,
+    Libreoffice,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+impl ScreenshotBackend {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ScreenshotBackend::Native => "native",
+            ScreenshotBackend::Libreoffice => "libreoffice",
+        }
+    }
+}
+
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -866,10 +887,14 @@ pub struct ScreenshotSheetRequest {
         length(max = 32)
     )]
     pub range: Option<String>,
+    /// Defaults to `native` when the `render` feature is compiled in, and to
+    /// `libreoffice` otherwise.
+    #[serde(default)]
+    pub backend: Option<ScreenshotBackend>,
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactHandle {
     pub handle: String,
@@ -878,14 +903,63 @@ pub struct ArtifactHandle {
     pub media_type: String,
 }
 
+/// How faithful the render is. Mirrors `agent_spreadsheet_render::Fidelity`,
+/// and is `full` for the LibreOffice backend, which reports no warnings.
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreenshotFidelity {
+    Full,
+    Partial,
+}
+
+/// Structured account of what the renderer did not reproduce. A closed set:
+/// nothing unsupported disappears silently.
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreenshotWarning {
+    ConditionalFormatOmitted,
+    ChartOmitted,
+    ImageOmitted,
+    FontSubstituted,
+    RichTextFlattened,
+    NumberFormatApproximated,
+    FormulasUnevaluated,
+    TextRotationOmitted,
+    PatternFillApproximated,
+}
+
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScreenshotSheetData {
     pub sheet_name: String,
     pub range: String,
     pub artifact: ArtifactHandle,
     pub duration_ms: u64,
+    /// Renderer identity, e.g. `native-raster/1` or `libreoffice`. Additive:
+    /// older payloads without it deserialize to the LibreOffice default.
+    #[serde(default = "default_renderer")]
+    pub renderer: String,
+    #[serde(default = "default_fidelity")]
+    pub fidelity: ScreenshotFidelity,
+    #[serde(default)]
+    pub warnings: Vec<ScreenshotWarning>,
+    /// Calculation state at the rendered revision. Rendering never
+    /// recalculates, so this is how a caller learns whether what it is looking
+    /// at is current.
+    pub calculation: crate::model::CalculationMetadata,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+fn default_renderer() -> String {
+    "libreoffice".to_string()
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+fn default_fidelity() -> ScreenshotFidelity {
+    ScreenshotFidelity::Full
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
@@ -1026,19 +1100,141 @@ pub(crate) fn validate_screenshot_request(request: &ScreenshotSheetRequest) -> R
     Ok(())
 }
 
+/// The backend a request resolves to. Native wins by default wherever it is
+/// compiled in; an explicit `backend` always wins over the default.
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+fn resolve_backend(requested: Option<ScreenshotBackend>) -> ScreenshotBackend {
+    match requested {
+        Some(backend) => backend,
+        None if cfg!(feature = "render") => ScreenshotBackend::Native,
+        None => ScreenshotBackend::Libreoffice,
+    }
+}
+
+// Only the native path applies this default; the LibreOffice path gets its own
+// from `tools::fork`.
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc", feature = "render"))]
+const DEFAULT_SCREENSHOT_RANGE: &str = "A1:M40";
+
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 pub async fn screenshot_sheet(
     state: Arc<AppState>,
     request: ScreenshotSheetRequest,
 ) -> Result<ScreenshotSheetData> {
+    validate_screenshot_request(&request)?;
+    match resolve_backend(request.backend) {
+        ScreenshotBackend::Native => screenshot_sheet_native(state, request).await,
+        ScreenshotBackend::Libreoffice => screenshot_sheet_libreoffice(state, request).await,
+    }
+}
+
+/// Calculation state for the rendered revision, sourced exactly the way
+/// `read_cells` sources its own calculation block.
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+fn calculation_for(
+    state: &AppState,
+    workbook: &crate::workbook::WorkbookContext,
+) -> crate::model::CalculationMetadata {
+    state.calculation_metadata(
+        &workbook.id,
+        &workbook.revision_id,
+        workbook.calculation_metadata(),
+    )
+}
+
+/// In-process raster render. No subprocess, no temporary file: the bytes go
+/// straight into the same content-addressed artifact store the LibreOffice
+/// path writes to, so MCP artifact handling is unchanged.
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc", feature = "render"))]
+async fn screenshot_sheet_native(
+    state: Arc<AppState>,
+    request: ScreenshotSheetRequest,
+) -> Result<ScreenshotSheetData> {
+    let started = std::time::Instant::now();
+    let workbook_id = request.resource_id.to_workbook_id();
+    let workbook = state
+        .open_workbook(&workbook_id)
+        .await
+        .map_err(|_| anyhow!("screenshot rendering failed"))?;
+    let range = request
+        .range
+        .as_deref()
+        .unwrap_or(DEFAULT_SCREENSHOT_RANGE)
+        .to_string();
+    let rendered = crate::render::render_sheet(
+        &workbook,
+        &request.sheet_name,
+        &range,
+        crate::render::PngLevel::Balanced,
+    )
+    .map_err(|_| anyhow!("screenshot rendering failed"))?;
+    let artifact = persist_png_artifact(&state.config().workspace_root, &rendered.png)
+        .map_err(|_| anyhow!("screenshot artifact persistence failed"))?;
+    Ok(ScreenshotSheetData {
+        sheet_name: request.sheet_name,
+        range,
+        artifact,
+        duration_ms: started.elapsed().as_millis() as u64,
+        renderer: rendered.report.renderer.clone(),
+        fidelity: match rendered.report.fidelity {
+            crate::render::Fidelity::Full => ScreenshotFidelity::Full,
+            crate::render::Fidelity::Partial => ScreenshotFidelity::Partial,
+        },
+        warnings: rendered
+            .report
+            .warnings
+            .iter()
+            .map(|warning| map_render_warning(*warning))
+            .collect(),
+        calculation: calculation_for(&state, &workbook),
+    })
+}
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    feature = "recalc",
+    not(feature = "render")
+))]
+async fn screenshot_sheet_native(
+    _state: Arc<AppState>,
+    _request: ScreenshotSheetRequest,
+) -> Result<ScreenshotSheetData> {
+    bail!(
+        "invalid request: the native screenshot backend is not compiled in (build with the `render` feature)"
+    )
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc", feature = "render"))]
+fn map_render_warning(warning: crate::render::Warning) -> ScreenshotWarning {
+    use crate::render::Warning as W;
+    match warning {
+        W::ConditionalFormatOmitted => ScreenshotWarning::ConditionalFormatOmitted,
+        W::ChartOmitted => ScreenshotWarning::ChartOmitted,
+        W::ImageOmitted => ScreenshotWarning::ImageOmitted,
+        W::FontSubstituted => ScreenshotWarning::FontSubstituted,
+        W::RichTextFlattened => ScreenshotWarning::RichTextFlattened,
+        W::NumberFormatApproximated => ScreenshotWarning::NumberFormatApproximated,
+        W::FormulasUnevaluated => ScreenshotWarning::FormulasUnevaluated,
+        W::TextRotationOmitted => ScreenshotWarning::TextRotationOmitted,
+        W::PatternFillApproximated => ScreenshotWarning::PatternFillApproximated,
+    }
+}
+
+/// The legacy macro-to-PDF-to-PNG path, unchanged except that it now reports
+/// its renderer identity and the calculation state alongside the artifact.
+#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+async fn screenshot_sheet_libreoffice(
+    state: Arc<AppState>,
+    request: ScreenshotSheetRequest,
+) -> Result<ScreenshotSheetData> {
     use std::fs;
 
-    validate_screenshot_request(&request)?;
     let screenshot_root = validate_screenshot_directory(&state)?;
+    let workbook_id = request.resource_id.to_workbook_id();
     let response = tools::fork::screenshot_sheet(
         state.clone(),
         tools::fork::ScreenshotSheetParams {
-            workbook_or_fork_id: request.resource_id.to_workbook_id(),
+            workbook_or_fork_id: workbook_id.clone(),
             sheet_name: request.sheet_name,
             range: request.range,
         },
@@ -1070,11 +1266,21 @@ pub async fn screenshot_sheet(
     let bytes = fs::read(&canonical).map_err(|_| anyhow!("screenshot rendering failed"))?;
     let artifact = persist_png_artifact(&state.config().workspace_root, &bytes)
         .map_err(|_| anyhow!("screenshot artifact persistence failed"))?;
+    let workbook = state
+        .open_workbook(&workbook_id)
+        .await
+        .map_err(|_| anyhow!("screenshot rendering failed"))?;
     Ok(ScreenshotSheetData {
         sheet_name: response.sheet_name,
         range: response.range,
         artifact,
         duration_ms: response.duration_ms,
+        renderer: ScreenshotBackend::Libreoffice.as_str().to_string(),
+        // LibreOffice renders the workbook itself, so it makes no claim about
+        // what it dropped; it reports no warnings rather than guessing.
+        fidelity: ScreenshotFidelity::Full,
+        warnings: Vec::new(),
+        calculation: calculation_for(&state, &workbook),
     })
 }
 

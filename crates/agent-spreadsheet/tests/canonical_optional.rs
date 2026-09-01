@@ -37,7 +37,9 @@ fn optional_execution_golden(case: &str) -> Value {
 fn optional_capabilities_are_not_advertised_when_unbacked() {
     let workspace = support::TestWorkspace::new();
     let actual = RuntimeCapabilities::from_state(&workspace.app_state());
-    assert!(!actual.screenshot_rendering);
+    // The native raster backend needs no host backing, so `render` alone backs
+    // the capability. Without it, the LibreOffice probe still governs.
+    assert_eq!(actual.screenshot_rendering, cfg!(feature = "render"));
     assert!(!actual.workbook_write);
 
     let none = RuntimeCapabilities::default();
@@ -725,7 +727,9 @@ async fn vba_cursor_is_bound_to_resource_even_when_workbook_bytes_match() {
 #[cfg(feature = "recalc")]
 #[tokio::test]
 async fn screenshot_validation_is_invalid_request_path_free_and_does_not_precreate() {
-    use agent_spreadsheet::canonical_optional::{ScreenshotSheetRequest, screenshot_sheet};
+    use agent_spreadsheet::canonical_optional::{
+        ScreenshotBackend, ScreenshotSheetRequest, screenshot_sheet,
+    };
 
     let workspace = support::TestWorkspace::new();
     let state = workspace.app_state();
@@ -735,6 +739,7 @@ async fn screenshot_validation_is_invalid_request_path_free_and_does_not_precrea
             resource_id: serde_json::from_value(json!("wb:abc")).unwrap(),
             sheet_name: "Sheet1".to_string(),
             range: Some("../secret".to_string()),
+            backend: None,
         },
     )
     .await
@@ -772,7 +777,7 @@ async fn screenshot_validation_is_invalid_request_path_free_and_does_not_precrea
     assert_eq!(invalid.error.code, CanonicalErrorCode::InvalidRequest);
     assert!(!invalid.error.message.contains('/'));
 
-    let unavailable = execute_operation_json(
+    let dispatched = execute_operation_json(
         state.clone(),
         "screenshot_sheet",
         json!({
@@ -781,21 +786,36 @@ async fn screenshot_validation_is_invalid_request_path_free_and_does_not_precrea
             "range": "A1:B2"
         }),
     )
-    .await
-    .expect_err("dispatch uses the bound state's actual capabilities");
-    assert_eq!(unavailable.error.code, CanonicalErrorCode::CapabilityUnavailable);
+    .await;
+    if cfg!(feature = "render") {
+        // The native backend needs no host backing, so dispatch renders.
+        let response = dispatched.expect("native backend renders without host backing");
+        assert_eq!(response.data["renderer"], "native-raster/1");
+        assert_eq!(response.data["artifact"]["media_type"], "image/png");
+        assert!(response.data["calculation"]["revision_id"].is_string());
+    } else {
+        let unavailable = dispatched.expect_err("dispatch uses the bound state's capabilities");
+        assert_eq!(
+            unavailable.error.code,
+            CanonicalErrorCode::CapabilityUnavailable
+        );
+    }
+    // Either way the LibreOffice output directory is never pre-created.
     assert!(!workspace.path("screenshots").exists());
 
+    // Explicitly asking for LibreOffice on a runtime with no LibreOffice
+    // backing still fails, and still says nothing about paths.
     let error = screenshot_sheet(
         state,
         ScreenshotSheetRequest {
             resource_id,
             sheet_name: "Sheet1".to_string(),
             range: None,
+            backend: Some(ScreenshotBackend::Libreoffice),
         },
     )
     .await
-    .expect_err("runtime has no screenshot backing");
+    .expect_err("runtime has no LibreOffice screenshot backing");
     assert_eq!(error.to_string(), "screenshot rendering failed");
     assert!(!workspace.path("screenshots").exists());
 }
@@ -803,19 +823,24 @@ async fn screenshot_validation_is_invalid_request_path_free_and_does_not_precrea
 #[cfg(all(unix, feature = "recalc"))]
 #[tokio::test]
 async fn screenshot_rejects_symlinked_workspace_output_before_rendering() {
-    use agent_spreadsheet::canonical_optional::{ScreenshotSheetRequest, screenshot_sheet};
+    use agent_spreadsheet::canonical_optional::{
+        ScreenshotBackend, ScreenshotSheetRequest, screenshot_sheet,
+    };
     use std::os::unix::fs::symlink;
 
     let workspace = support::TestWorkspace::new();
     let outside = tempfile::tempdir().unwrap();
     symlink(outside.path(), workspace.path("screenshots")).unwrap();
     let state = workspace.app_state();
+    // The output-directory guard belongs to the LibreOffice path; the native
+    // renderer never writes there at all.
     let error = screenshot_sheet(
         state,
         ScreenshotSheetRequest {
             resource_id: serde_json::from_value(json!("wb:abc")).unwrap(),
             sheet_name: "Sheet1".to_string(),
             range: None,
+            backend: Some(ScreenshotBackend::Libreoffice),
         },
     )
     .await

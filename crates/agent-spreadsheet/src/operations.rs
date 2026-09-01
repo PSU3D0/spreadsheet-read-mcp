@@ -229,8 +229,12 @@ impl RuntimeCapabilities {
                 feature = "recalc"
             )))]
             workbook_write: false,
+            // The native raster backend is always available when it is
+            // compiled in; the LibreOffice fallback still depends on the
+            // host state that serializes its macro export.
             #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
-            screenshot_rendering: state.screenshot_semaphore().is_some(),
+            screenshot_rendering: cfg!(feature = "render")
+                || state.screenshot_semaphore().is_some(),
             #[cfg(not(all(
                 not(target_arch = "wasm32"),
                 feature = "native-fs",
@@ -567,11 +571,28 @@ struct OptionalResourceResponseSchema<T: JsonSchema> {
     data: T,
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc-libreoffice"))]
+/// Whether this build can render a screenshot at all.
+///
+/// The native raster backend needs nothing but the `render` feature: no
+/// process, no profile directory, no probe. LibreOffice is the fallback and
+/// stays behind its own availability probe, so a build without `render` behaves
+/// exactly as it did before.
+#[cfg(feature = "render")]
+fn native_screenshot_available() -> bool {
+    true
+}
+#[cfg(all(
+    not(feature = "render"),
+    not(target_arch = "wasm32"),
+    feature = "recalc-libreoffice"
+))]
 fn native_screenshot_available() -> bool {
     crate::recalc::ScreenshotExecutor::new(&crate::recalc::RecalcConfig::default()).is_available()
 }
-#[cfg(not(all(not(target_arch = "wasm32"), feature = "recalc-libreoffice")))]
+#[cfg(all(
+    not(feature = "render"),
+    not(all(not(target_arch = "wasm32"), feature = "recalc-libreoffice"))
+))]
 fn native_screenshot_available() -> bool {
     false
 }

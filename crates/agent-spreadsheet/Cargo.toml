@@ -79,6 +79,7 @@ base64 = { version = "0.22", optional = true }
 async-trait = { version = "0.1", optional = true }
 uuid = { version = "1.10", features = ["v4", "js"], optional = true }
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
+agent-spreadsheet-render = { version = "0.14.0", path = "../agent-spreadsheet-render", optional = true }
 quick-xml = { version = "0.31", optional = true }
 xxhash-rust = { version = "0.8", features = ["xxh64"], optional = true }
 tempfile = { version = "3.10", optional = true }
@@ -97,7 +98,7 @@ formualizer = { version = "0.8.4", default-features = false, features = ["js-run
 # real filesystem. The wasm32 byte/session adapter opts out of `cli` and
 # `native-fs` so clap, serde_yaml, tracing-subscriber, walkdir, globset and
 # tempfile are never compiled for the browser bundle.
-default = ["recalc-formualizer", "sheetport", "cli", "native-fs"]
+default = ["recalc-formualizer", "sheetport", "cli", "native-fs", "render"]
 
 # Human/argv surface: clap arg definitions, YAML config files, log formatting.
 cli = ["native-fs", "dep:clap", "dep:serde_yaml", "dep:tracing-subscriber"]
@@ -113,6 +114,9 @@ sheetport = ["recalc-formualizer", "formualizer/sheetport"]
 # Screenshot/PNG post-processing is LibreOffice-only, so image/png stay out of
 # the default and wasm builds.
 recalc-libreoffice = ["recalc", "native-fs", "dep:image", "dep:base64"]
+# The native raster screenshot backend. Compiling it in is what makes
+# `screenshot_rendering` available without LibreOffice.
+render = ["dep:agent-spreadsheet-render"]
 
 [dev-dependencies]
 assert_cmd = "2.0"

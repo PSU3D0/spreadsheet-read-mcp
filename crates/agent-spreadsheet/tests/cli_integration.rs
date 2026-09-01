@@ -10259,3 +10259,261 @@ fn cli_end_to_end_budget_cloning_and_appending() {
     );
     assert_eq!(final_sheet.get_cell("B13").unwrap().get_value(), "8500"); // 5000 + 3500
 }
+
+// ---------------------------------------------------------------------------
+// 5004: native raster rendering on the CLI
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "render")]
+#[test]
+fn asp_render_writes_a_png_and_reports_fidelity() {
+    let dir = tempdir().expect("tempdir");
+    let workbook = dir.path().join("book.xlsx");
+    write_fixture(&workbook);
+    let output = dir.path().join("sheet.png");
+
+    let result = run_asp(&[
+        "render",
+        workbook.to_str().unwrap(),
+        "--sheet",
+        "Sheet1",
+        "--range",
+        "A1:C6",
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    assert!(
+        result.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let payload = parse_stdout_json(&result);
+    assert_eq!(payload["backend"], "native");
+    assert_eq!(payload["renderer"], "native-raster/1");
+    assert_eq!(payload["range"], "A1:C6");
+    assert_eq!(payload["png_level"], "balanced");
+    assert!(payload["width"].as_u64().unwrap() > 0);
+    assert!(payload["calculation"]["revision_id"].is_string());
+    // The fixture's formulas carry no cached values, so the renderer says so
+    // instead of guessing.
+    let warnings: Vec<&str> = payload["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|warning| warning.as_str().unwrap())
+        .collect();
+    assert!(
+        warnings.contains(&"formulas_unevaluated"),
+        "warnings={warnings:?}"
+    );
+    assert_eq!(payload["fidelity"], "partial");
+
+    let bytes = fs::read(&output).expect("png written");
+    assert_eq!(&bytes[..4], b"\x89PNG");
+    assert_eq!(bytes.len() as u64, payload["bytes"].as_u64().unwrap());
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn asp_render_png_level_changes_encoding_but_not_geometry() {
+    let dir = tempdir().expect("tempdir");
+    let workbook = dir.path().join("book.xlsx");
+    write_fixture(&workbook);
+
+    let mut sizes = Vec::new();
+    for level in ["fast", "balanced"] {
+        let output = dir.path().join(format!("{level}.png"));
+        let result = run_asp(&[
+            "render",
+            workbook.to_str().unwrap(),
+            "--sheet",
+            "Sheet1",
+            "--png-level",
+            level,
+            "--output",
+            output.to_str().unwrap(),
+        ]);
+        assert!(result.status.success());
+        let payload = parse_stdout_json(&result);
+        assert_eq!(payload["png_level"], level);
+        sizes.push((
+            payload["width"].as_u64().unwrap(),
+            payload["height"].as_u64().unwrap(),
+            payload["bytes"].as_u64().unwrap(),
+        ));
+    }
+    assert_eq!(sizes[0].0, sizes[1].0, "width must not depend on png level");
+    assert_eq!(sizes[0].1, sizes[1].1, "height must not depend on png level");
+    assert!(
+        sizes[0].2 > sizes[1].2,
+        "fast should be larger than balanced: {sizes:?}"
+    );
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn asp_render_refuses_to_clobber_without_force() {
+    let dir = tempdir().expect("tempdir");
+    let workbook = dir.path().join("book.xlsx");
+    write_fixture(&workbook);
+    let output = dir.path().join("sheet.png");
+    fs::write(&output, b"existing").expect("seed output");
+
+    let result = run_asp(&[
+        "render",
+        workbook.to_str().unwrap(),
+        "--sheet",
+        "Sheet1",
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    assert!(!result.status.success());
+    let error = parse_stderr_json(&result);
+    assert_eq!(error["error"]["code"], "INVALID_REQUEST");
+    assert_eq!(fs::read(&output).unwrap(), b"existing");
+
+    let forced = run_asp(&[
+        "render",
+        workbook.to_str().unwrap(),
+        "--sheet",
+        "Sheet1",
+        "--output",
+        output.to_str().unwrap(),
+        "--force",
+    ]);
+    assert!(forced.status.success());
+    assert_eq!(&fs::read(&output).unwrap()[..4], b"\x89PNG");
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn asp_op_screenshot_sheet_writes_artifact_bytes_and_prints_the_envelope() {
+    let dir = tempdir().expect("tempdir");
+    let workbook = dir.path().join("book.xlsx");
+    write_fixture(&workbook);
+    let output = dir.path().join("artifact.png");
+
+    let result = run_asp(&[
+        "op",
+        "screenshot_sheet",
+        "--bind",
+        workbook.to_str().unwrap(),
+        "--json",
+        r#"{"sheet_name":"Sheet1","range":"A1:C6"}"#,
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    assert!(
+        result.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let response = parse_stdout_json(&result);
+    // The canonical envelope is unchanged in shape and still carries only a
+    // handle; the bytes crossed at the adapter boundary.
+    assert_eq!(response["schema_version"], "1");
+    assert_eq!(response["operation"], "screenshot_sheet");
+    assert_eq!(response["data"]["renderer"], "native-raster/1");
+    assert_eq!(response["data"]["artifact"]["media_type"], "image/png");
+    assert!(response["data"]["calculation"]["revision_id"].is_string());
+
+    let bytes = fs::read(&output).expect("artifact written");
+    assert_eq!(&bytes[..4], b"\x89PNG");
+    assert_eq!(
+        bytes.len() as u64,
+        response["data"]["artifact"]["bytes"].as_u64().unwrap()
+    );
+    let digest = format!("sha256:{:x}", <sha2::Sha256 as sha2::Digest>::digest(&bytes));
+    assert_eq!(response["data"]["artifact"]["hash"], digest);
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn asp_op_screenshot_sheet_rejects_in_place() {
+    let dir = tempdir().expect("tempdir");
+    let workbook = dir.path().join("book.xlsx");
+    write_fixture(&workbook);
+
+    let result = run_asp(&[
+        "op",
+        "screenshot_sheet",
+        "--bind",
+        workbook.to_str().unwrap(),
+        "--json",
+        r#"{"sheet_name":"Sheet1"}"#,
+        "--in-place",
+    ]);
+    assert!(!result.status.success());
+    let error = parse_stderr_json(&result);
+    assert_eq!(error["error"]["code"], "INVALID_REQUEST");
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn asp_render_and_asp_op_agree_byte_for_byte() {
+    let dir = tempdir().expect("tempdir");
+    let workbook = dir.path().join("book.xlsx");
+    write_fixture(&workbook);
+    let human = dir.path().join("human.png");
+    let machine = dir.path().join("machine.png");
+
+    assert!(
+        run_asp(&[
+            "render",
+            workbook.to_str().unwrap(),
+            "--sheet",
+            "Sheet1",
+            "--range",
+            "A1:C6",
+            "--output",
+            human.to_str().unwrap(),
+        ])
+        .status
+        .success()
+    );
+    assert!(
+        run_asp(&[
+            "op",
+            "screenshot_sheet",
+            "--bind",
+            workbook.to_str().unwrap(),
+            "--json",
+            r#"{"sheet_name":"Sheet1","range":"A1:C6"}"#,
+            "--output",
+            machine.to_str().unwrap(),
+        ])
+        .status
+        .success()
+    );
+    assert_eq!(
+        fs::read(&human).unwrap(),
+        fs::read(&machine).unwrap(),
+        "the human and machine surfaces must render identical bytes"
+    );
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn asp_render_rejects_png_level_on_the_libreoffice_backend() {
+    let dir = tempdir().expect("tempdir");
+    let workbook = dir.path().join("book.xlsx");
+    write_fixture(&workbook);
+    let output = dir.path().join("sheet.png");
+
+    let result = run_asp(&[
+        "render",
+        workbook.to_str().unwrap(),
+        "--sheet",
+        "Sheet1",
+        "--backend",
+        "libreoffice",
+        "--png-level",
+        "fast",
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    assert!(!result.status.success());
+    let error = parse_stderr_json(&result);
+    assert_eq!(error["error"]["code"], "INVALID_REQUEST");
+    assert!(!output.exists());
+}
