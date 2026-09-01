@@ -42,3 +42,44 @@ The dev WASM bundle is 47 MiB and a default release build is 21 MiB. Neither Car
 - Release web bundle size is measured, enforced, and materially below 21 MiB.
 - `npm install agent-spreadsheet-wasm` gives a working runtime without a checkout.
 - Repeated reads do not re-parse the workbook.
+
+## Measured results
+
+All numbers are the `--target web` wasm-bindgen artifact
+(`agent_spreadsheet_wasm_bg.wasm`), brotli at quality 11.
+
+| Build | Raw | Brotli |
+| --- | --- | --- |
+| dev web bundle (baseline) | ~47 MiB | — |
+| default `release`, before wasm-bindgen | 21,016,397 | 3,372,886 |
+| `wasm-release` profile, before wasm-bindgen | 12,139,688 | 2,190,434 |
+| `wasm-release` web bundle | 10,987,668 | 2,101,689 |
+| + wasm-opt `-Oz` | 9,224,829 | 2,226,913 |
+| + dependency diet, no wasm-opt | 10,239,646 | 1,936,120 |
+| + dependency diet + wasm-opt `-Oz` (**shipped**) | 8,576,619 | 2,059,359 |
+
+Net: 21.0 MB → 8.58 MB raw (-59%), 3.37 MB → 2.06 MB brotli (-39%).
+
+wasm-opt trades transfer size for compile size at every level. Measured on the
+dieted bundle: `-O2` 9,012,193/2,047,013, `-Os` 8,810,354/2,054,008,
+`-O3` 8,894,839/2,058,387, `-Oz` 8,576,619/2,059,359 — every level is ~6 percent
+worse under brotli than not running wasm-opt at all. `-Oz` is shipped for the
+smallest raw module (instantiation memory and compile time); dropping wasm-opt
+would be the right call if download size is the binding constraint.
+
+Ceilings live in `wasm-size-budget.json` at measured + 10 percent
+(raw 9,434,281, brotli 2,265,295), enforced by the `wasm-size-gate` CI job.
+
+### Still in the wasm dependency graph
+
+`clap` and `serde_yaml` are gone from this repository's crates but remain in the
+wasm32 graph through `sheetport-spec`, which `formualizer` activates
+unconditionally: `js-runtime = ["formualizer-sheetport/js-runtime"]` uses a
+non-weak feature reference, so enabling `js-runtime` (which the wasm build
+needs) also enables the optional `formualizer-sheetport` dependency. The
+upstream fix is one character — `formualizer-sheetport?/js-runtime`. The core
+crate's `sheetport` feature added here is the other half and already keeps the
+SheetPort code paths out of the wasm build.
+
+`rayon` is a non-optional dependency of `formualizer-eval` and cannot be removed
+from this side either.
