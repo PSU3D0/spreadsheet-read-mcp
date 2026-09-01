@@ -1,5 +1,5 @@
 /**
- * Type tests. These run under `npm run typecheck` (tsc over src plus this directory).
+ * Type tests. These run under `npm run typecheck` (tsc over src plus test-types/).
  *
  * Negative cases use `@ts-expect-error`: tsc fails the build if the line below one
  * stops being an error, so "this must not compile" is enforced, not asserted at runtime.
@@ -14,7 +14,7 @@ import {
   type InputOf,
   type OperationName,
   type OutputOf
-} from "../../src/index.js"
+} from "../src/index.js"
 
 declare const bytes: Uint8Array
 

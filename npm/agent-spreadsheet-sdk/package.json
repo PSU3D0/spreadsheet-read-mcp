@@ -57,7 +57,8 @@
     "pretest": "npm run build && npm run typecheck",
     "test": "node --test",
     "test:wasm": "node scripts/run-generated-wasm-integration.js",
-    "test:browser": "node scripts/run-generated-wasm-browser.js"
+    "test:browser": "node scripts/run-generated-wasm-browser.js",
+    "test:server": "node --test test/server-runtime.integration.test.js"
   },
   "peerDependencies": {
     "just-bash": "^3.4.2"

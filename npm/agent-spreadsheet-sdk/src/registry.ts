@@ -67,9 +67,10 @@ export function normalizeOperationList(value: unknown): Set<string> {
     entries = nested
   }
 
-  const names = (entries as unknown[]).map((entry) =>
-    typeof entry === "string" ? entry : (entry as { name?: unknown })?.name
-  )
+  const names = (entries as unknown[])
+    // A runtime-filtered discovery may carry entries it does not actually serve.
+    .filter((entry) => typeof entry === "string" || (entry as { available?: unknown })?.available !== false)
+    .map((entry) => (typeof entry === "string" ? entry : (entry as { name?: unknown })?.name))
   if (names.some((name) => typeof name !== "string")) {
     throw new TypeError("operation discovery contains a descriptor without a name")
   }

@@ -116,8 +116,8 @@ test("fork mutations default expected_revision and track the new revision", asyn
   assert.equal(fake.state.calls.at(-1).input.expected_revision, "rev-2")
   assert.equal(fork.revisionId, "rev-3")
 
-  await fork.getChanges({ view: "summary" })
-  assert.deepEqual(fake.state.calls.at(-1).input, { view: "summary", resource_id: "fork:f1" })
+  await fork.getChanges({ view: { kind: "operations" } })
+  assert.deepEqual(fake.state.calls.at(-1).input, { view: { kind: "operations" }, resource_id: "fork:f1" })
 
   await fork.verifyAgainst(client.workbook("wb:wb-1"), { targets_only: true })
   assert.equal(fake.state.calls.at(-1).input.baseline_resource_id, "wb:wb-1")
