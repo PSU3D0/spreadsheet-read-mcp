@@ -23,18 +23,28 @@ function mockBindings() {
     created: 0,
     disposed: [],
     executed: [],
-    exported: []
+    exported: [],
+    artifactsRead: [],
+    artifactsDisposed: []
   }
   return {
     state,
     bindings: {
       operations() {
-        return ["list_sheets", "write", "recalculate", "verify_workbook"]
+        return ["list_sheets", "screenshot_sheet", "write", "recalculate", "verify_workbook"]
       },
       createSession(bytes) {
         const id = `session:s${++state.created}`
         state.sessions.set(id, Uint8Array.from(bytes))
         return id
+      },
+      readArtifact(resourceId, handle) {
+        state.artifactsRead.push({ resourceId, handle })
+        return Uint8Array.from([137, 80, 78, 71])
+      },
+      disposeArtifact(resourceId, handle) {
+        state.artifactsDisposed.push({ resourceId, handle })
+        return true
       },
       async executeOperation(resourceId, operation, paramsJson) {
         const params = JSON.parse(paramsJson)
@@ -45,6 +55,26 @@ function mockBindings() {
             error: { code: "INVALID_REQUEST", message: "golden error", operation, path: "$.trigger_error" }
           })
           return JSON.stringify(canonical(operation, resourceId, { sheets: [{ name: "Sheet1" }] }))
+        }
+        if (operation === "screenshot_sheet") {
+          return JSON.stringify(canonical(operation, resourceId, {
+            sheet_name: params.sheet_name,
+            range: params.range ?? "A1:M40",
+            artifact: {
+              handle: `artifact:sha256:${"b".repeat(64)}`,
+              hash: `sha256:${"b".repeat(64)}`,
+              bytes: 4,
+              media_type: "image/png"
+            },
+            duration_ms: 1,
+            renderer: "native-raster/1",
+            fidelity: "full",
+            warnings: [],
+            width: 320,
+            height: 240,
+            png_level: params.png_level ?? "balanced",
+            calculation: { state: "clean", revision_id: "rev-1" }
+          }))
         }
         if (operation === "verify_workbook") {
           return JSON.stringify(canonical(operation, resourceId, {
@@ -106,7 +136,7 @@ test("registry discovery stays canonical while schema and examples project adapt
 
   const operations = parseJsonOutput(await bash.exec("asp operations"))
   assert.deepEqual(operations.map(({ name }) => name), [
-    "list_sheets", "write", "recalculate", "verify_workbook"
+    "list_sheets", "screenshot_sheet", "write", "recalculate", "verify_workbook"
   ])
   assert.ok(operations.every(({ input_schema }) => input_schema === undefined))
   const schema = parseJsonOutput(await bash.exec("asp schema read_cells"))
@@ -127,7 +157,7 @@ test("registry discovery stays canonical while schema and examples project adapt
   const readOnly = new Bash({ customCommands: [createAspCommand({ bindings: restricted })] })
   assert.deepEqual(
     parseJsonOutput(await readOnly.exec("asp operations")).map(({ name }) => name),
-    ["list_sheets", "verify_workbook"]
+    ["list_sheets", "screenshot_sheet", "verify_workbook"]
   )
 })
 
@@ -298,4 +328,70 @@ test("js-exec child_process bridge invokes asp without a second tools projection
   const result = spawnSync(process.execPath, [runner], { encoding: "utf8", timeout: 10_000 })
   assert.equal(result.status, 0, result.stderr || result.error?.message)
   assert.equal(JSON.parse(result.stdout).operation, "list_sheets")
+})
+
+test("screenshot_sheet writes artifact bytes to the VFS and prints the envelope", async () => {
+  const { bindings, state } = mockBindings()
+  const bash = new Bash({
+    files: { "/book.xlsx": Uint8Array.from([1, 2, 3]) },
+    customCommands: [createAspCommand({ bindings })]
+  })
+
+  const rendered = await bash.exec(
+    "asp op screenshot_sheet --bind /book.xlsx --output /shot.png",
+    { stdin: JSON.stringify({ sheet_name: "Sheet1", range: "A1:C6", png_level: "fast" }) }
+  )
+  assert.equal(rendered.exitCode, 0)
+  const envelope = parseJsonOutput(rendered)
+  assert.equal(envelope.operation, "screenshot_sheet")
+  assert.equal(envelope.data.renderer, "native-raster/1")
+  assert.equal(envelope.data.png_level, "fast")
+  assert.equal(envelope.data.artifact.media_type, "image/png")
+  // The envelope carries the handle; the bytes landed in the VFS.
+  assert.equal(rendered.stdout.includes("\u0089PNG"), false)
+  assert.deepEqual(
+    Array.from(await bash.fs.readFileBuffer("/shot.png")),
+    [137, 80, 78, 71]
+  )
+  assert.equal(state.artifactsRead.length, 1)
+  assert.equal(state.artifactsRead[0].handle, envelope.data.artifact.handle)
+  // The slot is released as part of the read, and the session is disposed after.
+  assert.equal(state.artifactsDisposed.length, 1)
+  assert.equal(state.disposed.length, 1)
+})
+
+test("screenshot_sheet without --output still renders, and rejects --in-place", async () => {
+  const { bindings, state } = mockBindings()
+  const bash = new Bash({
+    files: { "/book.xlsx": Uint8Array.from([1, 2, 3]) },
+    customCommands: [createAspCommand({ bindings })]
+  })
+
+  const printed = await bash.exec("asp op screenshot_sheet --bind /book.xlsx", {
+    stdin: JSON.stringify({ sheet_name: "Sheet1" })
+  })
+  assert.equal(printed.exitCode, 0)
+  assert.equal(parseJsonOutput(printed).data.sheet_name, "Sheet1")
+  // Nothing asked for the bytes, so they never crossed the boundary.
+  assert.equal(state.artifactsRead.length, 0)
+
+  const inPlace = await bash.exec("asp op screenshot_sheet --bind /book.xlsx --in-place", {
+    stdin: JSON.stringify({ sheet_name: "Sheet1" })
+  })
+  assert.equal(inPlace.exitCode, 1)
+  const error = JSON.parse(inPlace.stderr).error
+  assert.equal(error.code, "INVALID_REQUEST")
+  assert.equal(error.path, "--in-place")
+  assert.match(error.message, /produces an artifact/)
+
+  const clobber = new Bash({
+    files: { "/book.xlsx": Uint8Array.from([1, 2, 3]), "/shot.png": Uint8Array.from([0]) },
+    customCommands: [createAspCommand({ bindings })]
+  })
+  const existing = await clobber.exec(
+    "asp op screenshot_sheet --bind /book.xlsx --output /shot.png",
+    { stdin: JSON.stringify({ sheet_name: "Sheet1" }) }
+  )
+  assert.equal(existing.exitCode, 1)
+  assert.equal(JSON.parse(existing.stderr).error.path, "--output")
 })

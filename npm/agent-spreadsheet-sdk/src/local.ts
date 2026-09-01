@@ -178,6 +178,21 @@ export class LocalWorkbook extends MutableWorkbookHandle {
     return this.verifyAgainstResource(baseline.resourceId, input)
   }
 
+  /**
+   * Bytes for an artifact this session produced, released from the session on
+   * the way out.
+   *
+   * Adapters that own a filesystem — the just-bash VFS, a CLI `--output` — use
+   * this to land image bytes; the canonical envelope only ever carries the
+   * handle.
+   */
+  async readArtifact(handle: string, options: { release?: boolean } = {}): Promise<Uint8Array> {
+    this.#assertLive()
+    const bytes = await this.#local.artifactBytes(handle, this.resourceId)
+    if (options.release !== false) await this.#local.releaseArtifact(handle, this.resourceId)
+    return bytes
+  }
+
   /** The latest applied or recalculated workbook bytes. */
   async exportBytes(): Promise<Uint8Array> {
     this.#assertLive()

@@ -183,6 +183,29 @@ test("generated WASM just-bash adapter matches native canonical JSON and workboo
     assert.match(adapterVerify.json.data.current_resource_id, /^session:/)
     assert.match(adapterVerify.json.data.baseline_resource_id, /^session:/)
 
+    // Rendering: the adapter writes PNG bytes into the VFS and the envelope
+    // stays byte-identical to the native one, which writes the same artifact to
+    // a real path.
+    const nativeShotPath = path.join(temp, "native.png")
+    const nativeShot = native("screenshot_sheet", {
+      bind: fixture,
+      output: nativeShotPath,
+      params: { sheet_name: "Sheet1", range: "A1:C6" }
+    })
+    const adapterShot = await execute(
+      bash,
+      "screenshot_sheet",
+      "--bind /vfs-only.xlsx --output /shot.png",
+      { sheet_name: "Sheet1", range: "A1:C6" }
+    )
+    assert.equal(adapterShot.exitCode, 0)
+    assert.deepEqual(scrub(adapterShot.json), scrub(nativeShot.json))
+    assert.deepEqual(
+      Buffer.from(await bash.fs.readFileBuffer("/shot.png")),
+      fs.readFileSync(nativeShotPath)
+    )
+    assert.equal((await bash.fs.getAllPaths()).some((entry) => entry.includes(".asp-tmp-")), false)
+
     const nativeError = native("read_cells", {
       bind: fixture,
       params: { sheet_name: "Missing", selection: { kind: "range", ranges: ["A1"] } }
