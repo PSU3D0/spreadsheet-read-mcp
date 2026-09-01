@@ -5,7 +5,7 @@ use crate::canonical_optional::{
     ExecuteSheetportData, ExecuteSheetportRequest, SheetportManifestData, SheetportManifestRequest,
 };
 use crate::canonical_optional::{InspectVbaData, InspectVbaRequest};
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
+#[cfg(feature = "recalc")]
 use crate::canonical_optional::{ScreenshotSheetData, ScreenshotSheetRequest};
 pub use crate::canonical_reads::*;
 #[cfg(feature = "recalc")]
@@ -318,7 +318,7 @@ pub enum SpreadsheetOperation {
     FormulaMap(FormulaMapRequest),
     ProfileTable(ProfileTableRequest),
     SheetStatistics(SheetStatisticsRequest),
-    #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
+    #[cfg(feature = "recalc")]
     ScreenshotSheet(ScreenshotSheetRequest),
     #[cfg(feature = "recalc-formualizer")]
     SheetportManifest(SheetportManifestRequest),
@@ -367,7 +367,7 @@ impl SpreadsheetOperation {
             Self::FormulaMap(_) => "formula_map",
             Self::ProfileTable(_) => "profile_table",
             Self::SheetStatistics(_) => "sheet_statistics",
-            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
+            #[cfg(feature = "recalc")]
             Self::ScreenshotSheet(_) => "screenshot_sheet",
             #[cfg(feature = "recalc-formualizer")]
             Self::SheetportManifest(_) => "sheetport_manifest",
@@ -416,7 +416,7 @@ impl SpreadsheetOperation {
             Self::FormulaMap(value) => Some(&value.resource_id),
             Self::ProfileTable(value) => Some(&value.resource_id),
             Self::SheetStatistics(value) => Some(&value.resource_id),
-            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
+            #[cfg(feature = "recalc")]
             Self::ScreenshotSheet(value) => Some(&value.resource_id),
             #[cfg(feature = "recalc-formualizer")]
             Self::SheetportManifest(value) => value.resource_id(),
@@ -603,7 +603,7 @@ fn workbook_read(capabilities: &RuntimeCapabilities) -> bool {
 fn workbook_discovery(capabilities: &RuntimeCapabilities) -> bool {
     capabilities.workbook_discovery
 }
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
+#[cfg(feature = "recalc")]
 fn screenshot_rendering(capabilities: &RuntimeCapabilities) -> bool {
     capabilities.workbook_read && capabilities.screenshot_rendering
 }
@@ -934,7 +934,7 @@ schemas!(
     SheetStatisticsResponse,
     "sheet_statistics"
 );
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
+#[cfg(feature = "recalc")]
 fn screenshot_sheet_input_schema() -> Value {
     let mut schema = closed_schema::<ScreenshotSheetRequest>();
     schema["properties"]["range"]["x-runtime-bounds"] = json!({
@@ -943,7 +943,7 @@ fn screenshot_sheet_input_schema() -> Value {
     });
     schema
 }
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
+#[cfg(feature = "recalc")]
 fn screenshot_sheet_output_schema() -> Value {
     resource_output_schema::<ScreenshotSheetData>("screenshot_sheet")
 }
@@ -1221,7 +1221,7 @@ const WORKBOOK_READ: CapabilityMetadata = CapabilityMetadata {
     name: "workbook_read",
     description: "Read an already-bound workbook resource",
 };
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
+#[cfg(feature = "recalc")]
 const SCREENSHOT_RENDERING: CapabilityMetadata = CapabilityMetadata {
     name: "screenshot_rendering",
     description: "Render bounded workbook regions to content-addressed image artifacts",
@@ -1556,13 +1556,16 @@ static REGISTRY: &[OperationDescriptor] = &[
         sheet_statistics_input_schema,
         sheet_statistics_output_schema
     ),
-    #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
+    #[cfg(feature = "recalc")]
     descriptor_adapters!(
         "screenshot_sheet",
         "Render a bounded sheet range to a content-addressed PNG artifact without exposing a server path.",
         SCREENSHOT_RENDERING,
         screenshot_rendering,
-        NATIVE_READ_ADAPTERS,
+        // The raster renderer compiles to wasm32 and needs no host process, so
+        // the byte/session adapters render too. The artifact bytes never enter
+        // the envelope: each adapter hands them across its own boundary.
+        SHARED_READ_ADAPTERS,
         EXPENSIVE_READ,
         screenshot_sheet_input_schema,
         screenshot_sheet_output_schema
@@ -1975,7 +1978,7 @@ pub fn decode_operation(
             SheetStatisticsRequest,
             SpreadsheetOperation::SheetStatistics
         ),
-        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
+        #[cfg(feature = "recalc")]
         "screenshot_sheet" => {
             let request = serde_json::from_value::<ScreenshotSheetRequest>(payload)
                 .map_err(|error| CanonicalErrorEnvelope::invalid_request(name, error))?;
@@ -2415,7 +2418,7 @@ pub async fn execute_operation(
             .await
             .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?,
         ),
-        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
+        #[cfg(feature = "recalc")]
         SpreadsheetOperation::ScreenshotSheet(request) => serde_json::to_value(
             crate::canonical_optional::screenshot_sheet(state, request)
                 .await

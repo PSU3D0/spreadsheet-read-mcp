@@ -26,6 +26,11 @@ pub const MAX_WORKBOOK_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_PARAMS_JSON_BYTES: usize = 1024 * 1024;
 pub const MAX_SESSIONS: usize = 16;
 const MAX_TOTAL_WORKBOOK_BYTES: usize = 256 * 1024 * 1024;
+/// Rendered artifacts a single session may hold at once. Slots are the only
+/// place image bytes live in this adapter, so they are capped twice: by count
+/// per session and by aggregate bytes across every session.
+pub const MAX_ARTIFACTS_PER_SESSION: usize = 8;
+pub const MAX_TOTAL_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum SessionApiError {
@@ -256,6 +261,17 @@ struct ResidentState {
     workbook_id: agent_spreadsheet::model::WorkbookId,
 }
 
+/// One rendered artifact held for a session.
+///
+/// The handle is content addressed exactly the way the native path addresses
+/// its files (`artifact:sha256:<hex>`), so the same render produces the same
+/// handle on both runtimes.
+struct ArtifactSlot {
+    handle: String,
+    bytes: Vec<u8>,
+    last_used: u64,
+}
+
 #[derive(Default)]
 struct SessionStore {
     next_id: u64,
@@ -266,6 +282,9 @@ struct SessionStore {
     revisions: HashMap<String, String>,
     calculations: HashMap<String, (String, agent_spreadsheet::model::EvaluationCoverage)>,
     resident: HashMap<String, ResidentState>,
+    artifacts: HashMap<String, Vec<ArtifactSlot>>,
+    artifact_bytes: usize,
+    artifact_clock: u64,
 }
 
 impl SessionStore {
@@ -273,6 +292,106 @@ impl SessionStore {
     /// replaces `session_bytes`.
     fn invalidate_resident(&mut self, session_id: &str) {
         self.resident.remove(session_id);
+    }
+
+    fn tick(&mut self) -> u64 {
+        self.artifact_clock += 1;
+        self.artifact_clock
+    }
+
+    /// Release every artifact a session holds. Called on disposal, so a leaked
+    /// handle cannot outlive the session that produced it.
+    fn drop_artifacts(&mut self, session_id: &str) {
+        if let Some(slots) = self.artifacts.remove(session_id) {
+            let released: usize = slots.iter().map(|slot| slot.bytes.len()).sum();
+            self.artifact_bytes = self.artifact_bytes.saturating_sub(released);
+        }
+    }
+
+    /// Evict the least recently used slot anywhere in the store. Returns false
+    /// when there is nothing left to evict.
+    fn evict_one(&mut self) -> bool {
+        let victim = self
+            .artifacts
+            .iter()
+            .filter_map(|(session, slots)| {
+                slots
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, slot)| slot.last_used)
+                    .map(|(index, slot)| (slot.last_used, session.clone(), index))
+            })
+            .min_by_key(|(last_used, _, _)| *last_used);
+        let Some((_, session, index)) = victim else {
+            return false;
+        };
+        if let Some(slots) = self.artifacts.get_mut(&session) {
+            let slot = slots.remove(index);
+            self.artifact_bytes = self.artifact_bytes.saturating_sub(slot.bytes.len());
+            if slots.is_empty() {
+                self.artifacts.remove(&session);
+            }
+        }
+        true
+    }
+
+    /// Store rendered bytes and return the handle. Re-rendering identical bytes
+    /// refreshes the existing slot rather than growing the store.
+    fn insert_artifact(&mut self, session_id: &str, handle: String, bytes: Vec<u8>) -> String {
+        let now = self.tick();
+        let slots = self.artifacts.entry(session_id.to_string()).or_default();
+        if let Some(existing) = slots.iter_mut().find(|slot| slot.handle == handle) {
+            existing.last_used = now;
+            return handle;
+        }
+        while slots.len() >= MAX_ARTIFACTS_PER_SESSION {
+            let oldest = slots
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, slot)| slot.last_used)
+                .map(|(index, _)| index);
+            let Some(index) = oldest else { break };
+            let slot = slots.remove(index);
+            self.artifact_bytes = self.artifact_bytes.saturating_sub(slot.bytes.len());
+        }
+        let length = bytes.len();
+        slots.push(ArtifactSlot {
+            handle: handle.clone(),
+            bytes,
+            last_used: now,
+        });
+        self.artifact_bytes += length;
+        while self.artifact_bytes > MAX_TOTAL_ARTIFACT_BYTES {
+            // The slot just inserted is the most recently used, so global LRU
+            // eviction never drops it before the caller can read it.
+            if !self.evict_one() {
+                break;
+            }
+        }
+        handle
+    }
+
+    fn read_artifact(&mut self, session_id: &str, handle: &str) -> Option<Vec<u8>> {
+        let now = self.tick();
+        let slots = self.artifacts.get_mut(session_id)?;
+        let slot = slots.iter_mut().find(|slot| slot.handle == handle)?;
+        slot.last_used = now;
+        Some(slot.bytes.clone())
+    }
+
+    fn remove_artifact(&mut self, session_id: &str, handle: &str) -> bool {
+        let Some(slots) = self.artifacts.get_mut(session_id) else {
+            return false;
+        };
+        let Some(index) = slots.iter().position(|slot| slot.handle == handle) else {
+            return false;
+        };
+        let slot = slots.remove(index);
+        self.artifact_bytes = self.artifact_bytes.saturating_sub(slot.bytes.len());
+        if slots.is_empty() {
+            self.artifacts.remove(session_id);
+        }
+        true
     }
 }
 
@@ -331,7 +450,9 @@ fn adapter_capabilities() -> RuntimeCapabilities {
         workbook_discovery: false,
         workbook_read: true,
         workbook_write: true,
-        screenshot_rendering: false,
+        // The raster renderer runs in process and writes into a session slot,
+        // so rendering needs no host at all — only the compiled-in feature.
+        screenshot_rendering: cfg!(feature = "render"),
         sheetport: false,
         vba: false,
     }
@@ -391,6 +512,21 @@ fn canonical_operation_error(
         CanonicalErrorCode::OperationFailed
     };
     canonical_error(code, Some(operation), message, None)
+}
+
+/// Wall-clock milliseconds. `std::time::Instant` is not available on
+/// wasm32-unknown-unknown; the host clock is.
+#[cfg(all(feature = "render", target_arch = "wasm32"))]
+fn now_ms() -> f64 {
+    js_sys::Date::now()
+}
+
+#[cfg(all(feature = "render", not(target_arch = "wasm32")))]
+fn now_ms() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as f64)
+        .unwrap_or(0.0)
 }
 
 impl SessionApi {
@@ -833,6 +969,173 @@ impl SessionApi {
         Ok(())
     }
 
+    /// Render a bounded sheet range in process and park the PNG bytes in a
+    /// bounded session slot.
+    ///
+    /// The canonical envelope is byte-identical in shape to the native one; the
+    /// only difference is where the artifact lives. `readArtifact` is the
+    /// boundary the bytes cross.
+    #[cfg(feature = "render")]
+    async fn execute_in_memory_screenshot(
+        &self,
+        session_id: &str,
+        params: Value,
+    ) -> Result<CanonicalResponse, CanonicalErrorEnvelope> {
+        use agent_spreadsheet::canonical_optional::{
+            ArtifactHandle, DEFAULT_SCREENSHOT_RANGE, ScreenshotBackend, ScreenshotPngLevel,
+            ScreenshotSheetRequest, calculation_for, map_png_level, max_screenshot_bytes,
+            screenshot_data_from_render, validate_screenshot_request,
+        };
+
+        const OPERATION: &str = "screenshot_sheet";
+        let started = now_ms();
+        let request: ScreenshotSheetRequest = serde_json::from_value(params).map_err(|error| {
+            canonical_error(
+                CanonicalErrorCode::InvalidRequest,
+                Some(OPERATION),
+                error.to_string(),
+                Some("$.params"),
+            )
+        })?;
+        validate_screenshot_request(&request).map_err(|error| {
+            canonical_error(
+                CanonicalErrorCode::InvalidRequest,
+                Some(OPERATION),
+                error.to_string(),
+                None,
+            )
+        })?;
+        if matches!(request.backend, Some(ScreenshotBackend::Libreoffice)) {
+            return Err(canonical_error(
+                CanonicalErrorCode::CapabilityUnavailable,
+                Some(OPERATION),
+                "the libreoffice backend needs a host process and is unavailable in the WASM byte-session runtime",
+                Some("$.backend"),
+            ));
+        }
+        let png_level = request.png_level.unwrap_or(ScreenshotPngLevel::Balanced);
+        let range = request
+            .range
+            .as_deref()
+            .unwrap_or(DEFAULT_SCREENSHOT_RANGE)
+            .to_string();
+
+        let (state, workbook_id) = self.resident_state(session_id, OPERATION)?;
+        let workbook = state.open_workbook(&workbook_id).await.map_err(|_| {
+            canonical_error(
+                CanonicalErrorCode::ResourceNotFound,
+                Some(OPERATION),
+                format!("session resource '{session_id}' not found"),
+                Some("$.resource_id"),
+            )
+        })?;
+        // The renderer takes `xl/styles.xml` rather than opening archives. The
+        // session owns the archive bytes, so WASM hands over exactly the part
+        // the native path reads off disk and the pixels stay identical.
+        let styles = {
+            let store = self
+                .lock_store()
+                .map_err(|error| canonical_operation_error(OPERATION, error.to_string()))?;
+            store
+                .session_bytes
+                .get(session_id)
+                .and_then(|bytes| agent_spreadsheet::render::styles_xml_from_bytes(bytes))
+        };
+        let rendered = agent_spreadsheet::render::render_sheet_with_styles(
+            &workbook,
+            &request.sheet_name,
+            &range,
+            map_png_level(png_level),
+            styles.as_deref(),
+        )
+        .map_err(|error| {
+            let message = error.to_string();
+            if message.starts_with("invalid request:") {
+                canonical_error(
+                    CanonicalErrorCode::InvalidRequest,
+                    Some(OPERATION),
+                    message,
+                    None,
+                )
+            } else {
+                canonical_error(
+                    CanonicalErrorCode::OperationFailed,
+                    Some(OPERATION),
+                    "screenshot rendering failed",
+                    None,
+                )
+            }
+        })?;
+        if rendered.png.len() > max_screenshot_bytes() {
+            return Err(canonical_error(
+                CanonicalErrorCode::CapabilityUnavailable,
+                Some(OPERATION),
+                format!(
+                    "screenshot artifact exceeds {} bytes",
+                    max_screenshot_bytes()
+                ),
+                None,
+            ));
+        }
+
+        let hash = format!(
+            "sha256:{}",
+            agent_spreadsheet::utils::hash_bytes_sha256_hex(&rendered.png)
+        );
+        let artifact = ArtifactHandle {
+            handle: format!("artifact:{hash}"),
+            hash,
+            bytes: rendered.png.len() as u64,
+            media_type: "image/png".to_string(),
+        };
+        let (revision, calculation_override) = {
+            let mut store = self
+                .lock_store()
+                .map_err(|error| canonical_operation_error(OPERATION, error.to_string()))?;
+            store.insert_artifact(session_id, artifact.handle.clone(), rendered.png.clone());
+            let revision = store.revisions.get(session_id).cloned().ok_or_else(|| {
+                canonical_operation_error(OPERATION, "session revision is missing")
+            })?;
+            let calculation = store
+                .calculations
+                .get(session_id)
+                .filter(|(calculation_revision, _)| calculation_revision == &revision)
+                .map(|(_, coverage)| {
+                    json!({
+                        "state": coverage.state(),
+                        "revision_id": revision.clone(),
+                    })
+                });
+            (revision, calculation)
+        };
+
+        let data = screenshot_data_from_render(
+            request.sheet_name,
+            range,
+            artifact,
+            (now_ms() - started).max(0.0) as u64,
+            png_level,
+            &rendered,
+            calculation_for(&state, &workbook),
+        );
+        let mut data = serde_json::to_value(data)
+            .map_err(|error| canonical_operation_error(OPERATION, error.to_string()))?;
+        if let Some(calculation) = calculation_override
+            && let Some(slot) = data.get_mut("calculation")
+        {
+            *slot = calculation;
+        }
+        Ok(CanonicalResponse {
+            schema_version: "1".to_string(),
+            operation: OPERATION.to_string(),
+            resource_id: Some(serde_json::from_value(json!(session_id)).map_err(|error| {
+                canonical_operation_error(OPERATION, error.to_string())
+            })?),
+            revision_id: Some(revision),
+            data,
+        })
+    }
+
     /// Return the resident parsed state for a session, building it on first use.
     fn resident_state(
         &self,
@@ -988,6 +1291,13 @@ impl SessionApi {
             None => {
                 object.insert("resource_id".to_string(), json!(session_id));
             }
+        }
+
+        #[cfg(feature = "render")]
+        if operation_name == "screenshot_sheet" {
+            let response = self.execute_in_memory_screenshot(session_id, params).await?;
+            return serde_json::to_string(&response)
+                .map_err(|error| canonical_operation_error(operation_name, error.to_string()));
         }
 
         if matches!(operation_name, "write" | "recalculate" | "verify_workbook") {
@@ -1409,7 +1719,61 @@ impl SessionApi {
         store.workbook_bytes.remove(session_id);
         store.revisions.remove(session_id);
         store.calculations.remove(session_id);
+        store.drop_artifacts(session_id);
         Ok(removed)
+    }
+
+    /// Artifact bytes for a handle this session produced.
+    ///
+    /// This is the adapter boundary the tranche reserved for image bytes: the
+    /// canonical envelope carries only the handle, and the binding hands the
+    /// bytes to JavaScript.
+    pub fn read_artifact(
+        &self,
+        session_id: &str,
+        handle: &str,
+    ) -> Result<Vec<u8>, CanonicalErrorEnvelope> {
+        let mut store = self.lock_store().map_err(|error| {
+            canonical_error(
+                CanonicalErrorCode::OperationFailed,
+                Some("read_artifact"),
+                error.to_string(),
+                None,
+            )
+        })?;
+        if !store.sessions.contains_key(session_id) {
+            return Err(canonical_error(
+                CanonicalErrorCode::ResourceNotFound,
+                Some("read_artifact"),
+                format!("session resource '{session_id}' not found"),
+                Some("$.sessionId"),
+            ));
+        }
+        store.read_artifact(session_id, handle).ok_or_else(|| {
+            canonical_error(
+                CanonicalErrorCode::ResourceNotFound,
+                Some("read_artifact"),
+                format!("artifact '{handle}' is not held by this session"),
+                Some("$.handle"),
+            )
+        })
+    }
+
+    /// Release one artifact slot. Returns false when the handle was already gone.
+    pub fn dispose_artifact(
+        &self,
+        session_id: &str,
+        handle: &str,
+    ) -> Result<bool, CanonicalErrorEnvelope> {
+        let mut store = self.lock_store().map_err(|error| {
+            canonical_error(
+                CanonicalErrorCode::OperationFailed,
+                Some("dispose_artifact"),
+                error.to_string(),
+                None,
+            )
+        })?;
+        Ok(store.remove_artifact(session_id, handle))
     }
 
     fn lock_store(&self) -> SessionResult<MutexGuard<'_, SessionStore>> {
@@ -1637,6 +2001,23 @@ pub mod wasm_bindings {
     #[wasm_bindgen(js_name = exportWorkbook)]
     pub fn export_workbook_js(session_id: String) -> Result<Vec<u8>, JsValue> {
         api().export_workbook(&session_id).map_err(to_js_error)
+    }
+
+    /// Artifact bytes for a handle produced in this session. Rejects with the
+    /// canonical error envelope, exactly like `executeOperation`.
+    #[wasm_bindgen(js_name = readArtifact)]
+    pub fn read_artifact_js(session_id: String, handle: String) -> Result<Vec<u8>, JsValue> {
+        api()
+            .read_artifact(&session_id, &handle)
+            .map_err(canonical_to_js_error)
+    }
+
+    /// Release one artifact slot. `false` when the handle was already gone.
+    #[wasm_bindgen(js_name = disposeArtifact)]
+    pub fn dispose_artifact_js(session_id: String, handle: String) -> Result<bool, JsValue> {
+        api()
+            .dispose_artifact(&session_id, &handle)
+            .map_err(canonical_to_js_error)
     }
 
     #[wasm_bindgen(js_name = disposeSession)]

@@ -61,6 +61,20 @@ fn styles_xml(path: &std::path::Path) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+/// Read `xl/styles.xml` out of workbook bytes held in memory.
+///
+/// The WASM adapter has no file to open: the session owns the archive bytes.
+/// Handing the same part to the renderer is what keeps WASM pixels identical to
+/// native pixels instead of silently falling back to Calibri 11.
+pub fn styles_xml_from_bytes(bytes: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).ok()?;
+    let mut part = archive.by_name("xl/styles.xml").ok()?;
+    let mut out = Vec::new();
+    part.read_to_end(&mut out).ok()?;
+    Some(out)
+}
+
 /// Render one bounded sheet range to PNG bytes, in memory.
 pub fn render_sheet(
     workbook: &WorkbookContext,
@@ -68,10 +82,21 @@ pub fn render_sheet(
     range: &str,
     png_level: PngLevel,
 ) -> Result<NativeScreenshot> {
-    let range = bounds(range)?;
     let styles = styles_xml(&workbook.path);
+    render_sheet_with_styles(workbook, sheet_name, range, png_level, styles.as_deref())
+}
+
+/// Render with the stylesheet part supplied by the caller.
+pub fn render_sheet_with_styles(
+    workbook: &WorkbookContext,
+    sheet_name: &str,
+    range: &str,
+    png_level: PngLevel,
+    styles: Option<&[u8]>,
+) -> Result<NativeScreenshot> {
+    let range = bounds(range)?;
     let options = agent_spreadsheet_render::RenderOptions {
-        styles_xml: styles.as_deref(),
+        styles_xml: styles,
         ..Default::default()
     };
     let scene = workbook.with_spreadsheet(|book| {
