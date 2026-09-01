@@ -1,0 +1,27 @@
+# Ticket: 5006 WASM Render Binding, SDK renderSheet, Worker Mode
+
+## Depends On
+- 5002, 5004, 5005
+
+## Why
+Rendering is synchronous CPU work. In the browser it must not block the UI thread, and the SDK must return image bytes without any artifact handle crossing its boundary.
+
+## Owner / Effort / Risk
+- Owner: WASM adapter / SDK
+- Effort: M
+- Risk: Low
+
+## Scope
+- WASM crate enables the `render` feature. `screenshot_sheet` through `executeOperation` renders into a bounded per-session artifact slot. New binding `readArtifact(sessionId, handle) -> Uint8Array` and `disposeArtifact(sessionId, handle)`; slots are capped by count and aggregate bytes and are dropped with the session.
+- SDK `LocalWorkbook.renderSheet()` calls the operation, reads the bytes, disposes the slot, and returns bytes plus report.
+- Worker mode: `createLocalSpreadsheet({ runtime, worker: true })` runs the bindings in a Web Worker or `worker_threads` via a small RPC shim. Default on in browsers when available.
+- just-bash: `asp op screenshot_sheet --bind /wb.xlsx --output /shot.png` writes bytes to the VFS. Registry just_bash support for `screenshot_sheet` flips to supported.
+- Re-measure the size gate. Renderer plus subset fonts should add under 1.5 MiB raw.
+
+## Tests
+- Node and browser integration: render a fixture, hash matches the native golden.
+- Worker mode round trip and disposal.
+- just-bash VFS output test.
+
+## Definition of Done
+- Browser and Node users render without LibreOffice, without blocking the UI thread, and with the same bytes as native.

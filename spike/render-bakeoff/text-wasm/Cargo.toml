@@ -1,0 +1,24 @@
+# Minimal wasm cdylib whose only job is to pull in exactly one text stack and
+# one font strategy, so `wasm32-unknown-unknown --release` size deltas isolate
+# the text choice from everything else.
+[package]
+name = "text-wasm"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+text-rustybuzz = ["dep:spike-d", "spike-d/text-rustybuzz"]
+text-abglyph = ["dep:spike-d", "spike-d/text-abglyph"]
+font-full = ["dep:spike-d", "spike-d/font-full"]
+font-subset = ["dep:spike-d", "spike-d/font-subset"]
+# `baseline` compiles the same shell with no spike-d at all, to subtract the
+# wasm prelude (allocator, panic shim) from every other number.
+baseline = []
+
+[dependencies]
+spike-d = { path = "../spike-d", default-features = false, optional = true }
+
+[lib]
+crate-type = ["cdylib"]
