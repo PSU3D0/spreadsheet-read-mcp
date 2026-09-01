@@ -194,6 +194,25 @@ test("renderSheet fetches bytes through the binding when it exists", async () =>
     sessionId: workbook.resourceId,
     handle: `artifact:sha256:${"a".repeat(64)}`
   }])
+  // The slot is released as soon as the bytes have crossed, so a render loop
+  // cannot evict its own earlier artifacts.
+  assert.deepEqual(state.disposedArtifacts, [{
+    sessionId: workbook.resourceId,
+    handle: `artifact:sha256:${"a".repeat(64)}`
+  }])
+  assert.equal(rendered.width, 640)
+  assert.equal(rendered.height, 480)
+  assert.equal(rendered.png_level, "balanced")
+})
+
+test("renderSheet passes png_level through to the canonical request", async () => {
+  const { bindings, state } = createFakeBindings()
+  const local = createLocalSpreadsheet({ runtime: bindings })
+  const workbook = await local.open(Uint8Array.from([1]))
+
+  const rendered = await workbook.renderSheet({ sheet_name: "Sheet1", png_level: "fast" })
+  assert.equal(state.executed[0].params.png_level, "fast")
+  assert.equal(rendered.png_level, "fast")
 })
 
 test("renderSheet throws CapabilityError when the binding has no readArtifact", async () => {

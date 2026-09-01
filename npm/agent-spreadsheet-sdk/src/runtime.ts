@@ -20,6 +20,14 @@ export interface CanonicalRuntime {
   ): Promise<OutputOf<K>>
   /** Fetch the bytes of an artifact handle produced by `resourceId`. */
   artifactBytes(handle: string, resourceId: string): Promise<Uint8Array>
+  /**
+   * Release an artifact the runtime is holding for `resourceId`.
+   *
+   * The local runtime parks rendered bytes in a bounded session slot, so the
+   * object model frees the slot as soon as the bytes have crossed. Runtimes
+   * that hold nothing (the server addresses artifacts by content) omit this.
+   */
+  releaseArtifact?(handle: string, resourceId: string): Promise<void>
 }
 
 /** A canonical response envelope, before any operation-specific narrowing. */

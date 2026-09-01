@@ -1,7 +1,12 @@
 import { CapabilityError } from "./errors.js"
 import type { InputOf, OperationName, OutputOf } from "./generated/operations.js"
 import { GeneratedWorkbookView } from "./generated/read-surface.js"
-import type { RenderSheetInput, RenderedSheet, RenderWarning } from "./render.js"
+import type {
+  RenderPngLevel,
+  RenderSheetInput,
+  RenderedSheet,
+  RenderWarning
+} from "./render.js"
 import { type CanonicalRuntime, executeCanonical } from "./runtime.js"
 
 export type { BoundInput } from "./generated/read-surface.js"
@@ -26,6 +31,9 @@ interface ScreenshotData {
   warnings?: unknown
   calculation?: unknown
   renderer?: unknown
+  width?: unknown
+  height?: unknown
+  png_level?: unknown
 }
 
 /**
@@ -94,9 +102,16 @@ export abstract class WorkbookHandle extends GeneratedWorkbookView {
   async renderSheet(input: RenderSheetInput): Promise<RenderedSheet> {
     const request: Record<string, unknown> = { sheet_name: input.sheet_name }
     if (input.range !== undefined) request["range"] = input.range
+    if (input.png_level !== undefined) request["png_level"] = input.png_level
     const response = await this.executeBound("screenshot_sheet", request)
     const data = (response as { data: ScreenshotData }).data
     const png = await this.runtime.artifactBytes(data.artifact.handle, this.resourceId)
+    // The bytes have crossed, so nothing needs the slot any more. Releasing here
+    // is what keeps a render loop inside one session from evicting its own
+    // earlier artifacts.
+    if (this.runtime.releaseArtifact) {
+      await this.runtime.releaseArtifact(data.artifact.handle, this.resourceId)
+    }
     return {
       png,
       fidelity: typeof data.fidelity === "string" ? data.fidelity : "unknown",
@@ -105,7 +120,12 @@ export abstract class WorkbookHandle extends GeneratedWorkbookView {
       sheet_name: data.sheet_name,
       range: data.range,
       handle: data.artifact.handle,
-      renderer: typeof data.renderer === "string" ? data.renderer : undefined
+      renderer: typeof data.renderer === "string" ? data.renderer : undefined,
+      width: typeof data.width === "number" ? data.width : undefined,
+      height: typeof data.height === "number" ? data.height : undefined,
+      png_level: typeof data.png_level === "string"
+        ? (data.png_level as RenderPngLevel)
+        : undefined
     }
   }
 }
