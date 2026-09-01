@@ -1,20 +1,36 @@
-const registry = require("./generated/canonical-registry.json")
-const { CapabilityError, SpreadsheetSdkError } = require("./errors")
+/* Legacy 0.14 backend plumbing: registry lookup, discovery normalization, and the
+ * `defineProperty` method layer. Superseded by the generated read surface. */
 
-const OPERATION_NAMES = Object.freeze(registry.operations.map(({ name }) => name))
-const OPERATION_SET = new Set(OPERATION_NAMES)
+import { canonicalRegistry } from "../generated/registry-data.js"
+import { CapabilityError, SpreadsheetSdkError } from "./errors.js"
+
+/** @deprecated Use `canonicalRegistry` from `agent-spreadsheet-sdk`. */
+export const registry = canonicalRegistry as unknown as Record<string, any>
+
+/** @deprecated Use `OPERATION_NAMES` from `agent-spreadsheet-sdk`. */
+export const OPERATION_NAMES: readonly string[] = Object.freeze(
+  canonicalRegistry.operations.map(({ name }) => name)
+)
+
+const OPERATION_SET_INTERNAL = new Set<string>(OPERATION_NAMES)
+
+/** @deprecated Use `isOperationName` from `agent-spreadsheet-sdk`. */
+export const OPERATION_SET: ReadonlySet<string> = OPERATION_SET_INTERNAL
+
 const CANONICAL_TOOL_META_KEY = "agent-spreadsheet/canonical"
-const CANONICAL_SCHEMA_VERSION = registry.schema_version
+const CANONICAL_SCHEMA_VERSION = canonicalRegistry.schema_version
 
-function canonicalMethodName(operation) {
-  return operation.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase())
+function canonicalMethodName(operation: string): string {
+  return operation.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase())
 }
 
-const CANONICAL_METHODS = Object.freeze(Object.fromEntries(
-  OPERATION_NAMES.map((operation) => [canonicalMethodName(operation), operation])
-))
+/** @deprecated The 0.14 camel-case method map. */
+export const CANONICAL_METHODS: Readonly<Record<string, string>> = Object.freeze(
+  Object.fromEntries(OPERATION_NAMES.map((operation) => [canonicalMethodName(operation), operation]))
+)
 
-function declaredOperations(value, fallback = []) {
+/** @deprecated Legacy declared-operation normalization. */
+export function declaredOperations(value: any, fallback: string[] = []): string[] {
   const operations = Array.isArray(value)
     ? value
     : value?.operations || value?.supportedOperations || fallback
@@ -23,10 +39,10 @@ function declaredOperations(value, fallback = []) {
       code: "INVALID_ARGUMENT"
     })
   }
-  return [...new Set(operations.filter((operation) => OPERATION_SET.has(operation)))]
+  return [...new Set(operations.filter((operation: string) => OPERATION_SET_INTERNAL.has(operation)))]
 }
 
-function discoveryEntries(value) {
+function discoveryEntries(value: any): any[] {
   let entries = value
   if (typeof entries === "string") {
     try {
@@ -41,9 +57,10 @@ function discoveryEntries(value) {
   entries = entries?.result?.operations || entries?.result?.tools ||
     entries?.operations || entries?.tools || entries
   if (!Array.isArray(entries)) {
-    throw new SpreadsheetSdkError("operation discovery must return an array of names or descriptors", {
-      code: "INVALID_RESPONSE"
-    })
+    throw new SpreadsheetSdkError(
+      "operation discovery must return an array of names or descriptors",
+      { code: "INVALID_RESPONSE" }
+    )
   }
   return entries
 }
@@ -51,29 +68,32 @@ function discoveryEntries(value) {
 // Explicit operation registries and WASM operations() are trusted canonical API
 // contracts. Generic MCP tools/list descriptors are not: compatibility routers
 // intentionally reuse several canonical names with legacy schemas and outputs.
-function discoveredOperations(value) {
+/** @deprecated Legacy discovery normalization. */
+export function discoveredOperations(value: any): string[] {
   const entries = discoveryEntries(value)
-  const names = entries.map((entry) => typeof entry === "string" ? entry : entry?.name)
+  const names = entries.map((entry) => (typeof entry === "string" ? entry : entry?.name))
   if (names.some((name) => typeof name !== "string")) {
     throw new SpreadsheetSdkError("operation discovery contains a descriptor without a name", {
       code: "INVALID_RESPONSE"
     })
   }
-  return [...new Set(names.filter((name) => OPERATION_SET.has(name)))]
+  return [...new Set(names.filter((name: string) => OPERATION_SET_INTERNAL.has(name)))]
 }
 
-function discoveredCanonicalTools(value) {
+/** @deprecated Legacy `tools/list` canonical marker filter. */
+export function discoveredCanonicalTools(value: any): string[] {
   return [...new Set(discoveryEntries(value)
     .filter((entry) => {
       if (!entry || typeof entry !== "object" || typeof entry.name !== "string") return false
       const marker = entry._meta?.[CANONICAL_TOOL_META_KEY] ?? entry.meta?.[CANONICAL_TOOL_META_KEY]
       return marker?.schema_version === CANONICAL_SCHEMA_VERSION &&
-        marker?.operation === entry.name && OPERATION_SET.has(entry.name)
+        marker?.operation === entry.name && OPERATION_SET_INTERNAL.has(entry.name)
     })
-    .map(({ name }) => name))]
+    .map(({ name }) => name as string))]
 }
 
-function requireOperation(backend, operation, method = "execute") {
+/** @deprecated Legacy capability gate. */
+export function requireOperation(backend: any, operation: string, method = "execute"): void {
   if (!backend._operationSet.has(operation)) {
     throw new CapabilityError({
       backend: backend.kind,
@@ -84,32 +104,33 @@ function requireOperation(backend, operation, method = "execute") {
   }
 }
 
-function installCanonicalMethods(Backend) {
+/** @deprecated The `defineProperty` method layer the 0.15 generated surface replaces. */
+export function installCanonicalMethods(Backend: any): void {
   for (const [method, operation] of Object.entries(CANONICAL_METHODS)) {
     if (Object.prototype.hasOwnProperty.call(Backend.prototype, method)) continue
     Object.defineProperty(Backend.prototype, method, {
       configurable: true,
-      value(input = {}) {
+      value(this: any, input: any = {}) {
         return this.execute(operation, input)
       }
     })
   }
 }
 
-function projectData(response) {
-  return response && typeof response === "object" && "data" in response
-    ? response.data
-    : response
+/** @deprecated Legacy envelope flattening. */
+export function projectData(response: any): any {
+  return response && typeof response === "object" && "data" in response ? response.data : response
 }
 
-function prefixedResourceId(value, prefix) {
+function prefixedResourceId(value: any, prefix: string): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new SpreadsheetSdkError("missing resource identity", { code: "INVALID_ARGUMENT" })
   }
   return /^(wb|fork|session):/.test(value) ? value : `${prefix}:${value}`
 }
 
-function legacyResourceId(kind, input, mutation = false) {
+/** @deprecated Legacy resource-id inference. */
+export function legacyResourceId(kind: string, input: any, mutation = false): string {
   if (input.resource_id) return input.resource_id
   if (kind === "wasm") {
     const session = input.sessionId || input.session_id || input.contextId || input.context_id
@@ -123,18 +144,4 @@ function legacyResourceId(kind, input, mutation = false) {
     ? input.forkId || input.fork_id || input.workbookId || input.workbook_id || input.contextId
     : input.workbookId || input.workbook_id || input.contextId
   return prefixedResourceId(value, mutation ? "fork" : "wb")
-}
-
-module.exports = {
-  registry,
-  OPERATION_NAMES,
-  OPERATION_SET,
-  CANONICAL_METHODS,
-  declaredOperations,
-  discoveredOperations,
-  discoveredCanonicalTools,
-  requireOperation,
-  installCanonicalMethods,
-  projectData,
-  legacyResourceId
 }

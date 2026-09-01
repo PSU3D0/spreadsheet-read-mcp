@@ -28,3 +28,7 @@ tickets/**
 .venv/
 .pi
 ref-libs/
+!tickets/50-sdk-rework-and-native-rendering/
+!tickets/50-sdk-rework-and-native-rendering/**
+node_modules/
+npm/agent-spreadsheet-sdk/dist/

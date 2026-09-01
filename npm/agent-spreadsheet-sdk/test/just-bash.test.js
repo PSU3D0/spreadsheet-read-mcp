@@ -285,7 +285,7 @@ test("same-target exports are locked, no-clobber, and leave no temporary files",
 })
 
 test("just-bash command remains a thin protocol and VFS transport", () => {
-  const source = fs.readFileSync(path.join(__dirname, "..", "src", "just-bash.js"), "utf8")
+  const source = fs.readFileSync(path.join(__dirname, "..", "src", "just-bash", "index.ts"), "utf8")
   const semanticLines = source.split("\n").filter((line) => {
     const trimmed = line.trim()
     return trimmed && !trimmed.startsWith("//")

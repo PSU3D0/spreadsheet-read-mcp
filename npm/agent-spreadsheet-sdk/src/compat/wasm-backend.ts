@@ -1,13 +1,15 @@
-const { createCapabilities } = require("./capabilities")
-const {
+/* Legacy 0.14 WASM backend. Superseded by `createLocalSpreadsheet` in the package root. */
+
+import { createCapabilities, type LegacyCapabilities } from "./capabilities.js"
+import {
   discoveredOperations,
   requireOperation,
   installCanonicalMethods
-} = require("./backend")
-const { installLegacyMethods } = require("./mcp-backend")
-const { CapabilityError, SpreadsheetSdkError } = require("./errors")
+} from "./backend.js"
+import { installLegacyMethods } from "./mcp-backend.js"
+import { CapabilityError, SpreadsheetSdkError } from "./errors.js"
 
-function parseBindingResult(value, operation) {
+function parseBindingResult(value: any, operation: string): any {
   if (typeof value !== "string") return value
   try {
     return JSON.parse(value)
@@ -21,8 +23,15 @@ function parseBindingResult(value, operation) {
   }
 }
 
-class WasmBackend {
-  constructor(params) {
+/** @deprecated Use `createLocalSpreadsheet({ runtime })` from `agent-spreadsheet-sdk`. */
+export class WasmBackend {
+  kind: string
+  private _bindings: any
+  private _capabilities: LegacyCapabilities
+  private _operationSet: Set<string>;
+  [method: string]: any
+
+  constructor(params: any) {
     if (!params || !params.bindings || typeof params.bindings !== "object") {
       throw new SpreadsheetSdkError("WasmBackend requires bindings object", {
         code: "INVALID_ARGUMENT",
@@ -61,7 +70,7 @@ class WasmBackend {
     return this._capabilities
   }
 
-  async execute(operation, input = {}) {
+  async execute(operation: string, input: any = {}) {
     requireOperation(this, operation)
     if (!input || typeof input !== "object" || Array.isArray(input)) {
       throw new SpreadsheetSdkError("canonical operation input must be an object", {
@@ -90,7 +99,7 @@ class WasmBackend {
     }
   }
 
-  async bindWorkbook(input = {}) {
+  async bindWorkbook(input: any = {}) {
     if (typeof this._bindings.createSession !== "function") {
       throw new CapabilityError({
         backend: this.kind,
@@ -110,12 +119,12 @@ class WasmBackend {
     return { resource_id: resourceId }
   }
 
-  async createSession(input = {}) {
+  async createSession(input: any = {}) {
     const bound = await this.bindWorkbook(input)
     return bound.resource_id
   }
 
-  async exportWorkbook(input = {}) {
+  async exportWorkbook(input: any = {}) {
     if (typeof this._bindings.exportWorkbook !== "function") {
       throw new CapabilityError({
         backend: this.kind,
@@ -134,7 +143,7 @@ class WasmBackend {
     return this._bindings.exportWorkbook(resourceId)
   }
 
-  async disposeSession(input = {}) {
+  async disposeSession(input: any = {}) {
     if (typeof this._bindings.disposeSession !== "function") {
       throw new CapabilityError({
         backend: this.kind,
@@ -156,5 +165,3 @@ class WasmBackend {
 
 installCanonicalMethods(WasmBackend)
 installLegacyMethods(WasmBackend)
-
-module.exports = { WasmBackend }

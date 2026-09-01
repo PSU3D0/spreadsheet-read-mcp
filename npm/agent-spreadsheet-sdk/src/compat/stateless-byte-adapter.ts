@@ -1,15 +1,18 @@
-const RESOURCE_COUNTS = Object.freeze({
+/* Legacy 0.14 stateless byte adapter. The 0.15 local runtime owns resident sessions;
+ * this module remains for the just-bash projection and existing embedders. */
+
+const RESOURCE_COUNTS: Readonly<Record<string, number>> = Object.freeze({
   none: 0,
   single_read: 1,
   single_mutable: 1,
   two_resource: 2
 })
 
-function adapterError(code, message, path) {
+function adapterError(code: string, message: string, path: string): any {
   return Object.assign(new Error(message), { aspCode: code, aspPath: path })
 }
 
-function assertPlan(plan) {
+function assertPlan(plan: any): void {
   if (!plan || plan.support_status !== "supported") {
     throw adapterError("CAPABILITY_UNAVAILABLE", "operation is unavailable in this stateless adapter", "adapter")
   }
@@ -29,7 +32,8 @@ function assertPlan(plan) {
   }
 }
 
-function supportsStatelessBytePlan(plan, capabilities) {
+/** @deprecated Adapter-plan gate for the legacy stateless byte flow. */
+export function supportsStatelessBytePlan(plan: any, capabilities: any): boolean {
   if (!plan || plan.support_status !== "supported" ||
       !Object.hasOwn(RESOURCE_COUNTS, plan.binding_kind) ||
       !["none", "export_required"].includes(plan.persistence)) return false
@@ -38,7 +42,7 @@ function supportsStatelessBytePlan(plan, capabilities) {
   return plan.persistence !== "export_required" || Boolean(capabilities?.resourceExport)
 }
 
-function bindResource(params, key, resourceId) {
+function bindResource(params: any, key: string, resourceId: string): void {
   if (params[key] && params[key] !== resourceId) {
     throw adapterError(
       "INVALID_REQUEST",
@@ -49,7 +53,8 @@ function bindResource(params, key, resourceId) {
   params[key] = resourceId
 }
 
-function validateStatelessByteRequest(plan, params) {
+/** @deprecated Request validation for the legacy stateless byte flow. */
+export function validateStatelessByteRequest(plan: any, params: any): void {
   assertPlan(plan)
   if (!params || typeof params !== "object" || Array.isArray(params)) {
     throw adapterError("INVALID_REQUEST", "canonical request payload must be a JSON object", "$")
@@ -63,7 +68,14 @@ function validateStatelessByteRequest(plan, params) {
   }
 }
 
-async function executeStatelessByteOperation({ backend, operation, params, plan, workbooks = [] }) {
+/** @deprecated Ephemeral bind/execute/export/dispose for the legacy stateless byte flow. */
+export async function executeStatelessByteOperation({ backend, operation, params, plan, workbooks = [] }: {
+  backend: any
+  operation: string
+  params: any
+  plan: any
+  workbooks?: any[]
+}): Promise<{ response: any; workbookBytes?: Uint8Array; exitCode: number }> {
   validateStatelessByteRequest(plan, params)
   const expected = RESOURCE_COUNTS[plan.binding_kind]
   if (!Array.isArray(workbooks) || workbooks.length !== expected) {
@@ -74,8 +86,8 @@ async function executeStatelessByteOperation({ backend, operation, params, plan,
     )
   }
 
-  const request = { ...params }
-  const sessions = []
+  const request: any = { ...params }
+  const sessions: string[] = []
   try {
     for (const workbookBytes of workbooks) {
       sessions.push(await backend.createSession({ workbookBytes }))
@@ -86,7 +98,7 @@ async function executeStatelessByteOperation({ backend, operation, params, plan,
     const response = await backend.execute(operation, request)
     const status = response?.data?.status
     const failed = ["failed", "rolled_back"].includes(status)
-    let workbookBytes
+    let workbookBytes: Uint8Array | undefined
     if (plan.persistence === "export_required" && params.mode !== "preview" && !failed) {
       workbookBytes = await backend.exportWorkbook({ resource_id: sessions[0] })
     }
@@ -97,13 +109,7 @@ async function executeStatelessByteOperation({ backend, operation, params, plan,
     }
   } finally {
     for (const resourceId of sessions.reverse()) {
-      try { await backend.disposeSession({ resource_id: resourceId }) } catch (_) {}
+      try { await backend.disposeSession({ resource_id: resourceId }) } catch { /* best effort */ }
     }
   }
-}
-
-module.exports = {
-  executeStatelessByteOperation,
-  supportsStatelessBytePlan,
-  validateStatelessByteRequest
 }

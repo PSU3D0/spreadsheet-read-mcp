@@ -1,13 +1,15 @@
-function resolveVfsPath(ctx, path) {
+type Json = any
+
+export function resolveVfsPath(ctx: Json, path: string): string {
   return ctx.fs.resolvePath(ctx.cwd, path)
 }
 
-async function readWorkbook(ctx, path, limit, flag) {
+export async function readWorkbook(ctx: Json, path: string, limit: number, flag: string): Promise<Uint8Array> {
   const resolved = resolveVfsPath(ctx, path)
-  let stat
+  let stat: Json
   try {
     stat = await ctx.fs.stat(resolved)
-  } catch (cause) {
+  } catch (cause: Json) {
     cause.aspPath = flag
     throw cause
   }
@@ -17,10 +19,10 @@ async function readWorkbook(ctx, path, limit, flag) {
       aspCode: "INVALID_REQUEST", aspPath: flag
     })
   }
-  let bytes
+  let bytes: Json
   try {
     bytes = await ctx.fs.readFileBuffer(resolved)
-  } catch (cause) {
+  } catch (cause: Json) {
     cause.aspPath = flag
     throw cause
   }
@@ -32,14 +34,14 @@ async function readWorkbook(ctx, path, limit, flag) {
   return bytes
 }
 
-function createVfsWriter() {
-  const locks = new Map()
+export function createVfsWriter(): { atomicWrite: (ctx: Json, target: string, bytes: Uint8Array, replace: boolean) => Promise<void> } {
+  const locks = new Map<string, Promise<void>>()
   let tempSequence = 0
 
-  async function withTargetLock(target, task) {
+  async function withTargetLock(target: string, task: () => Promise<void>): Promise<void> {
     const previous = locks.get(target) || Promise.resolve()
-    let release
-    const current = new Promise((resolve) => { release = resolve })
+    let release!: () => void
+    const current = new Promise<void>((resolve) => { release = resolve })
     locks.set(target, current)
     await previous
     try {
@@ -50,7 +52,7 @@ function createVfsWriter() {
     }
   }
 
-  async function atomicWrite(ctx, target, bytes, replace) {
+  async function atomicWrite(ctx: Json, target: string, bytes: Uint8Array, replace: boolean): Promise<void> {
     const resolved = resolveVfsPath(ctx, target)
     return withTargetLock(resolved, async () => {
       if (!replace && await ctx.fs.exists(resolved)) {
@@ -58,15 +60,15 @@ function createVfsWriter() {
           aspCode: "INVALID_REQUEST", aspPath: "--output"
         })
       }
-      let temporary
+      let temporary: string
       do {
         temporary = `${resolved}.asp-tmp-${++tempSequence}`
       } while (await ctx.fs.exists(temporary))
       try {
         await ctx.fs.writeFile(temporary, bytes)
         await ctx.fs.mv(temporary, resolved)
-      } catch (cause) {
-        try { await ctx.fs.rm(temporary, { force: true }) } catch (_) {}
+      } catch (cause: Json) {
+        try { await ctx.fs.rm(temporary, { force: true }) } catch { /* best effort */ }
         cause.aspCode = "OPERATION_FAILED"
         cause.aspPath = "adapter_export"
         throw cause
@@ -76,5 +78,3 @@ function createVfsWriter() {
 
   return { atomicWrite }
 }
-
-module.exports = { createVfsWriter, readWorkbook, resolveVfsPath }
