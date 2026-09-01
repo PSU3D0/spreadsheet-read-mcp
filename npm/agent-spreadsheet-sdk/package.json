@@ -51,6 +51,7 @@
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.cjs.json && tsc -p tsconfig.esm.json && tsc -p tsconfig.types.json && node scripts/finalize-build.js",
+    "prepack": "npm run build",
     "generate:registry": "node scripts/generate-canonical-registry.js",
     "generate:types": "node scripts/generate-types.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",

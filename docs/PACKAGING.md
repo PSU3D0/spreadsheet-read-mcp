@@ -8,7 +8,7 @@
 | WASM adapter/runtime | `agent-spreadsheet-wasm` | `agent-spreadsheet-wasm` (planned distribution package) | — |
 | MCP server | `agent-spreadsheet-mcp` | — | `agent-spreadsheet-mcp` |
 | CLI | `agent-spreadsheet` | `agent-spreadsheet` | `agent-spreadsheet` |
-| JS SDK backend abstraction | — | `agent-spreadsheet-sdk` | — |
+| TypeScript SDK (local WASM + server `/v1` runtimes) | — | `agent-spreadsheet-sdk` | — |
 
 The workspace umbrella name is **agent-spreadsheet**. The GitHub repo is `PSU3D0/agent-spreadsheet-mcp` (historical — predates the workspace split).
 
@@ -24,7 +24,7 @@ Release ordering for tranche-35 surfaces:
 
 1. publish core crates in dependency order (`agent-spreadsheet` → `agent-spreadsheet-wasm` → `agent-spreadsheet-mcp`)
 2. publish npm packages (`agent-spreadsheet`, `agent-spreadsheet-sdk`, and `agent-spreadsheet-wasm` when enabled)
-3. run smoke tests against SDK MCP + WASM backends before final release promotion
+3. run smoke tests against both SDK runtimes (local WASM and the server `/v1` route) before final release promotion
 
 ### Tag lanes
 
@@ -68,7 +68,7 @@ WASM + SDK artifacts are published as package artifacts:
 | Artifact | Surface |
 | --- | --- |
 | crate `agent-spreadsheet-wasm` | Rust/WASM adapter crate |
-| npm `agent-spreadsheet-sdk` | JS SDK backend abstraction |
+| npm `agent-spreadsheet-sdk` | TypeScript SDK over the local WASM and server `/v1` runtimes |
 | npm `agent-spreadsheet-wasm` (planned) | JS/WASM runtime distribution |
 
 ## Default features
@@ -106,4 +106,4 @@ Override download source with `AGENT_SPREADSHEET_DOWNLOAD_BASE_URL`. Use a pre-b
 | `crates/agent-spreadsheet-mcp/README.md` | MCP users | Quickstart configs, feature summary, link to root |
 | `crates/agent-spreadsheet/README.md` | CLI users | `agent-spreadsheet` binary usage and command surface |
 | `npm/agent-spreadsheet/README.md` | npm CLI users | Install, platform matrix, troubleshooting, env vars |
-| `npm/agent-spreadsheet-sdk/README.md` | npm SDK users | Backend abstraction, capabilities, typed errors |
+| `npm/agent-spreadsheet-sdk/README.md` | npm SDK users | Object model, generated types, capabilities, typed errors |
