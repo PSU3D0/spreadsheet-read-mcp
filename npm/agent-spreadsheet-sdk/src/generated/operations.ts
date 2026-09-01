@@ -1686,9 +1686,31 @@ export namespace OutSheetStatistics {
 }
 
 export namespace InScreenshotSheet {
+  /**
+   * Which renderer to use. `native` is the in-process raster renderer; it needs
+   * no external process and is the default wherever it is compiled in.
+   * `libreoffice` is the legacy macro-to-PDF-to-PNG path and stays opt-in.
+   */
+  export type ScreenshotBackend = ("native" | "libreoffice")
+  /**
+   * PNG encoder effort. Encoding dominates render time, so this is the one
+   * renderer knob worth exposing: `fast` trades bytes for latency, `best`
+   * trades latency for bytes. Geometry never depends on it.
+   */
+  export type ScreenshotPngLevel = ("fast" | "balanced" | "best")
   export type ResourceId = string
 
   export interface Input {
+  /**
+   * Defaults to `native` when the `render` feature is compiled in, and to
+   * `libreoffice` otherwise.
+   */
+  backend?: (ScreenshotBackend | null)
+  /**
+   * PNG encoder effort for the native backend. Defaults to `balanced`.
+   * Rejected by the LibreOffice backend, which owns its own encoder.
+   */
+  png_level?: (ScreenshotPngLevel | null)
   range?: (string | null)
   resource_id: ResourceId
   sheet_name: string
@@ -1696,6 +1718,18 @@ export namespace InScreenshotSheet {
 }
 
 export namespace OutScreenshotSheet {
+  export type EvaluationState = ("clean" | "errors_found" | "partial" | "not_evaluated")
+  /**
+   * PNG encoder effort. Encoding dominates render time, so this is the one
+   * renderer knob worth exposing: `fast` trades bytes for latency, `best`
+   * trades latency for bytes. Geometry never depends on it.
+   */
+  export type ScreenshotPngLevel = ("fast" | "balanced" | "best")
+  /**
+   * Structured account of what the renderer did not reproduce. A closed set:
+   * nothing unsupported disappears silently.
+   */
+  export type ScreenshotWarning = ("conditional_format_omitted" | "chart_omitted" | "image_omitted" | "font_substituted" | "rich_text_flattened" | "number_format_approximated" | "formulas_unevaluated" | "text_rotation_omitted" | "pattern_fill_approximated")
   export type ResourceId = string
 
   export interface Output {
@@ -1707,15 +1741,48 @@ export namespace OutScreenshotSheet {
   }
   export interface ScreenshotSheetData {
   artifact: ArtifactHandle
+  calculation: CalculationMetadata
   duration_ms: number
+  /**
+   * How faithful the render is. Mirrors `agent_spreadsheet_render::Fidelity`,
+   * and is `full` for the LibreOffice backend, which reports no warnings.
+   */
+  fidelity?: ("full" | "partial")
+  height?: (number | null)
+  /**
+   * The PNG encoder effort the render actually used, `null` when the
+   * backend does not expose one.
+   */
+  png_level?: (ScreenshotPngLevel | null)
   range: string
+  /**
+   * Renderer identity, e.g. `native-raster/1` or `libreoffice`. Additive:
+   * older payloads without it deserialize to the LibreOffice default.
+   */
+  renderer?: string
   sheet_name: string
+  warnings?: ScreenshotWarning[]
+  /**
+   * Rendered image geometry in device pixels. Reported by renderers that
+   * know it before encoding; `null` for the LibreOffice path, which does
+   * not.
+   */
+  width?: (number | null)
   }
   export interface ArtifactHandle {
   bytes: number
   handle: string
   hash: string
   media_type: string
+  }
+  /**
+   * Calculation state at the rendered revision. Rendering never
+   * recalculates, so this is how a caller learns whether what it is looking
+   * at is current.
+   */
+  export interface CalculationMetadata {
+  revision_id: string
+  state: EvaluationState
   }
 }
 

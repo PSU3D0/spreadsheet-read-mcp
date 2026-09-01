@@ -9263,7 +9263,7 @@
         "just_bash": {
           "binding_kind": "single_read",
           "persistence": "none",
-          "support_status": "unsupported"
+          "support_status": "supported"
         },
         "mcp": {
           "binding_kind": "single_read",
@@ -9273,7 +9273,7 @@
         "wasm": {
           "binding_kind": "single_read",
           "persistence": "none",
-          "support_status": "unsupported"
+          "support_status": "supported"
         }
       },
       "capability": {
@@ -9297,11 +9297,52 @@
             "minLength": 4,
             "pattern": "^(wb|fork|session):[A-Za-z0-9][A-Za-z0-9_-]{0,243}$",
             "type": "string"
+          },
+          "ScreenshotBackend": {
+            "description": "Which renderer to use. `native` is the in-process raster renderer; it needs\nno external process and is the default wherever it is compiled in.\n`libreoffice` is the legacy macro-to-PDF-to-PNG path and stays opt-in.",
+            "enum": [
+              "native",
+              "libreoffice"
+            ],
+            "type": "string"
+          },
+          "ScreenshotPngLevel": {
+            "description": "PNG encoder effort. Encoding dominates render time, so this is the one\nrenderer knob worth exposing: `fast` trades bytes for latency, `best`\ntrades latency for bytes. Geometry never depends on it.",
+            "enum": [
+              "fast",
+              "balanced",
+              "best"
+            ],
+            "type": "string"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "backend": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ScreenshotBackend"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Defaults to `native` when the `render` feature is compiled in, and to\n`libreoffice` otherwise."
+          },
+          "png_level": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ScreenshotPngLevel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "PNG encoder effort for the native backend. Defaults to `balanced`.\nRejected by the LibreOffice backend, which owns its own encoder."
+          },
           "range": {
             "default": null,
             "maxLength": 32,
@@ -9360,10 +9401,52 @@
             ],
             "type": "object"
           },
+          "CalculationMetadata": {
+            "additionalProperties": false,
+            "properties": {
+              "revision_id": {
+                "type": "string"
+              },
+              "state": {
+                "$ref": "#/$defs/EvaluationState"
+              }
+            },
+            "required": [
+              "state",
+              "revision_id"
+            ],
+            "type": "object"
+          },
+          "EvaluationState": {
+            "enum": [
+              "clean",
+              "errors_found",
+              "partial",
+              "not_evaluated"
+            ],
+            "type": "string"
+          },
           "ResourceId": {
             "maxLength": 256,
             "minLength": 4,
             "pattern": "^(wb|fork|session):[A-Za-z0-9][A-Za-z0-9_-]{0,243}$",
+            "type": "string"
+          },
+          "ScreenshotFidelity": {
+            "description": "How faithful the render is. Mirrors `agent_spreadsheet_render::Fidelity`,\nand is `full` for the LibreOffice backend, which reports no warnings.",
+            "enum": [
+              "full",
+              "partial"
+            ],
+            "type": "string"
+          },
+          "ScreenshotPngLevel": {
+            "description": "PNG encoder effort. Encoding dominates render time, so this is the one\nrenderer knob worth exposing: `fast` trades bytes for latency, `best`\ntrades latency for bytes. Geometry never depends on it.",
+            "enum": [
+              "fast",
+              "balanced",
+              "best"
+            ],
             "type": "string"
           },
           "ScreenshotSheetData": {
@@ -9372,25 +9455,89 @@
               "artifact": {
                 "$ref": "#/$defs/ArtifactHandle"
               },
+              "calculation": {
+                "$ref": "#/$defs/CalculationMetadata",
+                "description": "Calculation state at the rendered revision. Rendering never\nrecalculates, so this is how a caller learns whether what it is looking\nat is current."
+              },
               "duration_ms": {
                 "format": "uint64",
                 "minimum": 0,
                 "type": "integer"
               },
+              "fidelity": {
+                "$ref": "#/$defs/ScreenshotFidelity",
+                "default": "full"
+              },
+              "height": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "png_level": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ScreenshotPngLevel"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The PNG encoder effort the render actually used, `null` when the\nbackend does not expose one."
+              },
               "range": {
+                "type": "string"
+              },
+              "renderer": {
+                "default": "libreoffice",
+                "description": "Renderer identity, e.g. `native-raster/1` or `libreoffice`. Additive:\nolder payloads without it deserialize to the LibreOffice default.",
                 "type": "string"
               },
               "sheet_name": {
                 "type": "string"
+              },
+              "warnings": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/ScreenshotWarning"
+                },
+                "type": "array"
+              },
+              "width": {
+                "description": "Rendered image geometry in device pixels. Reported by renderers that\nknow it before encoding; `null` for the LibreOffice path, which does\nnot.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               }
             },
             "required": [
               "sheet_name",
               "range",
               "artifact",
-              "duration_ms"
+              "duration_ms",
+              "calculation"
             ],
             "type": "object"
+          },
+          "ScreenshotWarning": {
+            "description": "Structured account of what the renderer did not reproduce. A closed set:\nnothing unsupported disappears silently.",
+            "enum": [
+              "conditional_format_omitted",
+              "chart_omitted",
+              "image_omitted",
+              "font_substituted",
+              "rich_text_flattened",
+              "number_format_approximated",
+              "formulas_unevaluated",
+              "text_rotation_omitted",
+              "pattern_fill_approximated"
+            ],
+            "type": "string"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
