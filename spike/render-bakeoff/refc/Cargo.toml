@@ -1,0 +1,12 @@
+[package]
+name = "refc"
+edition = "2021"
+version = "0.0.0"
+publish = false
+[workspace]
+[dependencies]
+office2pdf = "0.6.7"
+serde_json = "1"
+[[bin]]
+name = "refc"
+path = "src/main.rs"
