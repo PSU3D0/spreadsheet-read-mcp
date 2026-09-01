@@ -8,3 +8,5 @@ corpus/ironcalc/
 corpus/fixtures/
 # Reference crate sources extracted from ~/.cargo caches; reproducible.
 refs/
+refc/target/
+refc/Cargo.lock

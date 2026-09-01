@@ -676,6 +676,7 @@ name = "harness"
 version = "0.0.0"
 dependencies = [
  "betteroffice-xlsx",
+ "png 0.18.1",
  "readany-render",
  "serde_json",
  "spike-d",

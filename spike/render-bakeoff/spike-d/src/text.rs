@@ -206,21 +206,42 @@ mod imp {
                 }
                 if let Some(curves) = font.outline(gid) {
                     let mut pb = PathBuilder::new();
+                    // ab_glyph hands back a flat segment list; contours must be
+                    // stitched by continuity or the winding fill collapses.
+                    let mut cur: Option<(f32, f32)> = None;
+                    let mut open = false;
                     for seg in &curves.curves {
-                        match seg {
-                            OutlineCurve::Line(a, b) => {
-                                pb.move_to(a.x, a.y);
-                                pb.line_to(b.x, b.y);
+                        let start = match seg {
+                            OutlineCurve::Line(a, _)
+                            | OutlineCurve::Quad(a, _, _)
+                            | OutlineCurve::Cubic(a, _, _, _) => (a.x, a.y),
+                        };
+                        let continues =
+                            cur.is_some_and(|(x, y)| (x - start.0).abs() < 1e-4 && (y - start.1).abs() < 1e-4);
+                        if !continues {
+                            if open {
+                                pb.close();
                             }
-                            OutlineCurve::Quad(a, b, c) => {
-                                pb.move_to(a.x, a.y);
-                                pb.quad_to(b.x, b.y, c.x, c.y);
-                            }
-                            OutlineCurve::Cubic(a, b, c, d) => {
-                                pb.move_to(a.x, a.y);
-                                pb.cubic_to(b.x, b.y, c.x, c.y, d.x, d.y);
-                            }
+                            pb.move_to(start.0, start.1);
+                            open = true;
                         }
+                        cur = Some(match seg {
+                            OutlineCurve::Line(_, b) => {
+                                pb.line_to(b.x, b.y);
+                                (b.x, b.y)
+                            }
+                            OutlineCurve::Quad(_, b, c) => {
+                                pb.quad_to(b.x, b.y, c.x, c.y);
+                                (c.x, c.y)
+                            }
+                            OutlineCurve::Cubic(_, b, c, d) => {
+                                pb.cubic_to(b.x, b.y, c.x, c.y, d.x, d.y);
+                                (d.x, d.y)
+                            }
+                        });
+                    }
+                    if open {
+                        pb.close();
                     }
                     if let Some(path) = pb.finish() {
                         // ab_glyph outlines are already in font units (y-up).

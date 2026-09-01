@@ -119,7 +119,16 @@ fn normal_font(book: &Spreadsheet, sheet: &Worksheet) -> (String, f64) {
             counts.push((name, size, 1));
         }
     }
-    counts.sort_by_key(|e| std::cmp::Reverse(e.2));
+    // umya's `get_cell_collection()` iteration order is NOT stable across runs,
+    // so a bare frequency sort produces a different "normal font" (and hence a
+    // different column unit and a different image width) between runs whenever
+    // two families tie. Tie-break on name and size to make it deterministic.
+    // Ticket 5004 needs PNG hash goldens, so this matters.
+    counts.sort_by(|a, b| {
+        b.2.cmp(&a.2)
+            .then_with(|| a.0.cmp(&b.0))
+            .then_with(|| a.1.total_cmp(&b.1))
+    });
     counts
         .first()
         .map(|e| (e.0.clone(), e.1))

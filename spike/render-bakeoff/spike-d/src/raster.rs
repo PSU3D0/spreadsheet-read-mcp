@@ -211,6 +211,25 @@ fn wrap_lines(text: &str, max_w: f32, size_px: f32, bold: bool, fonts: &Fonts) -
     out
 }
 
+/// PNG encode at a chosen zlib level. tiny-skia's own `encode_png` uses the
+/// png crate's default compression, which turned out to dominate spike-D's
+/// total time, so 5004 needs an explicit knob here.
+pub fn to_png_level(pix: &Pixmap, level: png::Compression) -> Result<Vec<u8>, RenderError> {
+    let mut buf = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut buf, pix.width(), pix.height());
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.set_compression(level);
+        let mut w = enc
+            .write_header()
+            .map_err(|e| RenderError::Encode(e.to_string()))?;
+        w.write_image_data(pix.data())
+            .map_err(|e| RenderError::Encode(e.to_string()))?;
+    }
+    Ok(buf)
+}
+
 pub fn to_png(pix: &Pixmap) -> Result<Vec<u8>, RenderError> {
     pix.encode_png().map_err(|e| RenderError::Encode(e.to_string()))
 }
