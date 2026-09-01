@@ -19,7 +19,7 @@ const {
 const repositoryRoot = path.resolve(__dirname, "..", "..", "..")
 const defaultPackage = path.join(repositoryRoot, "target", "sdk-wasm-node")
 const generatedPackage = process.env.AGENT_SPREADSHEET_WASM_PACKAGE ||
-  (fs.existsSync(defaultPackage) ? defaultPackage : undefined)
+  (fs.existsSync(path.join(defaultPackage, "package.json")) ? defaultPackage : undefined)
 const fixture = path.join(
   repositoryRoot, "crates", "agent-spreadsheet", "tests", "fixtures", "f1", "baseline.xlsx"
 )
