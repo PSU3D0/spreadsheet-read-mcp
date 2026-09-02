@@ -1,6 +1,6 @@
 # 50 - SDK Rework + Native Rendering
 
-Status: implemented on `session/50-integration` (2026-09-01), pending review and the 0.15 release. Follows the 0.14 canonical release.
+Status: merged to `main` in PR #25 (2026-09-02) and released in 0.15.0; 5007 remains open. Follows the 0.14 canonical release.
 
 ## Outcome
 
