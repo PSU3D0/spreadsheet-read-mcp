@@ -114,10 +114,29 @@ test("local runtime drives the real WASM package end to end", {
       () => local.listWorkbooks(),
       (error) => error instanceof CapabilityError && error.operation === "list_workbooks"
     )
-    await assert.rejects(
-      () => workbook.renderSheet({ sheet_name: "Sheet1" }),
-      (error) => error instanceof CapabilityError
-    )
+  })
+
+  await t.test("renderSheet returns PNG bytes and releases the slot", async () => {
+    const rendered = await workbook.renderSheet({ sheet_name: "Sheet1", range: "A1:C6" })
+    assert.deepEqual(Array.from(rendered.png.subarray(0, 4)), [0x89, 0x50, 0x4e, 0x47])
+    assert.equal(rendered.renderer, "native-raster/1")
+    assert.equal(rendered.range, "A1:C6")
+    assert.equal(rendered.png_level, "balanced")
+    assert.ok(rendered.width > 0 && rendered.height > 0)
+    assert.match(rendered.handle, /^artifact:sha256:[0-9a-f]{64}$/)
+    assert.ok(["full", "partial"].includes(rendered.fidelity), rendered.fidelity)
+
+    // The object model disposes the slot once the bytes have crossed, so the
+    // handle is gone from the session.
+    const runtime = require(generatedPackage)
+    assert.throws(() => runtime.readArtifact(workbook.resourceId, rendered.handle))
+
+    const fast = await workbook.renderSheet({
+      sheet_name: "Sheet1", range: "A1:C6", png_level: "fast"
+    })
+    assert.equal(fast.png_level, "fast")
+    assert.equal(fast.width, rendered.width)
+    assert.ok(fast.png.byteLength > rendered.png.byteLength)
   })
 
   await t.test("a disposed workbook refuses further work", async () => {
@@ -127,4 +146,46 @@ test("local runtime drives the real WASM package end to end", {
     await scratch.dispose()
     await assert.rejects(() => scratch.listSheets(), (error) => error instanceof CapabilityError)
   })
+})
+
+test("worker mode drives the real WASM package off the main thread", {
+  skip: generatedPackage ? false : "set AGENT_SPREADSHEET_WASM_PACKAGE to run the local integration"
+}, async (t) => {
+  // The runtime is named, not passed: a live bindings object cannot cross the
+  // worker boundary, so worker mode takes the module the worker should import.
+  const local = createLocalSpreadsheet({
+    runtime: { module: generatedPackage },
+    worker: true
+  })
+  assert.ok((await local.capabilities()).includes("screenshot_sheet"))
+  const workbook = await local.open(fs.readFileSync(fixture))
+  // Registration order matters: the session must be released before the worker
+  // that owns it goes away.
+  t.after(() => workbook.dispose())
+  t.after(() => local.close())
+  assert.equal(local.worker, true)
+
+  const sheets = await workbook.listSheets()
+  assert.equal(sheets.operation, "list_sheets")
+
+  const rendered = await workbook.renderSheet({ sheet_name: "Sheet1", range: "A1:C6" })
+  assert.deepEqual(Array.from(rendered.png.subarray(0, 4)), [0x89, 0x50, 0x4e, 0x47])
+  assert.equal(rendered.renderer, "native-raster/1")
+
+  await assert.rejects(
+    () => workbook.write({
+      expected_revision: "0".repeat(64),
+      mode: "apply",
+      ops: [{
+        kind: "set_cells",
+        sheet_name: "Sheet1",
+        cells: { A1: { kind: "value", value: "stale" } }
+      }]
+    }),
+    (error) => {
+      assert.ok(error instanceof CanonicalOperationError, `${error}`)
+      assert.equal(error.code, "REVISION_CONFLICT")
+      return true
+    }
+  )
 })

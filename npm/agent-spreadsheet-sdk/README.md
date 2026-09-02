@@ -200,6 +200,55 @@ console.log(rendered.png.byteLength, rendered.fidelity, rendered.warnings.length
 reporting. A local runtime whose bindings have no artifact binding throws
 `CapabilityError` rather than pretending.
 
+The local runtime renders in process, with no LibreOffice and no host: the raster
+renderer is compiled into the WASM module. `renderSheet` reads the bytes through
+`readArtifact` and releases the session's artifact slot before returning, so a render
+loop cannot evict its own earlier images.
+
+```js
+const fs = require("node:fs")
+const { createWasmRuntime } = require("agent-spreadsheet-wasm")
+const { createLocalSpreadsheet } = require("agent-spreadsheet-sdk")
+
+const local = createLocalSpreadsheet({ runtime: createWasmRuntime({}) })
+const workbook = await local.open(fs.readFileSync("book.xlsx"))
+
+const rendered = await workbook.renderSheet({
+  sheet_name: "Sheet1",
+  range: "A1:F40",
+  // `fast` trades bytes for latency, `best` the other way. Geometry never changes.
+  png_level: "fast"
+})
+console.log(rendered.renderer, rendered.width, rendered.height, rendered.png_level)
+fs.writeFileSync("sheet.png", rendered.png)
+
+await workbook.dispose()
+```
+
+### Worker mode
+
+Rendering and recalculation are synchronous CPU work, so in a browser they belong off
+the UI thread. `worker` runs the bindings behind a Web Worker (or `worker_threads` in
+Node) with the same surface on the main thread.
+
+A live bindings object cannot cross a worker boundary, so worker mode takes the module
+the worker should import — or an explicit port you already own:
+
+```js
+const { createLocalSpreadsheet } = require("agent-spreadsheet-sdk")
+
+const local = createLocalSpreadsheet({
+  runtime: { module: "agent-spreadsheet-wasm" },
+  worker: true
+})
+console.log(typeof local.close, (await local.capabilities()).includes("screenshot_sheet"))
+await local.close()
+```
+
+Worker mode is on by default in browsers when `Worker` exists and the runtime is a spec
+the SDK can move, and off in Node unless you ask for it. `local.close()` shuts the
+worker down; `worker: false` keeps everything on the calling thread.
+
 ## Errors
 
 One hierarchy, rooted at `SpreadsheetError`:

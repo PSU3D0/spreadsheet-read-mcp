@@ -18,11 +18,16 @@ For why each decision is what it is, see
 | `native` | nothing beyond the binary | yes, whenever the `render` feature is compiled in |
 | `libreoffice` | `soffice`, a JRE, a writable profile, the `:full` Docker image | opt-in only |
 
-`screenshot_sheet` takes an optional `backend` input:
+`screenshot_sheet` takes an optional `backend` input, and an optional
+`png_level`:
 
 ```json
-{"resource_id": "wb:...", "sheet_name": "Sheet1", "range": "A1:M40", "backend": "native"}
+{"resource_id": "wb:...", "sheet_name": "Sheet1", "range": "A1:M40", "backend": "native", "png_level": "fast"}
 ```
+
+`png_level` is `fast`, `balanced` (the default) or `best`. It changes encoder
+effort only: geometry never depends on it. The LibreOffice backend rejects it,
+because it owns its own encoder.
 
 Omit it and you get `native` on any build with the `render` feature, which is
 on by default. A build with `--no-default-features` behaves exactly as before:
@@ -47,6 +52,9 @@ renamed or removed.
   "renderer": "native-raster/1",
   "fidelity": "partial",
   "warnings": ["chart_omitted", "formulas_unevaluated"],
+  "width": 1043,
+  "height": 802,
+  "png_level": "balanced",
   "calculation": {"state": "not_evaluated", "revision_id": "sha256:..."}
 }
 ```
@@ -55,6 +63,8 @@ renamed or removed.
 * `fidelity` — `full` when the renderer reproduced everything it found,
   `partial` when it did not.
 * `warnings` — a closed, sorted, deduplicated set. See below.
+* `width`, `height`, `png_level` — reported by renderers that know them before
+  encoding, so absent on the LibreOffice path.
 * `calculation` — the workbook's calculation state at the rendered revision,
   sourced exactly the way `read_cells` sources its own calculation block.
 
@@ -134,7 +144,74 @@ asp op screenshot_sheet --bind book.xlsx \
   --output sheet.png
 ```
 
-Both write byte-identical PNGs; a CLI test asserts it.
+Both go through the canonical operation and write byte-identical PNGs; a CLI
+test asserts it.
+
+## WASM and the SDK
+
+The renderer compiles to `wasm32`, so the byte/session adapters render too —
+in the browser and in Node, with no host process. `screenshot_sheet` is
+`supported` for the `wasm` and `just_bash` adapters in the canonical registry,
+with binding kind `single_read` and persistence `none`.
+
+Where the bytes live differs from the native path and nowhere else. The WASM
+adapter has no filesystem, so the PNG goes into a bounded per-session artifact
+slot keyed by the same content-addressed handle the native path writes to
+disk (`artifact:sha256:<hex>`). Slots are capped at 8 per session and 64 MiB
+across all sessions, evicted least-recently-used, and dropped when the session
+is disposed. Two bindings move the bytes:
+
+```ts
+const png: Uint8Array = await bindings.readArtifact(sessionId, handle)
+const released: boolean = await bindings.disposeArtifact(sessionId, handle)
+```
+
+Both reject with the canonical error envelope, exactly like `executeOperation`.
+
+The SDK hides all of it:
+
+```ts
+const rendered = await workbook.renderSheet({
+  sheet_name: "Sheet1",
+  range: "A1:F40",
+  png_level: "fast"
+})
+rendered.png        // Uint8Array
+rendered.fidelity   // "full" | "partial"
+rendered.warnings   // closed warning set
+rendered.width      // device pixels
+```
+
+`renderSheet` calls the operation, reads the bytes across the binding, and
+releases the slot before returning, so a render loop inside one session cannot
+evict its own earlier artifacts.
+
+Rendering is synchronous CPU work, so the local runtime can run behind a
+worker:
+
+```ts
+const local = createLocalSpreadsheet({
+  runtime: { module: "agent-spreadsheet-wasm" },
+  worker: true
+})
+```
+
+A live bindings object cannot cross a worker boundary, so worker mode takes the
+module to import (or an explicit `{ worker: { port } }`). It is on by default
+in browsers when `Worker` exists and the runtime is movable, and off in Node
+unless asked for.
+
+just-bash writes the bytes into its VFS:
+
+```sh
+asp op screenshot_sheet --bind /wb.xlsx --json '{"sheet_name":"Sheet1"}' --output /shot.png
+```
+
+The envelope goes to stdout and the PNG to `/shot.png`. `--in-place` is
+refused: there is no workbook to replace. A parity test asserts the adapter's
+envelope and PNG bytes match the native CLI byte for byte, and a Node golden
+harness checks every renderer fixture's decoded pixels against the native
+goldens through the built WASM package.
 
 ## Determinism
 

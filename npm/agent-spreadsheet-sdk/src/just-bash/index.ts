@@ -5,6 +5,7 @@ import {
   adapterEnvelopeFor,
   availableEphemeralOperations,
   executeEphemeralOperation,
+  validateAdapterFlags,
   validateEphemeralRequest
 } from "./ephemeral.js"
 import {
@@ -116,22 +117,12 @@ export function createAspCommand(options: AspCommandOptions): unknown {
         operation, "--baseline"
       )
 
-      const exports = plan.persistence === "export_required"
-      const preview = params.mode === "preview"
-      if (!exports && (opts.output || opts.inPlace)) invalid(
-        "--output and --in-place require a bound workbook-write operation",
-        operation, "adapter_flags"
-      )
-      if (exports && preview && (opts.output || opts.inPlace)) invalid(
-        "preview does not accept file export flags", operation, "adapter_flags"
-      )
-      if (exports && !preview && Boolean(opts.output) === Boolean(opts.inPlace)) invalid(
-        "a mutating operation requires exactly one of --output <VFS_PATH> or --in-place",
-        operation, "adapter_flags"
-      )
-      if (opts.output && resolveVfsPath(ctx, opts.output) === resolveVfsPath(ctx, opts.bind)) {
-        invalid("--output must differ from --bind; use --in-place", operation, "--output")
-      }
+      const { artifact } = validateAdapterFlags(operation!, plan, params, {
+        output: Boolean(opts.output),
+        inPlace: Boolean(opts.inPlace),
+        outputIsBind: Boolean(opts.output) &&
+          resolveVfsPath(ctx, opts.output!) === resolveVfsPath(ctx, opts.bind!)
+      })
 
       const sources = []
       if (opts.bind) sources.push(readWorkbook(ctx, opts.bind, maxWorkbookBytes, "--bind"))
@@ -143,7 +134,8 @@ export function createAspCommand(options: AspCommandOptions): unknown {
         operation: operation!,
         params,
         plan,
-        workbooks: await Promise.all(sources)
+        workbooks: await Promise.all(sources),
+        wantsArtifact: artifact && Boolean(opts.output)
       })
       if (result.workbookBytes) {
         await atomicWrite(
@@ -152,6 +144,9 @@ export function createAspCommand(options: AspCommandOptions): unknown {
           result.workbookBytes,
           Boolean(opts.inPlace)
         )
+      }
+      if (result.artifactBytes && opts.output) {
+        await atomicWrite(ctx, opts.output, result.artifactBytes, false)
       }
       return jsonResult(result.response, result.exitCode)
     } catch (error: any) {

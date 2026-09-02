@@ -141,11 +141,17 @@ The core crate carves host-only dependencies out of the wasm32 build:
 | `cli` | clap, serde_yaml, tracing-subscriber | `asp`, `agent-spreadsheet`, `agent-spreadsheet-mcp` |
 | `native-fs` | tempfile, walkdir, globset | path workspace discovery, fork/staging temp files |
 | `sheetport` | `formualizer/sheetport` (→ sheetport-spec) | SheetPort manifest operations |
-| `recalc-libreoffice` | image, png | screenshot post-processing |
+| `recalc-libreoffice` | image, png | LibreOffice screenshot post-processing |
+| `render` | agent-spreadsheet-render (tiny-skia, png, ab_glyph, subset fonts) | in-process `screenshot_sheet` |
 
-All four are in the core crate's `default` feature set. `agent-spreadsheet-wasm`
-depends on the core crate with `default-features = false` and only
-`recalc-formualizer`, so none of them reach the browser bundle.
+All five are in the core crate's `default` feature set. `agent-spreadsheet-wasm`
+depends on the core crate with `default-features = false` and
+`recalc-formualizer`, so the host-only four never reach the browser bundle. It
+does enable `render`: the raster renderer has no filesystem, process or tokio
+dependency and compiles to wasm32, and compiling it in is what makes
+`screenshot_rendering` available in the browser. That build needs
+`--cfg getrandom_backend="wasm_js"`, which `.cargo/config.toml` sets for the
+`wasm32-unknown-unknown` target.
 
 ### Size gate
 
@@ -153,3 +159,15 @@ depends on the core crate with `default-features = false` and only
 bundle; `node scripts/check-wasm-size.js` builds and enforces them, and the
 `wasm-size-gate` CI job runs it on every PR. Ceilings ratchet down — raising one
 needs a reason in the commit message.
+
+Measured on the `web` target, `wasm-release` profile, `wasm-opt -Oz`:
+
+| Bundle | Raw | Brotli |
+| --- | ---: | ---: |
+| 5002 dependency diet, no renderer | 8 576 619 B (8.18 MiB) | 2 059 359 B (1.96 MiB) |
+| 5006 with the raster renderer | 9 212 266 B (8.79 MiB) | 2 250 996 B (2.15 MiB) |
+| Renderer cost | +635 647 B (+7.4 %) | +191 637 B (+9.3 %) |
+| Current ceiling | 9 434 281 B | 2 265 295 B |
+
+The renderer and its subset fonts fit inside the 1.5 MiB raw allowance the
+tranche set, so the ceilings did not move. Brotli headroom is now 0.6 percent.

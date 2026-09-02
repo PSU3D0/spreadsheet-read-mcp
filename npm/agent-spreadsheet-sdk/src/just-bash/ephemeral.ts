@@ -91,7 +91,85 @@ function bindResource(params: Record<string, unknown>, key: string, resourceId: 
 export interface EphemeralResult {
   response: unknown
   workbookBytes?: Uint8Array
+  /** Artifact bytes, when the operation produced one and the caller wants them. */
+  artifactBytes?: Uint8Array
   exitCode: number
+}
+
+/** The artifact handle a canonical response carries, when it carries one. */
+export function artifactHandleOf(response: unknown): string | undefined {
+  const handle = (response as { data?: { artifact?: { handle?: unknown } } })
+    ?.data?.artifact?.handle
+  return typeof handle === "string" ? handle : undefined
+}
+
+/** True when this operation's output schema declares an artifact handle. */
+export function producesArtifact(operation: string): boolean {
+  const schema = descriptorFor(operation)?.output_schema as {
+    $defs?: Record<string, { properties?: Record<string, unknown> }>
+    properties?: { data?: { $ref?: string; properties?: Record<string, unknown> } }
+  } | undefined
+  const data = schema?.properties?.data
+  // The generated envelope schema points `data` at a definition rather than
+  // inlining it, so the reference is followed here.
+  const reference = data?.$ref?.startsWith("#/$defs/")
+    ? schema?.$defs?.[data.$ref.slice("#/$defs/".length)]
+    : undefined
+  return (reference ?? data)?.properties?.["artifact"] !== undefined
+}
+
+/** The adapter file flags a request may carry. */
+export interface AdapterFlags {
+  output: boolean
+  inPlace: boolean
+  outputIsBind: boolean
+}
+
+function flagError(message: string, path: string): Error {
+  return adapterError("INVALID_REQUEST", message, path)
+}
+
+/**
+ * Decide what the `--output` / `--in-place` flags mean for this operation.
+ *
+ * Three shapes exist: a mutating operation exports a workbook and must name
+ * exactly one destination; an artifact operation renders bytes, so `--output`
+ * is optional and `--in-place` is meaningless; everything else writes nothing.
+ */
+export function validateAdapterFlags(
+  operation: string,
+  plan: AdapterPlan,
+  params: Record<string, unknown>,
+  flags: AdapterFlags
+): { exports: boolean; artifact: boolean } {
+  const exports = plan.persistence === "export_required"
+  const artifact = !exports && producesArtifact(operation)
+  const preview = params["mode"] === "preview"
+  if (artifact && flags.inPlace) {
+    throw flagError(
+      `canonical operation '${operation}' produces an artifact; use --output <VFS_PATH>`,
+      "--in-place"
+    )
+  }
+  if (!exports && !artifact && (flags.output || flags.inPlace)) {
+    throw flagError(
+      "--output and --in-place require a bound workbook-write operation",
+      "adapter_flags"
+    )
+  }
+  if (exports && preview && (flags.output || flags.inPlace)) {
+    throw flagError("preview does not accept file export flags", "adapter_flags")
+  }
+  if (exports && !preview && flags.output === flags.inPlace) {
+    throw flagError(
+      "a mutating operation requires exactly one of --output <VFS_PATH> or --in-place",
+      "adapter_flags"
+    )
+  }
+  if (flags.outputIsBind) {
+    throw flagError("--output must differ from --bind; use --in-place", "--output")
+  }
+  return { exports, artifact }
 }
 
 /** Bind bytes, dispatch one canonical operation, export when required, dispose. */
@@ -101,6 +179,8 @@ export async function executeEphemeralOperation(params: {
   params: Record<string, unknown>
   plan: AdapterPlan
   workbooks?: Uint8Array[]
+  /** Fetch artifact bytes across the adapter boundary after the call. */
+  wantsArtifact?: boolean
 }): Promise<EphemeralResult> {
   validateEphemeralRequest(params.plan, params.params)
   const expected = RESOURCE_COUNTS[params.plan.binding_kind]
@@ -130,7 +210,19 @@ export async function executeEphemeralOperation(params: {
     if (params.plan.persistence === "export_required" && request["mode"] !== "preview" && !failed) {
       workbookBytes = await opened[0]!.exportBytes()
     }
-    return { response, workbookBytes, exitCode: status === "partial" ? 2 : failed ? 1 : 0 }
+    let artifactBytes: Uint8Array | undefined
+    const handle = artifactHandleOf(response)
+    if (params.wantsArtifact && handle && opened[0]) {
+      // The bytes cross here, at the adapter boundary, and the session slot is
+      // released on the way out.
+      artifactBytes = await opened[0].readArtifact(handle)
+    }
+    return {
+      response,
+      workbookBytes,
+      artifactBytes,
+      exitCode: status === "partial" ? 2 : failed ? 1 : 0
+    }
   } finally {
     for (const workbook of opened.reverse()) {
       try { await workbook.dispose() } catch { /* best effort */ }

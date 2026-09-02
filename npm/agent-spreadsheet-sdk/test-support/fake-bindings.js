@@ -41,7 +41,8 @@ function createFakeBindings(options = {}) {
     executed: [],
     exported: [],
     disposed: [],
-    artifacts: []
+    artifacts: [],
+    disposedArtifacts: []
   }
   let sequence = 0
   let revision = 1
@@ -88,6 +89,9 @@ function createFakeBindings(options = {}) {
             media_type: "image/png"
           },
           duration_ms: 1,
+          width: 640,
+          height: 480,
+          png_level: params.png_level ?? "balanced",
           fidelity: "approximate",
           warnings: [{ code: "font_substituted", message: "Calibri" }],
           calculation: { state: "cached" },
@@ -110,6 +114,10 @@ function createFakeBindings(options = {}) {
     bindings.readArtifact = (sessionId, handle) => {
       state.artifacts.push({ sessionId, handle })
       return Uint8Array.from([137, 80, 78, 71])
+    }
+    bindings.disposeArtifact = (sessionId, handle) => {
+      state.disposedArtifacts.push({ sessionId, handle })
+      return true
     }
   }
   if (options.exportWorkbook === false) delete bindings.exportWorkbook

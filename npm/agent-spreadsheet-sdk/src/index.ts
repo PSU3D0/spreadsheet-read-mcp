@@ -66,13 +66,32 @@ export type { RecalculateInput, VerifyInput, WriteInput } from "./view.js"
 
 export type {
   RenderFidelity,
+  RenderPngLevel,
   RenderSheetInput,
   RenderWarning,
   RenderedSheet
 } from "./render.js"
 
 export { LocalSpreadsheet, LocalWorkbook, createLocalSpreadsheet } from "./local.js"
-export type { LocalSpreadsheetOptions, WasmBindings } from "./local.js"
+export type { LocalRuntimeSpec, LocalSpreadsheetOptions, WasmBindings } from "./local.js"
+
+export {
+  WORKER_METHODS,
+  connectBindings,
+  loadRuntimeModule,
+  serveBindings,
+  spawnWorkerBindings,
+  workerSupported
+} from "./worker.js"
+export type {
+  WorkerBindingsHandle,
+  WorkerBindingsOptions,
+  WorkerMethod,
+  WorkerPortLike,
+  WorkerRequest,
+  WorkerResponse,
+  WorkerRuntimeSpec
+} from "./worker.js"
 
 export {
   RemoteFork,

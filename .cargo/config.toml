@@ -6,3 +6,7 @@ RUST_MIN_STACK = "8388608"
 
 [target.wasm32-unknown-unknown]
 runner = "wasm-bindgen-test-runner"
+# getrandom 0.3 (pulled in by ahash, which umya and the renderer both depend on)
+# refuses to build for wasm32-unknown-unknown unless a backend is named. The
+# browser/Node backend is the only correct one for this target.
+rustflags = ["--cfg", "getrandom_backend=\"wasm_js\""]

@@ -1,4 +1,9 @@
 import { CapabilityError, TransportError, decodeRejection } from "./errors.js"
+import {
+  type WorkerBindingsOptions,
+  type WorkerRuntimeSpec,
+  spawnWorkerBindings
+} from "./worker.js"
 import type { OperationName, OutputOf } from "./generated/operations.js"
 import { GeneratedClientSurface } from "./generated/read-surface.js"
 import { normalizeOperationList } from "./registry.js"
@@ -13,7 +18,7 @@ export interface WasmBindings {
   /** Create a resident session from workbook bytes; returns `session:<id>`. */
   createSession(bytes: Uint8Array): string | PromiseLike<string>
   /** Serialized canonical discovery for this runtime. */
-  operations(): unknown
+  operations(): unknown | PromiseLike<unknown>
   /** Dispatch a canonical operation; rejects with a canonical error envelope string. */
   executeOperation(
     sessionId: string,
@@ -24,14 +29,40 @@ export interface WasmBindings {
   exportWorkbook?(sessionId: string): Uint8Array | PromiseLike<Uint8Array>
   /** Release a session. */
   disposeSession?(sessionId: string): unknown
-  /** Artifact bytes for a handle produced in this session (ticket 5006). */
+  /**
+   * Artifact bytes for a handle produced in this session.
+   *
+   * This is the boundary image bytes cross: the canonical envelope carries only
+   * the handle. Rejects with a canonical error envelope, like `executeOperation`.
+   */
   readArtifact?(sessionId: string, handle: string): Uint8Array | PromiseLike<Uint8Array>
+  /** Release one artifact slot; `false` when the handle was already gone. */
+  disposeArtifact?(sessionId: string, handle: string): boolean | PromiseLike<boolean>
 }
+
+/**
+ * A runtime the SDK can instantiate itself, in this thread or in a worker.
+ *
+ * A live bindings object cannot be moved across a worker boundary, so worker
+ * mode takes a spec instead: the module to import and the options to hand its
+ * factory.
+ */
+export interface LocalRuntimeSpec extends WorkerRuntimeSpec {}
 
 /** Options for {@link createLocalSpreadsheet}. */
 export interface LocalSpreadsheetOptions {
-  /** The bindings object, or a promise of it. */
-  runtime: WasmBindings | PromiseLike<WasmBindings>
+  /** The bindings object, a promise of it, or a spec the SDK instantiates. */
+  runtime: WasmBindings | PromiseLike<WasmBindings> | LocalRuntimeSpec
+  /**
+   * Run the bindings in a worker: a Web Worker in the browser, `worker_threads`
+   * in Node. Rendering and recalculation are synchronous CPU work, so keeping
+   * them off the UI thread is the point.
+   *
+   * Defaults to on in a browser when `Worker` exists and `runtime` is a spec
+   * the SDK can move, and off in Node unless asked for. `true` throws when the
+   * runtime cannot be moved, rather than silently blocking the caller's thread.
+   */
+  worker?: boolean | WorkerBindingsOptions
 }
 
 function assertBindings(bindings: unknown): asserts bindings is WasmBindings {
@@ -58,7 +89,12 @@ class LocalRuntime implements CanonicalRuntime {
   }
 
   async operations(): Promise<ReadonlySet<string>> {
-    if (!this.#operations) this.#operations = normalizeOperationList(this.bindings.operations())
+    // Discovery is synchronous in the wasm-bindgen bindings and a promise
+    // behind the worker shim; both are awaited so the runtime surface does not
+    // depend on the transport.
+    if (!this.#operations) {
+      this.#operations = normalizeOperationList(await this.bindings.operations())
+    }
     return this.#operations
   }
 
@@ -86,6 +122,15 @@ class LocalRuntime implements CanonicalRuntime {
     }
     try {
       return await this.bindings.readArtifact(resourceId, handle)
+    } catch (rejection) {
+      throw decodeRejection(rejection, { operation: "screenshot_sheet", runtime: this.kind })
+    }
+  }
+
+  async releaseArtifact(handle: string, resourceId: string): Promise<void> {
+    if (typeof this.bindings.disposeArtifact !== "function") return
+    try {
+      await this.bindings.disposeArtifact(resourceId, handle)
     } catch (rejection) {
       throw decodeRejection(rejection, { operation: "screenshot_sheet", runtime: this.kind })
     }
@@ -133,6 +178,21 @@ export class LocalWorkbook extends MutableWorkbookHandle {
     return this.verifyAgainstResource(baseline.resourceId, input)
   }
 
+  /**
+   * Bytes for an artifact this session produced, released from the session on
+   * the way out.
+   *
+   * Adapters that own a filesystem — the just-bash VFS, a CLI `--output` — use
+   * this to land image bytes; the canonical envelope only ever carries the
+   * handle.
+   */
+  async readArtifact(handle: string, options: { release?: boolean } = {}): Promise<Uint8Array> {
+    this.#assertLive()
+    const bytes = await this.#local.artifactBytes(handle, this.resourceId)
+    if (options.release !== false) await this.#local.releaseArtifact(handle, this.resourceId)
+    return bytes
+  }
+
   /** The latest applied or recalculated workbook bytes. */
   async exportBytes(): Promise<Uint8Array> {
     this.#assertLive()
@@ -176,10 +236,43 @@ export class LocalWorkbook extends MutableWorkbookHandle {
   }
 }
 
+import { loadRuntimeModule } from "./worker.js"
+
+function isBindings(value: unknown): value is WasmBindings {
+  return typeof (value as WasmBindings | null)?.createSession === "function"
+}
+
+function isThenable(value: unknown): value is PromiseLike<WasmBindings> {
+  return typeof (value as PromiseLike<WasmBindings> | null)?.then === "function"
+}
+
+function isRuntimeSpec(value: unknown): value is LocalRuntimeSpec {
+  if (!value || typeof value !== "object" || isBindings(value) || isThenable(value)) return false
+  return "module" in value || "options" in value
+}
+
+/** Instantiate a runtime spec in this thread. */
+async function loadSpec(spec: LocalRuntimeSpec): Promise<WasmBindings> {
+  const specifier = spec.module ?? "agent-spreadsheet-wasm"
+  const loaded = await loadRuntimeModule(specifier)
+  const factory = typeof loaded["createWasmRuntime"] === "function"
+    ? loaded["createWasmRuntime"]
+    : typeof loaded["default"] === "function" ? loaded["default"] : undefined
+  if (factory) {
+    return (await (factory as (options: unknown) => unknown)(spec.options ?? {})) as WasmBindings
+  }
+  const direct = isBindings(loaded) ? loaded : (loaded["default"] as unknown)
+  if (!isBindings(direct)) {
+    throw new TypeError(`'${specifier}' exports no agent-spreadsheet runtime bindings`)
+  }
+  return direct
+}
+
 /** The local (WASM) client. Workbooks are opened from bytes and own their session. */
 export class LocalSpreadsheet extends GeneratedClientSurface {
-  readonly #bindings: Promise<WasmBindings>
+  readonly #options: LocalSpreadsheetOptions
   #runtime: Promise<LocalRuntime> | undefined
+  #terminate: (() => Promise<void>) | undefined
   #canonical: CanonicalApi | undefined
 
   /** @internal */
@@ -188,7 +281,19 @@ export class LocalSpreadsheet extends GeneratedClientSurface {
     if (!options || options.runtime === undefined) {
       throw new TypeError("createLocalSpreadsheet requires { runtime }")
     }
-    this.#bindings = Promise.resolve(options.runtime)
+    this.#options = options
+  }
+
+  /** True when the bindings run behind the worker shim. */
+  get worker(): boolean {
+    return this.#terminate !== undefined
+  }
+
+  /** Shut the worker down, when this client started one. Safe to call twice. */
+  async close(): Promise<void> {
+    const terminate = this.#terminate
+    this.#terminate = undefined
+    if (terminate) await terminate()
   }
 
   /** The typed canonical escape hatch. Inputs carry their own `resource_id`. */
@@ -230,12 +335,44 @@ export class LocalSpreadsheet extends GeneratedClientSurface {
 
   async #resolve(): Promise<LocalRuntime> {
     if (!this.#runtime) {
-      this.#runtime = this.#bindings.then((bindings) => {
+      this.#runtime = this.#bind().then((bindings) => {
         assertBindings(bindings)
         return new LocalRuntime(bindings)
       })
     }
     return this.#runtime
+  }
+
+  async #bind(): Promise<WasmBindings> {
+    const runtime = this.#options.runtime
+    const requested = this.#options.worker
+    // A spec is recognised structurally, and narrowly: anything else is treated
+    // as bindings so a malformed object still fails the bindings assertion
+    // rather than silently importing a package the caller never named.
+    const spec: LocalRuntimeSpec | undefined = isRuntimeSpec(runtime) ? runtime : undefined
+    const explicit = requested !== undefined && requested !== false
+    const workerOptions: WorkerBindingsOptions =
+      typeof requested === "object" && requested !== null ? requested : {}
+    const movable = spec !== undefined || workerOptions.port !== undefined
+    // A browser gets the worker by default; blocking the UI thread with a
+    // synchronous render is exactly what this mode exists to avoid.
+    const preferred = requested === undefined &&
+      typeof (globalThis as { Worker?: unknown }).Worker === "function" &&
+      movable
+
+    if (explicit && !movable) {
+      throw new TypeError(
+        "worker mode needs { runtime: { module, options } } or { worker: { port } }; " +
+        "a live bindings object cannot cross a worker boundary"
+      )
+    }
+    if (explicit || preferred) {
+      const handle = await spawnWorkerBindings({ ...spec, ...workerOptions })
+      this.#terminate = handle.terminate
+      return handle.bindings
+    }
+    if (spec) return loadSpec(spec)
+    return Promise.resolve(runtime as WasmBindings | PromiseLike<WasmBindings>)
   }
 }
 
@@ -250,6 +387,10 @@ function lazyRuntime(resolve: () => Promise<CanonicalRuntime>): CanonicalRuntime
     },
     async artifactBytes(handle, resourceId) {
       return (await resolve()).artifactBytes(handle, resourceId)
+    },
+    async releaseArtifact(handle, resourceId) {
+      const runtime = await resolve()
+      if (runtime.releaseArtifact) await runtime.releaseArtifact(handle, resourceId)
     }
   }
 }

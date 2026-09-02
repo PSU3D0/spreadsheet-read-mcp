@@ -521,6 +521,16 @@ enum PngLevelArg {
     Best,
 }
 
+impl PngLevelArg {
+    const fn as_str(self) -> &'static str {
+        match self {
+            PngLevelArg::Fast => "fast",
+            PngLevelArg::Balanced => "balanced",
+            PngLevelArg::Best => "best",
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum SurfaceCommands {
     #[command(about = "List canonical operations supported by the CLI adapter")]
@@ -4448,10 +4458,10 @@ fn machine_bind_rule(
 
 /// `asp render` — the human-facing screenshot command.
 ///
-/// The native backend goes straight to the renderer, so `--png-level` is
-/// honoured without widening the canonical input surface. The LibreOffice
-/// backend routes through the canonical operation, which is the only thing
-/// that knows how to drive it.
+/// Both backends route through the canonical `screenshot_sheet` operation:
+/// `--png-level` is a canonical input, so the human surface adds no rendering
+/// behaviour of its own. It only picks the defaults, writes the artifact bytes
+/// to `--output`, and reports which backend ran.
 #[allow(clippy::too_many_arguments)]
 async fn run_render_command(
     file: PathBuf,
@@ -4498,30 +4508,42 @@ async fn run_render_command(
         ));
     }
 
-    let payload = match backend {
-        RenderBackendArg::Libreoffice => {
-            let request = serde_json::json!({
-                "sheet_name": sheet,
-                "range": range,
-                "backend": "libreoffice",
-            });
-            let response = run_machine_operation(
-                "screenshot_sheet",
-                Some(file.clone()),
-                None,
-                Some(request.to_string()),
-                Some(target.clone()),
-                false,
-                force,
-            )
-            .await?;
-            response.data
-        }
-        RenderBackendArg::Native => render_native(&file, &sheet, &range, level, &target).await?,
-    };
+    let mut request = serde_json::json!({
+        "sheet_name": sheet,
+        "range": range,
+        "backend": match backend {
+            RenderBackendArg::Native => "native",
+            RenderBackendArg::Libreoffice => "libreoffice",
+        },
+    });
+    if matches!(backend, RenderBackendArg::Native)
+        && let Some(object) = request.as_object_mut()
+    {
+        object.insert(
+            "png_level".to_string(),
+            Value::String(level.as_str().to_string()),
+        );
+    }
+    let response = run_machine_operation(
+        "screenshot_sheet",
+        Some(file),
+        None,
+        Some(request.to_string()),
+        Some(target.clone()),
+        false,
+        force,
+    )
+    .await?;
 
-    let mut payload = payload;
+    let mut payload = response.data;
     if let Some(object) = payload.as_object_mut() {
+        if let Some(bytes) = object
+            .get("artifact")
+            .and_then(|artifact| artifact.get("bytes"))
+            .cloned()
+        {
+            object.insert("bytes".to_string(), bytes);
+        }
         object.insert("backend".to_string(), Value::String(
             match backend {
                 RenderBackendArg::Native => "native",
@@ -4535,97 +4557,6 @@ async fn run_render_command(
         );
     }
     Ok(payload)
-}
-
-#[cfg(feature = "render")]
-async fn render_native(
-    file: &std::path::Path,
-    sheet: &str,
-    range: &str,
-    level: PngLevelArg,
-    target: &std::path::Path,
-) -> Result<Value, crate::operations::CanonicalErrorEnvelope> {
-    use crate::operations::{CanonicalErrorCode, CanonicalErrorEnvelope};
-
-    const OPERATION: &str = "render";
-    let fail = |code: CanonicalErrorCode, message: String, pointer: &str| {
-        CanonicalErrorEnvelope::new(code, message, Some(OPERATION), Some(pointer.to_string()))
-    };
-    let runtime = crate::runtime::stateless::StatelessRuntime;
-    let (state, workbook_id) = runtime
-        .open_state_for_file_for_operation(file, Some("screenshot_sheet"))
-        .await
-        .map_err(|error| {
-            fail(
-                CanonicalErrorCode::ResourceNotFound,
-                error.to_string(),
-                "<FILE>",
-            )
-        })?;
-    let workbook = state.open_workbook(&workbook_id).await.map_err(|error| {
-        fail(
-            CanonicalErrorCode::ResourceNotFound,
-            error.to_string(),
-            "<FILE>",
-        )
-    })?;
-    let level = match level {
-        PngLevelArg::Fast => crate::render::PngLevel::Fast,
-        PngLevelArg::Balanced => crate::render::PngLevel::Balanced,
-        PngLevelArg::Best => crate::render::PngLevel::Best,
-    };
-    let rendered = crate::render::render_sheet(&workbook, sheet, range, level).map_err(|error| {
-        fail(
-            CanonicalErrorCode::InvalidRequest,
-            error.to_string(),
-            "--sheet",
-        )
-    })?;
-    std::fs::write(target, &rendered.png).map_err(|error| {
-        fail(
-            CanonicalErrorCode::OperationFailed,
-            error.to_string(),
-            "--output",
-        )
-    })?;
-    let calculation = state.calculation_metadata(
-        &workbook_id,
-        &workbook.revision_id,
-        workbook.calculation_metadata(),
-    );
-    Ok(serde_json::json!({
-        "sheet_name": sheet,
-        "range": range,
-        "renderer": rendered.report.renderer,
-        "fidelity": crate::render::fidelity_name(rendered.report.fidelity),
-        "warnings": rendered
-            .report
-            .warnings
-            .iter()
-            .map(|warning| Value::String(warning.as_str().to_string()))
-            .collect::<Vec<_>>(),
-        "png_level": level.as_str(),
-        "width": rendered.width,
-        "height": rendered.height,
-        "bytes": rendered.png.len(),
-        "calculation": calculation,
-    }))
-}
-
-#[cfg(not(feature = "render"))]
-async fn render_native(
-    _file: &std::path::Path,
-    _sheet: &str,
-    _range: &str,
-    _level: PngLevelArg,
-    _target: &std::path::Path,
-) -> Result<Value, crate::operations::CanonicalErrorEnvelope> {
-    Err(crate::operations::CanonicalErrorEnvelope::new(
-        crate::operations::CanonicalErrorCode::CapabilityUnavailable,
-        "the native raster backend is not compiled in (build with the `render` feature)",
-        Some("render"),
-        Some("--backend".to_string()),
-    ))
 }
 
 /// Copy a content-addressed artifact out of the ephemeral workspace.
