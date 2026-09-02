@@ -187,8 +187,12 @@ test("generated WASM just-bash adapter matches native canonical JSON and workboo
     // stays byte-identical to the native one, which writes the same artifact to
     // a real path.
     const nativeShotPath = path.join(temp, "native.png")
+    // Render from a copy: the native artifact store writes beside the workbook,
+    // and the fixture lives in the repository.
+    const shotFixture = path.join(temp, "shot-source.xlsx")
+    fs.copyFileSync(fixture, shotFixture)
     const nativeShot = native("screenshot_sheet", {
-      bind: fixture,
+      bind: shotFixture,
       output: nativeShotPath,
       params: { sheet_name: "Sheet1", range: "A1:C6" }
     })
