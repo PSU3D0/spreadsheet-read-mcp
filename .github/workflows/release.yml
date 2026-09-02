@@ -196,6 +196,7 @@ jobs:
             wait_for_crate "$crate" "$version"
           }
 
+          publish_and_wait crates/agent-spreadsheet-render/Cargo.toml agent-spreadsheet-render
           publish_and_wait crates/agent-spreadsheet/Cargo.toml agent-spreadsheet
           publish_and_wait crates/agent-spreadsheet-mcp/Cargo.toml agent-spreadsheet-mcp
         env:

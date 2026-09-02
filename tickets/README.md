@@ -52,6 +52,7 @@ The roadmap below is organized to improve the **near-term user experience** whil
 | [47-just-bash-extension-and-registries](./47-just-bash-extension-and-registries/README.md) | next | minimal just-bash adapter after canonical convergence; distribution registries |
 | [48-canonical-operation-convergence](./48-canonical-operation-convergence/README.md) | complete | one operation registry/dispatcher across CLI, MCP, WASM, SDK, and adapters |
 | [49-post-release-canonical-polish](./49-post-release-canonical-polish/README.md) | next | ranked follow-up polish after the 0.14 canonical release |
+| [50-sdk-rework-and-native-rendering](./50-sdk-rework-and-native-rendering/README.md) | complete | SDK 0.15 rework, canonical `/v1` HTTP route, WASM diet, native raster renderer, WASM rendering (released in 0.15.0) |
 
 ## Planning principles
 

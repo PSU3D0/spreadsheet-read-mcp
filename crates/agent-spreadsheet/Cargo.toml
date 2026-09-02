@@ -1,6 +1,6 @@
 [package]
 name = "agent-spreadsheet"
-version = "0.14.0"
+version = "0.15.0"
 edition = "2024"
 description = "Core spreadsheet automation primitives — shared types, edit normalization, and session traits for agent-facing surfaces"
 authors = ["Frankie Colson"]
@@ -79,7 +79,7 @@ base64 = { version = "0.22", optional = true }
 async-trait = { version = "0.1", optional = true }
 uuid = { version = "1.10", features = ["v4", "js"], optional = true }
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
-agent-spreadsheet-render = { version = "0.14.0", path = "../agent-spreadsheet-render", optional = true }
+agent-spreadsheet-render = { version = "0.15.0", path = "../agent-spreadsheet-render", optional = true }
 quick-xml = { version = "0.31", optional = true }
 xxhash-rust = { version = "0.8", features = ["xxh64"], optional = true }
 tempfile = { version = "3.10", optional = true }
