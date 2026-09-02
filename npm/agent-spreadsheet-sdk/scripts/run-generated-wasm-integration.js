@@ -41,7 +41,8 @@ if (rebuild || !fs.existsSync(path.join(outputDirectory, "package.json"))) {
 const test = spawnSync(process.execPath, [
   "--test",
   path.join(packageRoot, "test", "local-runtime.integration.test.js"),
-  path.join(packageRoot, "test", "just-bash-integration.test.js")
+  path.join(packageRoot, "test", "just-bash-integration.test.js"),
+  path.join(packageRoot, "test", "wasm-goldens.integration.test.js")
 ], {
   cwd: packageRoot,
   env: { ...process.env, AGENT_SPREADSHEET_WASM_PACKAGE: outputDirectory },
