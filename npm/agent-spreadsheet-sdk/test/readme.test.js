@@ -38,6 +38,19 @@ test("every README JavaScript block runs", async (t) => {
 
   const workdir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-readme-"))
   fs.writeFileSync(path.join(workdir, "book.xlsx"), Uint8Array.from([80, 75, 3, 4]))
+  // Worker mode imports the runtime by name inside the worker, where this
+  // process's module aliases do not apply, so the stand-in is installed into the
+  // example working directory as a real package.
+  const shim = path.join(workdir, "node_modules", "agent-spreadsheet-wasm")
+  fs.mkdirSync(shim, { recursive: true })
+  fs.writeFileSync(
+    path.join(shim, "package.json"),
+    JSON.stringify({ name: "agent-spreadsheet-wasm", version: "0.0.0", main: "index.js" })
+  )
+  fs.writeFileSync(
+    path.join(shim, "index.js"),
+    `module.exports = require(${JSON.stringify(ALIASES["agent-spreadsheet-wasm"])})\n`
+  )
 
   const resolve = Module._resolveFilename
   const cwd = process.cwd()
