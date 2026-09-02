@@ -1,0 +1,22 @@
+# Standalone workspace for ticket 5003 (renderer bake-off spike).
+# Deliberately NOT a member of the repository root workspace: it pulls heavy
+# reference crates (betteroffice, readany-render) that must never enter the
+# product dependency graph. Nothing here is published.
+[workspace]
+resolver = "2"
+members = ["spike-d", "harness", "text-wasm"]
+
+[workspace.package]
+edition = "2024"
+version = "0.0.0"
+publish = false
+
+[patch.crates-io]
+umya-spreadsheet = { git = "https://github.com/PSU3D0/umya-spreadsheet.git", rev = "4b64d65daf19bba79800951cd38920d7eb95320c" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

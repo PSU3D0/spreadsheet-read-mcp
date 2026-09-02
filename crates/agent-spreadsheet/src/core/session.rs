@@ -919,9 +919,9 @@ impl WorkbookSession {
     ///
     /// The caller owns the `NamedTempFile` and must keep it alive for as long as
     /// the path is needed (e.g. during apply-to-file round-trips).
-    pub fn to_temp_file(&self) -> Result<tempfile::NamedTempFile> {
+    pub fn to_temp_file(&self) -> Result<crate::hostfs::NamedTempFile> {
         let bytes = self.to_bytes()?;
-        let mut tmp = tempfile::Builder::new()
+        let mut tmp = crate::hostfs::Builder::new()
             .suffix(".xlsx")
             .tempfile()
             .context("failed to create session temp file")?;

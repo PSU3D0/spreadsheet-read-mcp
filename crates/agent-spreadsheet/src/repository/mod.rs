@@ -3,9 +3,11 @@ use crate::tools::filters::WorkbookFilter;
 use crate::workbook::WorkbookContext;
 use anyhow::Result;
 
+#[cfg(feature = "native-fs")]
 pub mod path_workspace;
 pub mod virtual_workspace;
 
+#[cfg(feature = "native-fs")]
 pub use path_workspace::PathWorkspaceRepository;
 pub use virtual_workspace::{VirtualWorkbookInput, VirtualWorkspaceRepository};
 

@@ -506,6 +506,31 @@ enum SurfaceDiscoverabilityCommands {
     Canonical(Vec<OsString>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum RenderBackendArg {
+    /// In-process raster renderer. No external process.
+    Native,
+    /// Legacy LibreOffice macro-to-PDF-to-PNG path; opt-in.
+    Libreoffice,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum PngLevelArg {
+    Fast,
+    Balanced,
+    Best,
+}
+
+impl PngLevelArg {
+    const fn as_str(self) -> &'static str {
+        match self {
+            PngLevelArg::Fast => "fast",
+            PngLevelArg::Balanced => "balanced",
+            PngLevelArg::Best => "best",
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum SurfaceCommands {
     #[command(about = "List canonical operations supported by the CLI adapter")]
@@ -551,6 +576,40 @@ enum SurfaceCommands {
             help = "Atomically replace the bound path after a successful apply"
         )]
         in_place: bool,
+        #[arg(long, help = "Allow replacing an existing --output path")]
+        force: bool,
+    },
+    #[command(
+        about = "Render a bounded sheet range to a PNG",
+        after_long_help = "Examples:\n  asp render book.xlsx --sheet Sheet1 --output sheet.png\n  asp render book.xlsx --sheet Sheet1 --range A1:F40 --png-level fast --output sheet.png\n  asp render book.xlsx --sheet Sheet1 --backend libreoffice --output sheet.png\n\nRendering never recalculates. The response reports the calculation state of\nthe workbook as it was read, and a structured list of anything the renderer\ncould not reproduce."
+    )]
+    Render {
+        #[arg(value_name = "FILE", help = "Path to the workbook (.xlsx/.xlsm)")]
+        file: PathBuf,
+        #[arg(long, value_name = "SHEET", help = "Exact sheet name")]
+        sheet: String,
+        #[arg(
+            long,
+            value_name = "RANGE",
+            help = "A1 range to render (default A1:M40)"
+        )]
+        range: Option<String>,
+        #[arg(
+            long,
+            value_enum,
+            value_name = "BACKEND",
+            help = "Renderer backend (native is in-process and needs no LibreOffice)"
+        )]
+        backend: Option<RenderBackendArg>,
+        #[arg(
+            long = "png-level",
+            value_enum,
+            value_name = "LEVEL",
+            help = "PNG compression level; encoding dominates render time"
+        )]
+        png_level: Option<PngLevelArg>,
+        #[arg(long, value_name = "PATH", help = "Write the PNG here")]
+        output: PathBuf,
         #[arg(long, help = "Allow replacing an existing --output path")]
         force: bool,
     },
@@ -3354,6 +3413,15 @@ enum ResolvedSurfaceCommand {
     Command(Commands),
     Operations,
     Registry,
+    Render {
+        file: PathBuf,
+        sheet: String,
+        range: Option<String>,
+        backend: Option<RenderBackendArg>,
+        png_level: Option<PngLevelArg>,
+        output: PathBuf,
+        force: bool,
+    },
     Operation {
         operation: String,
         bind: Option<PathBuf>,
@@ -3827,6 +3895,23 @@ fn resolve_surface_command(
             json,
             output,
             in_place,
+            force,
+        }),
+        SurfaceCommands::Render {
+            file,
+            sheet,
+            range,
+            backend,
+            png_level,
+            output,
+            force,
+        } => Ok(ResolvedSurfaceCommand::Render {
+            file,
+            sheet,
+            range,
+            backend,
+            png_level,
+            output,
             force,
         }),
         SurfaceCommands::Read(command) => match command {
@@ -4371,6 +4456,167 @@ fn machine_bind_rule(
     }
 }
 
+/// `asp render` — the human-facing screenshot command.
+///
+/// Both backends route through the canonical `screenshot_sheet` operation:
+/// `--png-level` is a canonical input, so the human surface adds no rendering
+/// behaviour of its own. It only picks the defaults, writes the artifact bytes
+/// to `--output`, and reports which backend ran.
+#[allow(clippy::too_many_arguments)]
+async fn run_render_command(
+    file: PathBuf,
+    sheet: String,
+    range: Option<String>,
+    backend: Option<RenderBackendArg>,
+    png_level: Option<PngLevelArg>,
+    output: PathBuf,
+    force: bool,
+) -> Result<Value, crate::operations::CanonicalErrorEnvelope> {
+    use crate::operations::{CanonicalErrorCode, CanonicalErrorEnvelope};
+
+    const OPERATION: &str = "render";
+    let invalid = |message: String, pointer: &str| {
+        CanonicalErrorEnvelope::new(
+            CanonicalErrorCode::InvalidRequest,
+            message,
+            Some(OPERATION),
+            Some(pointer.to_string()),
+        )
+    };
+    let range = range.unwrap_or_else(|| "A1:M40".to_string());
+    let backend = backend.unwrap_or(if cfg!(feature = "render") {
+        RenderBackendArg::Native
+    } else {
+        RenderBackendArg::Libreoffice
+    });
+    let level = png_level.unwrap_or(PngLevelArg::Balanced);
+    if matches!(backend, RenderBackendArg::Libreoffice) && png_level.is_some() {
+        return Err(invalid(
+            "--png-level applies to the native backend only".to_string(),
+            "--png-level",
+        ));
+    }
+
+    let runtime = crate::runtime::stateless::StatelessRuntime;
+    let target = runtime
+        .normalize_destination_path(&output)
+        .map_err(|error| invalid(error.to_string(), "--output"))?;
+    if target.exists() && !force {
+        return Err(invalid(
+            "--output already exists; pass --force to replace it".to_string(),
+            "--output",
+        ));
+    }
+
+    let mut request = serde_json::json!({
+        "sheet_name": sheet,
+        "range": range,
+        "backend": match backend {
+            RenderBackendArg::Native => "native",
+            RenderBackendArg::Libreoffice => "libreoffice",
+        },
+    });
+    if matches!(backend, RenderBackendArg::Native)
+        && let Some(object) = request.as_object_mut()
+    {
+        object.insert(
+            "png_level".to_string(),
+            Value::String(level.as_str().to_string()),
+        );
+    }
+    let response = run_machine_operation(
+        "screenshot_sheet",
+        Some(file),
+        None,
+        Some(request.to_string()),
+        Some(target.clone()),
+        false,
+        force,
+    )
+    .await?;
+
+    let mut payload = response.data;
+    if let Some(object) = payload.as_object_mut() {
+        if let Some(bytes) = object
+            .get("artifact")
+            .and_then(|artifact| artifact.get("bytes"))
+            .cloned()
+        {
+            object.insert("bytes".to_string(), bytes);
+        }
+        object.insert("backend".to_string(), Value::String(
+            match backend {
+                RenderBackendArg::Native => "native",
+                RenderBackendArg::Libreoffice => "libreoffice",
+            }
+            .to_string(),
+        ));
+        object.insert(
+            "output".to_string(),
+            Value::String(target.display().to_string()),
+        );
+    }
+    Ok(payload)
+}
+
+/// Copy a content-addressed artifact out of the ephemeral workspace.
+///
+/// The canonical envelope carries only the handle and hash — image bytes never
+/// travel inside it. The CLI is an adapter boundary, so this is where the bytes
+/// are allowed to cross.
+fn write_artifact_bytes(
+    operation: &str,
+    response: &crate::operations::CanonicalResponse,
+    artifact_root: &std::path::Path,
+    target: &std::path::Path,
+    force: bool,
+) -> Result<(), crate::operations::CanonicalErrorEnvelope> {
+    use crate::operations::{CanonicalErrorCode, CanonicalErrorEnvelope};
+
+    let fail = |code: CanonicalErrorCode, message: String, pointer: &str| {
+        CanonicalErrorEnvelope::new(code, message, Some(operation), Some(pointer.to_string()))
+    };
+    let hash = response.data["artifact"]["hash"]
+        .as_str()
+        .and_then(|hash| hash.strip_prefix("sha256:"))
+        .ok_or_else(|| {
+            fail(
+                CanonicalErrorCode::OperationFailed,
+                "response carries no artifact hash".to_string(),
+                "--output",
+            )
+        })?;
+    if !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(fail(
+            CanonicalErrorCode::OperationFailed,
+            "response carries a malformed artifact hash".to_string(),
+            "--output",
+        ));
+    }
+    if target.exists() && !force {
+        return Err(fail(
+            CanonicalErrorCode::InvalidRequest,
+            "--output already exists; pass --force to replace it".to_string(),
+            "--output",
+        ));
+    }
+    let source = artifact_root.join(format!("{hash}.png"));
+    let bytes = std::fs::read(&source).map_err(|error| {
+        fail(
+            CanonicalErrorCode::OperationFailed,
+            error.to_string(),
+            "--output",
+        )
+    })?;
+    std::fs::write(target, bytes).map_err(|error| {
+        fail(
+            CanonicalErrorCode::OperationFailed,
+            error.to_string(),
+            "--output",
+        )
+    })
+}
+
 async fn run_machine_operation(
     operation: &str,
     bind: Option<PathBuf>,
@@ -4492,7 +4738,19 @@ async fn run_machine_operation(
         adapter.binding_kind,
         crate::operations::AdapterBindingKind::SingleMutable
     ) && bind_rule == MachineBindRule::Required;
-    if !mutable_resource && (output.is_some() || in_place || force) {
+    // `screenshot_sheet` is a read operation that nevertheless produces bytes.
+    // `--output` means "write the artifact here"; it never writes a workbook,
+    // so it does not go through the mutable export path below.
+    let artifact_export = operation == "screenshot_sheet";
+    if artifact_export && in_place {
+        return Err(CanonicalErrorEnvelope::new(
+            CanonicalErrorCode::InvalidRequest,
+            "--in-place is not meaningful for screenshot_sheet; use --output <PATH>",
+            Some(operation),
+            Some("--in-place".to_string()),
+        ));
+    }
+    if !mutable_resource && !artifact_export && (output.is_some() || in_place || force) {
         return Err(CanonicalErrorEnvelope::new(
             CanonicalErrorCode::InvalidRequest,
             "--output, --in-place, and --force require a bound workbook-write operation",
@@ -4676,7 +4934,11 @@ async fn run_machine_operation(
             Value::String(resource_id.as_str().to_string()),
         );
     }
+    let artifact_root = state.config().workspace_root.join("artifacts");
     let response = crate::operations::execute_operation_json(state, operation, payload).await?;
+    if artifact_export && let Some(target) = output.as_ref() {
+        write_artifact_bytes(operation, &response, &artifact_root, target, force)?;
+    }
     let should_export = mutable_resource
         && (output.is_some() || in_place)
         && !matches!(
@@ -4808,6 +5070,29 @@ pub async fn run() -> Result<()> {
                     emit_error_and_exit(error.into());
                 }
                 Ok(())
+            }
+            Ok(ResolvedSurfaceCommand::Render {
+                file,
+                sheet,
+                range,
+                backend,
+                png_level,
+                output,
+                force,
+            }) => {
+                match run_render_command(
+                    file, sheet, range, backend, png_level, output, force,
+                )
+                .await
+                {
+                    Ok(payload) => {
+                        if let Err(error) = emit_exact_json(&payload, false) {
+                            emit_error_and_exit(error.into());
+                        }
+                        Ok(())
+                    }
+                    Err(error) => emit_canonical_error_and_exit(error),
+                }
             }
             Ok(ResolvedSurfaceCommand::Operation {
                 operation,

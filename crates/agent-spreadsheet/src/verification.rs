@@ -124,7 +124,7 @@ struct ErrorCellSnapshot {
 }
 
 pub struct EvaluatedWorkbook {
-    _temp_dir: tempfile::TempDir,
+    _temp_dir: crate::hostfs::TempDir,
     pub workbook: WorkbookContext,
     pub coverage: EvaluationCoverage,
 }
@@ -185,7 +185,7 @@ pub async fn evaluate_workbook_for_verification(
 ) -> Result<EvaluatedWorkbook> {
     use crate::recalc::{FormualizerBackend, RecalcBackend};
 
-    let temp_dir = tempfile::tempdir()?;
+    let temp_dir = crate::hostfs::tempdir()?;
     let path = temp_dir.path().join("verification.xlsx");
     workbook.save_copy(&path)?;
 

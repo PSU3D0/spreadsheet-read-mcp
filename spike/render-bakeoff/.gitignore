@@ -1,0 +1,12 @@
+target/
+out/
+# Corpus copies from sibling repos are reproducible; only the generated
+# fixtures are committed. See corpus/MANIFEST.md.
+corpus/calamine/
+corpus/synthetic/
+corpus/ironcalc/
+corpus/fixtures/
+# Reference crate sources extracted from ~/.cargo caches; reproducible.
+refs/
+refc/target/
+refc/Cargo.lock

@@ -5,7 +5,7 @@ use crate::canonical_optional::{
     ExecuteSheetportData, ExecuteSheetportRequest, SheetportManifestData, SheetportManifestRequest,
 };
 use crate::canonical_optional::{InspectVbaData, InspectVbaRequest};
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 use crate::canonical_optional::{ScreenshotSheetData, ScreenshotSheetRequest};
 pub use crate::canonical_reads::*;
 #[cfg(feature = "recalc")]
@@ -204,28 +204,44 @@ impl RuntimeCapabilities {
         Self {
             workbook_discovery: true,
             workbook_read: true,
-            workbook_write: cfg!(all(not(target_arch = "wasm32"), feature = "recalc")),
+            workbook_write: cfg!(all(
+                not(target_arch = "wasm32"),
+                feature = "native-fs",
+                feature = "recalc"
+            )),
             screenshot_rendering: native_screenshot_available(),
-            sheetport: cfg!(feature = "recalc-formualizer"),
+            sheetport: cfg!(all(feature = "recalc-formualizer", feature = "sheetport")),
             vba: true,
         }
     }
 
     pub fn from_state(state: &AppState) -> Self {
-        #[cfg(not(all(not(target_arch = "wasm32"), feature = "recalc")))]
+        #[cfg(not(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc")))]
         let _ = state;
         Self {
             workbook_discovery: true,
             workbook_read: true,
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
             workbook_write: state.fork_registry().is_some(),
-            #[cfg(not(all(not(target_arch = "wasm32"), feature = "recalc")))]
+            #[cfg(not(all(
+                not(target_arch = "wasm32"),
+                feature = "native-fs",
+                feature = "recalc"
+            )))]
             workbook_write: false,
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
-            screenshot_rendering: state.screenshot_semaphore().is_some(),
-            #[cfg(not(all(not(target_arch = "wasm32"), feature = "recalc")))]
+            // The native raster backend is always available when it is
+            // compiled in; the LibreOffice fallback still depends on the
+            // host state that serializes its macro export.
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
+            screenshot_rendering: cfg!(feature = "render")
+                || state.screenshot_semaphore().is_some(),
+            #[cfg(not(all(
+                not(target_arch = "wasm32"),
+                feature = "native-fs",
+                feature = "recalc"
+            )))]
             screenshot_rendering: false,
-            sheetport: cfg!(feature = "recalc-formualizer"),
+            sheetport: cfg!(all(feature = "recalc-formualizer", feature = "sheetport")),
             vba: true,
         }
     }
@@ -302,32 +318,32 @@ pub enum SpreadsheetOperation {
     FormulaMap(FormulaMapRequest),
     ProfileTable(ProfileTableRequest),
     SheetStatistics(SheetStatisticsRequest),
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(feature = "recalc")]
     ScreenshotSheet(ScreenshotSheetRequest),
     #[cfg(feature = "recalc-formualizer")]
     SheetportManifest(SheetportManifestRequest),
     #[cfg(feature = "recalc-formualizer")]
     ExecuteSheetport(ExecuteSheetportRequest),
     InspectVba(InspectVbaRequest),
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
     Write(WriteRequest),
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
     CreateFork(CreateForkRequest),
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
     ListForks(ListForksRequest),
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
     Recalculate(RecalculateRequest),
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
     VerifyWorkbook(VerifyWorkbookRequest),
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
     ExportFork(ExportForkRequest),
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
     DiscardFork(DiscardForkRequest),
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
     GetChanges(GetChangesRequest),
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
     Checkpoint(CheckpointRequest),
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
     StagedChange(StagedChangeRequest),
 }
 
@@ -351,32 +367,32 @@ impl SpreadsheetOperation {
             Self::FormulaMap(_) => "formula_map",
             Self::ProfileTable(_) => "profile_table",
             Self::SheetStatistics(_) => "sheet_statistics",
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(feature = "recalc")]
             Self::ScreenshotSheet(_) => "screenshot_sheet",
             #[cfg(feature = "recalc-formualizer")]
             Self::SheetportManifest(_) => "sheetport_manifest",
             #[cfg(feature = "recalc-formualizer")]
             Self::ExecuteSheetport(_) => "execute_sheetport",
             Self::InspectVba(_) => "inspect_vba",
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
             Self::Write(_) => "write",
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
             Self::CreateFork(_) => "create_fork",
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
             Self::ListForks(_) => "list_forks",
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
             Self::Recalculate(_) => "recalculate",
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
             Self::VerifyWorkbook(_) => "verify_workbook",
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
             Self::ExportFork(_) => "export_fork",
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
             Self::DiscardFork(_) => "discard_fork",
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
             Self::GetChanges(_) => "get_changes",
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
             Self::Checkpoint(_) => "checkpoint",
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
             Self::StagedChange(_) => "staged_change",
         }
     }
@@ -400,32 +416,32 @@ impl SpreadsheetOperation {
             Self::FormulaMap(value) => Some(&value.resource_id),
             Self::ProfileTable(value) => Some(&value.resource_id),
             Self::SheetStatistics(value) => Some(&value.resource_id),
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(feature = "recalc")]
             Self::ScreenshotSheet(value) => Some(&value.resource_id),
             #[cfg(feature = "recalc-formualizer")]
             Self::SheetportManifest(value) => value.resource_id(),
             #[cfg(feature = "recalc-formualizer")]
             Self::ExecuteSheetport(value) => Some(&value.resource_id),
             Self::InspectVba(value) => Some(value.resource_id()),
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
             Self::Write(value) => Some(&value.resource_id),
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
             Self::CreateFork(value) => Some(&value.resource_id),
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
             Self::ListForks(_) => None,
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
             Self::Recalculate(value) => Some(&value.resource_id),
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
             Self::VerifyWorkbook(value) => Some(&value.resource_id),
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
             Self::ExportFork(value) => Some(&value.resource_id),
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
             Self::DiscardFork(value) => Some(&value.resource_id),
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
             Self::GetChanges(value) => Some(&value.resource_id),
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
             Self::Checkpoint(value) => Some(value.resource_id()),
-            #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
             Self::StagedChange(value) => Some(value.resource_id()),
         }
     }
@@ -555,11 +571,28 @@ struct OptionalResourceResponseSchema<T: JsonSchema> {
     data: T,
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc-libreoffice"))]
+/// Whether this build can render a screenshot at all.
+///
+/// The native raster backend needs nothing but the `render` feature: no
+/// process, no profile directory, no probe. LibreOffice is the fallback and
+/// stays behind its own availability probe, so a build without `render` behaves
+/// exactly as it did before.
+#[cfg(feature = "render")]
+fn native_screenshot_available() -> bool {
+    true
+}
+#[cfg(all(
+    not(feature = "render"),
+    not(target_arch = "wasm32"),
+    feature = "recalc-libreoffice"
+))]
 fn native_screenshot_available() -> bool {
     crate::recalc::ScreenshotExecutor::new(&crate::recalc::RecalcConfig::default()).is_available()
 }
-#[cfg(not(all(not(target_arch = "wasm32"), feature = "recalc-libreoffice")))]
+#[cfg(all(
+    not(feature = "render"),
+    not(all(not(target_arch = "wasm32"), feature = "recalc-libreoffice"))
+))]
 fn native_screenshot_available() -> bool {
     false
 }
@@ -570,7 +603,7 @@ fn workbook_read(capabilities: &RuntimeCapabilities) -> bool {
 fn workbook_discovery(capabilities: &RuntimeCapabilities) -> bool {
     capabilities.workbook_discovery
 }
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 fn screenshot_rendering(capabilities: &RuntimeCapabilities) -> bool {
     capabilities.workbook_read && capabilities.screenshot_rendering
 }
@@ -588,7 +621,7 @@ fn workbook_write(capabilities: &RuntimeCapabilities) -> bool {
 fn read_risk(_: &SpreadsheetOperation) -> OperationRisk {
     OperationRisk::Low
 }
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 fn write_risk(operation: &SpreadsheetOperation) -> OperationRisk {
     match operation {
         SpreadsheetOperation::Write(request) => request
@@ -612,7 +645,12 @@ fn write_risk(operation: &SpreadsheetOperation) -> OperationRisk {
     }
 }
 
-#[cfg(all(target_arch = "wasm32", feature = "recalc"))]
+// Byte/session hosts (and any build without the host filesystem) cannot
+// inspect the op bundle here, so they report the ceiling.
+#[cfg(all(
+    feature = "recalc",
+    any(target_arch = "wasm32", not(feature = "native-fs"))
+))]
 fn write_risk(_operation: &SpreadsheetOperation) -> OperationRisk {
     OperationRisk::Destructive
 }
@@ -896,7 +934,7 @@ schemas!(
     SheetStatisticsResponse,
     "sheet_statistics"
 );
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 fn screenshot_sheet_input_schema() -> Value {
     let mut schema = closed_schema::<ScreenshotSheetRequest>();
     schema["properties"]["range"]["x-runtime-bounds"] = json!({
@@ -905,7 +943,7 @@ fn screenshot_sheet_input_schema() -> Value {
     });
     schema
 }
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 fn screenshot_sheet_output_schema() -> Value {
     resource_output_schema::<ScreenshotSheetData>("screenshot_sheet")
 }
@@ -1061,7 +1099,7 @@ fn write_input_schema() -> Value {
     schema
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 schemas!(
     create_fork_input_schema,
     create_fork_output_schema,
@@ -1069,11 +1107,11 @@ schemas!(
     CreateForkData,
     "create_fork"
 );
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 fn list_forks_input_schema() -> Value {
     closed_schema::<ListForksRequest>()
 }
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 fn list_forks_output_schema() -> Value {
     discovery_output_schema::<ListForksData>("list_forks")
 }
@@ -1093,7 +1131,7 @@ schemas!(
     VerifyWorkbookData,
     "verify_workbook"
 );
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 schemas!(
     export_fork_input_schema,
     export_fork_output_schema,
@@ -1101,7 +1139,7 @@ schemas!(
     ExportForkData,
     "export_fork"
 );
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 schemas!(
     discard_fork_input_schema,
     discard_fork_output_schema,
@@ -1109,7 +1147,7 @@ schemas!(
     DiscardForkData,
     "discard_fork"
 );
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 schemas!(
     get_changes_input_schema,
     get_changes_output_schema,
@@ -1117,7 +1155,7 @@ schemas!(
     GetChangesData,
     "get_changes"
 );
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 schemas!(
     checkpoint_input_schema,
     checkpoint_output_schema,
@@ -1125,7 +1163,7 @@ schemas!(
     CheckpointData,
     "checkpoint"
 );
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 schemas!(
     staged_change_input_schema,
     staged_change_output_schema,
@@ -1183,7 +1221,7 @@ const WORKBOOK_READ: CapabilityMetadata = CapabilityMetadata {
     name: "workbook_read",
     description: "Read an already-bound workbook resource",
 };
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(feature = "recalc")]
 const SCREENSHOT_RENDERING: CapabilityMetadata = CapabilityMetadata {
     name: "screenshot_rendering",
     description: "Render bounded workbook regions to content-addressed image artifacts",
@@ -1229,7 +1267,7 @@ const CLI_MUTABLE: AdapterOperationMetadata =
 #[cfg(feature = "recalc")]
 const CLI_TWO_RESOURCE: AdapterOperationMetadata =
     AdapterOperationMetadata::supported(AdapterBindingKind::TwoResource, NONE);
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 const CLI_DURABLE_UNSUPPORTED: AdapterOperationMetadata = AdapterOperationMetadata::unsupported(
     AdapterBindingKind::DurableOrchestration,
     DURABLE_REQUIRED,
@@ -1244,7 +1282,7 @@ const MCP_MUTABLE: AdapterOperationMetadata =
 #[cfg(feature = "recalc")]
 const MCP_TWO_RESOURCE: AdapterOperationMetadata =
     AdapterOperationMetadata::supported(AdapterBindingKind::TwoResource, DURABLE_REQUIRED);
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 const MCP_DURABLE: AdapterOperationMetadata =
     AdapterOperationMetadata::supported(AdapterBindingKind::DurableOrchestration, DURABLE_REQUIRED);
 const WASM_NONE_UNSUPPORTED: AdapterOperationMetadata =
@@ -1259,7 +1297,7 @@ const WASM_MUTABLE: AdapterOperationMetadata =
 #[cfg(feature = "recalc")]
 const WASM_TWO_RESOURCE: AdapterOperationMetadata =
     AdapterOperationMetadata::supported(AdapterBindingKind::TwoResource, NONE);
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 const WASM_DURABLE_UNSUPPORTED: AdapterOperationMetadata = AdapterOperationMetadata::unsupported(
     AdapterBindingKind::DurableOrchestration,
     DURABLE_REQUIRED,
@@ -1287,7 +1325,7 @@ const JUST_BASH_MUTABLE: AdapterOperationMetadata =
     just_bash_adapter(WASM_MUTABLE, EXPORT_REQUIRED);
 #[cfg(feature = "recalc")]
 const JUST_BASH_TWO_RESOURCE: AdapterOperationMetadata = just_bash_adapter(WASM_TWO_RESOURCE, NONE);
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 const JUST_BASH_DURABLE_UNSUPPORTED: AdapterOperationMetadata =
     just_bash_adapter(WASM_DURABLE_UNSUPPORTED, DURABLE_REQUIRED);
 const SHARED_READ_ADAPTERS: DescriptorAdapterMetadata = DescriptorAdapterMetadata {
@@ -1322,7 +1360,7 @@ const TWO_RESOURCE_ADAPTERS: DescriptorAdapterMetadata = DescriptorAdapterMetada
     wasm: WASM_TWO_RESOURCE,
     just_bash: JUST_BASH_TWO_RESOURCE,
 };
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 const DURABLE_ADAPTERS: DescriptorAdapterMetadata = DescriptorAdapterMetadata {
     cli: CLI_DURABLE_UNSUPPORTED,
     mcp: MCP_DURABLE,
@@ -1518,13 +1556,16 @@ static REGISTRY: &[OperationDescriptor] = &[
         sheet_statistics_input_schema,
         sheet_statistics_output_schema
     ),
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(feature = "recalc")]
     descriptor_adapters!(
         "screenshot_sheet",
         "Render a bounded sheet range to a content-addressed PNG artifact without exposing a server path.",
         SCREENSHOT_RENDERING,
         screenshot_rendering,
-        NATIVE_READ_ADAPTERS,
+        // The raster renderer compiles to wasm32 and needs no host process, so
+        // the byte/session adapters render too. The artifact bytes never enter
+        // the envelope: each adapter hands them across its own boundary.
+        SHARED_READ_ADAPTERS,
         EXPENSIVE_READ,
         screenshot_sheet_input_schema,
         screenshot_sheet_output_schema
@@ -1578,7 +1619,7 @@ static REGISTRY: &[OperationDescriptor] = &[
         input_schema: write_input_schema,
         output_schema: write_output_schema,
     },
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
     OperationDescriptor {
         name: "create_fork",
         schema_version: CANONICAL_SCHEMA_VERSION,
@@ -1592,7 +1633,7 @@ static REGISTRY: &[OperationDescriptor] = &[
         input_schema: create_fork_input_schema,
         output_schema: create_fork_output_schema,
     },
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
     descriptor_adapters!(
         "list_forks",
         "Discover active forks without exposing server-local paths.",
@@ -1631,7 +1672,7 @@ static REGISTRY: &[OperationDescriptor] = &[
         verify_workbook_input_schema,
         verify_workbook_output_schema
     ),
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
     OperationDescriptor {
         name: "export_fork",
         schema_version: CANONICAL_SCHEMA_VERSION,
@@ -1648,7 +1689,7 @@ static REGISTRY: &[OperationDescriptor] = &[
         input_schema: export_fork_input_schema,
         output_schema: export_fork_output_schema,
     },
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
     OperationDescriptor {
         name: "discard_fork",
         schema_version: CANONICAL_SCHEMA_VERSION,
@@ -1662,7 +1703,7 @@ static REGISTRY: &[OperationDescriptor] = &[
         input_schema: discard_fork_input_schema,
         output_schema: discard_fork_output_schema,
     },
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
     descriptor_adapters!(
         "get_changes",
         "Read either the canonical operation audit or a direct base-to-current net diff.",
@@ -1673,7 +1714,7 @@ static REGISTRY: &[OperationDescriptor] = &[
         get_changes_input_schema,
         get_changes_output_schema
     ),
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
     OperationDescriptor {
         name: "checkpoint",
         schema_version: CANONICAL_SCHEMA_VERSION,
@@ -1690,7 +1731,7 @@ static REGISTRY: &[OperationDescriptor] = &[
         input_schema: checkpoint_input_schema,
         output_schema: checkpoint_output_schema,
     },
-    #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
     OperationDescriptor {
         name: "staged_change",
         schema_version: CANONICAL_SCHEMA_VERSION,
@@ -1937,7 +1978,7 @@ pub fn decode_operation(
             SheetStatisticsRequest,
             SpreadsheetOperation::SheetStatistics
         ),
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        #[cfg(feature = "recalc")]
         "screenshot_sheet" => {
             let request = serde_json::from_value::<ScreenshotSheetRequest>(payload)
                 .map_err(|error| CanonicalErrorEnvelope::invalid_request(name, error))?;
@@ -1971,70 +2012,70 @@ pub fn decode_operation(
             InspectVbaRequest,
             SpreadsheetOperation::InspectVba
         ),
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
         "create_fork" => decode!(
             payload,
             name,
             CreateForkRequest,
             SpreadsheetOperation::CreateFork
         ),
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
         "list_forks" => decode!(
             payload,
             name,
             ListForksRequest,
             SpreadsheetOperation::ListForks
         ),
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
         "recalculate" => decode!(
             payload,
             name,
             RecalculateRequest,
             SpreadsheetOperation::Recalculate
         ),
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
         "verify_workbook" => decode!(
             payload,
             name,
             VerifyWorkbookRequest,
             SpreadsheetOperation::VerifyWorkbook
         ),
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
         "export_fork" => decode!(
             payload,
             name,
             ExportForkRequest,
             SpreadsheetOperation::ExportFork
         ),
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
         "discard_fork" => decode!(
             payload,
             name,
             DiscardForkRequest,
             SpreadsheetOperation::DiscardFork
         ),
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
         "get_changes" => decode!(
             payload,
             name,
             GetChangesRequest,
             SpreadsheetOperation::GetChanges
         ),
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
         "checkpoint" => decode!(
             payload,
             name,
             CheckpointRequest,
             SpreadsheetOperation::Checkpoint
         ),
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
         "staged_change" => decode!(
             payload,
             name,
             StagedChangeRequest,
             SpreadsheetOperation::StagedChange
         ),
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
         "write" => {
             let schema = write_input_schema();
             let validator = jsonschema::validator_for(&schema).map_err(|error| {
@@ -2080,7 +2121,7 @@ fn optional_error(operation: &str, error: anyhow::Error) -> CanonicalErrorEnvelo
     CanonicalErrorEnvelope::new(code, message, Some(operation), None)
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
 fn lifecycle_error(operation: &str, error: anyhow::Error) -> CanonicalErrorEnvelope {
     let message = error.to_string();
     let code = if message.starts_with("revision conflict:") {
@@ -2139,7 +2180,7 @@ pub async fn execute_operation(
                 )
             })?;
         let mut advertised_revision = workbook.revision_id.clone();
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
         if requested.as_str().starts_with("fork:") {
             let registry = state.fork_registry().ok_or_else(|| {
                 CanonicalErrorEnvelope::operation_failed(
@@ -2377,7 +2418,7 @@ pub async fn execute_operation(
             .await
             .map_err(|error| CanonicalErrorEnvelope::operation_failed(name, error.to_string()))?,
         ),
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        #[cfg(feature = "recalc")]
         SpreadsheetOperation::ScreenshotSheet(request) => serde_json::to_value(
             crate::canonical_optional::screenshot_sheet(state, request)
                 .await
@@ -2404,7 +2445,7 @@ pub async fn execute_operation(
             .await
             .map_err(|error| optional_error(name, error))?,
         ),
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
         SpreadsheetOperation::Write(request) => {
             let result = crate::canonical_write::execute_write(state, request)
                 .await
@@ -2412,7 +2453,7 @@ pub async fn execute_operation(
             revision_id = Some(result.revision_after().to_string());
             serde_json::to_value(result)
         }
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
         SpreadsheetOperation::CreateFork(request) => {
             let result = crate::canonical_lifecycle::create_fork(state, request)
                 .await
@@ -2421,12 +2462,12 @@ pub async fn execute_operation(
             revision_id = Some(result.revision_id.clone());
             serde_json::to_value(result)
         }
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
         SpreadsheetOperation::ListForks(request) => serde_json::to_value(
             crate::canonical_lifecycle::list_forks(state, request)
                 .map_err(|error| lifecycle_error(name, error))?,
         ),
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
         SpreadsheetOperation::Recalculate(request) => {
             let result = crate::canonical_lifecycle::recalculate(state, request)
                 .await
@@ -2434,7 +2475,9 @@ pub async fn execute_operation(
             revision_id = Some(result.revision_after.clone());
             serde_json::to_value(result)
         }
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        // `canonical_lifecycle::verify_workbook` snapshots both resources into a
+        // host temp directory and re-binds them through the path workspace.
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
         SpreadsheetOperation::VerifyWorkbook(request) => {
             let result = crate::canonical_lifecycle::verify_workbook(state, request)
                 .await
@@ -2442,21 +2485,21 @@ pub async fn execute_operation(
             revision_id = Some(result.current_revision_id.clone());
             serde_json::to_value(result)
         }
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
         SpreadsheetOperation::ExportFork(request) => {
             let result = crate::canonical_lifecycle::export_fork(state, request)
                 .map_err(|error| lifecycle_error(name, error))?;
             revision_id = Some(result.revision_after.clone());
             serde_json::to_value(result)
         }
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
         SpreadsheetOperation::DiscardFork(request) => {
             let result = crate::canonical_lifecycle::discard_fork(state, request)
                 .map_err(|error| lifecycle_error(name, error))?;
             revision_id = Some(result.revision_after.clone());
             serde_json::to_value(result)
         }
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
         SpreadsheetOperation::GetChanges(request) => {
             let result = crate::canonical_lifecycle::get_changes(state, request)
                 .await
@@ -2467,7 +2510,7 @@ pub async fn execute_operation(
             });
             serde_json::to_value(result)
         }
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
         SpreadsheetOperation::Checkpoint(request) => {
             let result = crate::canonical_lifecycle::checkpoint(state, request)
                 .map_err(|error| lifecycle_error(name, error))?;
@@ -2479,7 +2522,7 @@ pub async fn execute_operation(
             });
             serde_json::to_value(result)
         }
-        #[cfg(all(not(target_arch = "wasm32"), feature = "recalc"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-fs", feature = "recalc"))]
         SpreadsheetOperation::StagedChange(request) => {
             let result = crate::canonical_lifecycle::staged_change(state, request)
                 .map_err(|error| lifecycle_error(name, error))?;

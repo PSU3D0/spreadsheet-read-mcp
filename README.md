@@ -23,9 +23,9 @@ agent-spreadsheet ships a unified spreadsheet interaction layer across three sur
 | --- | --- | --- | --- |
 | **CLI** | `agent-spreadsheet` / `asp` | Stateless | One-shot reads, safe edits, pipelines, CI, agent tool calls |
 | **MCP server** | `agent-spreadsheet-mcp` | Stateful | Multi-turn agent sessions, workbook caching, fork/recalc workflows |
-| **JS SDK** | `agent-spreadsheet-sdk` | Library | App integrations — talks to the MCP server, or runs fully in-process via the embedded WASM engine (no server required) |
+| **TypeScript SDK** | `agent-spreadsheet-sdk` | Library | App integrations — drives the server's canonical `/v1` route, or runs fully in-process via the embedded WASM engine (no server required) |
 
-The WASM build (`agent-spreadsheet-wasm`) is the SDK's in-process backend, not a separate product surface: JS code targets the SDK API and the execution substrate (server vs embedded engine) is a configuration choice.
+The WASM build (`agent-spreadsheet-wasm`) is the SDK's local runtime, not a separate product surface: JS and TypeScript code targets one object model and the execution substrate (server vs embedded engine) is a configuration choice.
 
 Supported workbook modes:
 
@@ -721,8 +721,23 @@ Add to `~/.claude.json` or project `.mcp.json`:
 
 ```bash
 agent-spreadsheet-mcp --workspace-root /path/to/workbooks
-# -> http://127.0.0.1:8079  (POST /mcp)
+# -> http://127.0.0.1:8079  (POST /mcp, and the canonical route under /v1)
 ```
+
+The same process also serves a plain canonical HTTP route for programmatic clients that do not speak MCP:
+
+| Route | Purpose |
+| --- | --- |
+| `POST /v1/op/{operation}` | Run a canonical operation; the body is the canonical input object, the response is the canonical envelope |
+| `GET /v1/operations` | Runtime-filtered operation discovery for this process |
+| `GET /v1/registry` | Full canonical registry projection plus the error schema |
+| `GET /v1/artifacts/{handle}` | Bytes for an `artifact:sha256:<hex>` handle produced by `screenshot_sheet` |
+
+```bash
+curl -sS -X POST http://127.0.0.1:8079/v1/op/list_workbooks -d '{}'
+```
+
+Canonical errors return the canonical error envelope with the status mapped from the error code (400 invalid request, 404 unknown operation / resource, 409 revision conflict, 500 operation failed, 501 capability unavailable). Like `/mcp`, `/v1` has **no authentication**; the loopback default bind is the security boundary. See [docs/architecture/canonical-http-route.md](docs/architecture/canonical-http-route.md).
 
 ### Configuration
 

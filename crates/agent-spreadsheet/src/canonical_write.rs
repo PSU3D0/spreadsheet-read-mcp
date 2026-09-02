@@ -1244,9 +1244,9 @@ fn worst_risk(ops: &[WriteOp]) -> OperationRisk {
         .unwrap_or(OperationRisk::Low)
 }
 
-fn temp_copy(path: &Path) -> Result<tempfile::NamedTempFile> {
+fn temp_copy(path: &Path) -> Result<crate::hostfs::NamedTempFile> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file = tempfile::Builder::new()
+    let file = crate::hostfs::Builder::new()
         .prefix(".canonical-write-")
         .suffix(".xlsx")
         .tempfile_in(parent)?;
@@ -1254,7 +1254,7 @@ fn temp_copy(path: &Path) -> Result<tempfile::NamedTempFile> {
     Ok(file)
 }
 
-fn swap_temp(temp: tempfile::NamedTempFile, target: &Path) -> Result<()> {
+fn swap_temp(temp: crate::hostfs::NamedTempFile, target: &Path) -> Result<()> {
     let (_file, path) = temp.keep()?;
     if let Err(error) = fs::rename(&path, target) {
         let _ = fs::remove_file(&path);

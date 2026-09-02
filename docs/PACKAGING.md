@@ -5,10 +5,10 @@
 | Surface | Crate name | npm name | Binary name |
 | --- | --- | --- | --- |
 | Core primitives | `agent-spreadsheet` | — | — |
-| WASM adapter/runtime | `agent-spreadsheet-wasm` | `agent-spreadsheet-wasm` (planned distribution package) | — |
+| WASM adapter/runtime | `agent-spreadsheet-wasm` | `agent-spreadsheet-wasm` | — |
 | MCP server | `agent-spreadsheet-mcp` | — | `agent-spreadsheet-mcp` |
 | CLI | `agent-spreadsheet` | `agent-spreadsheet` | `agent-spreadsheet` |
-| JS SDK backend abstraction | — | `agent-spreadsheet-sdk` | — |
+| TypeScript SDK (local WASM + server `/v1` runtimes) | — | `agent-spreadsheet-sdk` | — |
 
 The workspace umbrella name is **agent-spreadsheet**. The GitHub repo is `PSU3D0/agent-spreadsheet-mcp` (historical — predates the workspace split).
 
@@ -23,14 +23,15 @@ The workspace umbrella name is **agent-spreadsheet**. The GitHub repo is `PSU3D0
 Release ordering for tranche-35 surfaces:
 
 1. publish core crates in dependency order (`agent-spreadsheet` → `agent-spreadsheet-wasm` → `agent-spreadsheet-mcp`)
-2. publish npm packages (`agent-spreadsheet`, `agent-spreadsheet-sdk`, and `agent-spreadsheet-wasm` when enabled)
-3. run smoke tests against SDK MCP + WASM backends before final release promotion
+2. publish npm packages (`agent-spreadsheet`, `agent-spreadsheet-sdk`, `agent-spreadsheet-wasm`)
+3. run smoke tests against both SDK runtimes (local WASM and the server `/v1` route) before final release promotion
 
 ### Tag lanes
 
 - `vX.Y.Z` → Rust release lane (GitHub release assets + crates publish)
 - `cli-vX.Y.Z` → npm `agent-spreadsheet` publish lane
 - `sdk-vX.Y.Z` → npm `agent-spreadsheet-sdk` publish lane
+- `wasm-vX.Y.Z` → npm `agent-spreadsheet-wasm` publish lane (`.github/workflows/publish-npm-wasm.yml`); version tracks the SDK line
 
 ### npm dist-tag policy
 
@@ -68,8 +69,8 @@ WASM + SDK artifacts are published as package artifacts:
 | Artifact | Surface |
 | --- | --- |
 | crate `agent-spreadsheet-wasm` | Rust/WASM adapter crate |
-| npm `agent-spreadsheet-sdk` | JS SDK backend abstraction |
-| npm `agent-spreadsheet-wasm` (planned) | JS/WASM runtime distribution |
+| npm `agent-spreadsheet-sdk` | TypeScript SDK over the local WASM and server `/v1` runtimes |
+| npm `agent-spreadsheet-wasm` | JS/WASM runtime distribution (`--target web` bundle + loader) |
 
 ## Default features
 
@@ -106,4 +107,67 @@ Override download source with `AGENT_SPREADSHEET_DOWNLOAD_BASE_URL`. Use a pre-b
 | `crates/agent-spreadsheet-mcp/README.md` | MCP users | Quickstart configs, feature summary, link to root |
 | `crates/agent-spreadsheet/README.md` | CLI users | `agent-spreadsheet` binary usage and command surface |
 | `npm/agent-spreadsheet/README.md` | npm CLI users | Install, platform matrix, troubleshooting, env vars |
-| `npm/agent-spreadsheet-sdk/README.md` | npm SDK users | Backend abstraction, capabilities, typed errors |
+| `npm/agent-spreadsheet-sdk/README.md` | npm SDK users | Object model, generated types, capabilities, typed errors |
+
+## WASM build lane
+
+The npm `agent-spreadsheet-wasm` package ships the `--target web` wasm-bindgen
+output plus a loader (`createWasmRuntime`) that reads the `.wasm` from disk on
+Node 18+ and fetches it in browsers. `pkg/` is generated; run
+`npm run build` in `npm/agent-spreadsheet-wasm` to refresh it.
+
+### Profile
+
+Size settings live in the workspace `[profile.wasm-release]`
+(`opt-level = "z"`, `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`,
+`strip = true`). Cargo has no per-target profiles, so this is a **custom**
+profile rather than a change to `release`: the native `release` profile still
+builds the GitHub release binaries at cargo defaults, with unwinding intact and
+no fat-LTO link cost.
+
+Build with `node scripts/build-wasm-package.js --target web|nodejs
+--profile wasm-release`. That wrapper drives `wasm-pack --no-opt` and then runs
+`wasm-opt` itself, because binaryen releases up to 117 reject the WebAssembly
+features rustc now emits by default unless `--enable-bulk-memory` and friends
+are passed explicitly. Set `WASM_OPT=/path/to/wasm-opt` if it is not on `PATH`;
+the wrapper also finds the copy wasm-pack downloads into `~/.cache/.wasm-pack`.
+
+### Features
+
+The core crate carves host-only dependencies out of the wasm32 build:
+
+| Feature | Pulls in | Needed by |
+| --- | --- | --- |
+| `cli` | clap, serde_yaml, tracing-subscriber | `asp`, `agent-spreadsheet`, `agent-spreadsheet-mcp` |
+| `native-fs` | tempfile, walkdir, globset | path workspace discovery, fork/staging temp files |
+| `sheetport` | `formualizer/sheetport` (→ sheetport-spec) | SheetPort manifest operations |
+| `recalc-libreoffice` | image, png | LibreOffice screenshot post-processing |
+| `render` | agent-spreadsheet-render (tiny-skia, png, ab_glyph, subset fonts) | in-process `screenshot_sheet` |
+
+All five are in the core crate's `default` feature set. `agent-spreadsheet-wasm`
+depends on the core crate with `default-features = false` and
+`recalc-formualizer`, so the host-only four never reach the browser bundle. It
+does enable `render`: the raster renderer has no filesystem, process or tokio
+dependency and compiles to wasm32, and compiling it in is what makes
+`screenshot_rendering` available in the browser. That build needs
+`--cfg getrandom_backend="wasm_js"`, which `.cargo/config.toml` sets for the
+`wasm32-unknown-unknown` target.
+
+### Size gate
+
+`wasm-size-budget.json` records the raw and brotli ceilings for the release web
+bundle; `node scripts/check-wasm-size.js` builds and enforces them, and the
+`wasm-size-gate` CI job runs it on every PR. Ceilings ratchet down — raising one
+needs a reason in the commit message.
+
+Measured on the `web` target, `wasm-release` profile, `wasm-opt -Oz`:
+
+| Bundle | Raw | Brotli |
+| --- | ---: | ---: |
+| 5002 dependency diet, no renderer | 8 576 619 B (8.18 MiB) | 2 059 359 B (1.96 MiB) |
+| 5006 with the raster renderer | 9 212 266 B (8.79 MiB) | 2 250 996 B (2.15 MiB) |
+| Renderer cost | +635 647 B (+7.4 %) | +191 637 B (+9.3 %) |
+| Current ceiling | 9 434 281 B | 2 265 295 B |
+
+The renderer and its subset fonts fit inside the 1.5 MiB raw allowance the
+tranche set, so the ceilings did not move. Brotli headroom is now 0.6 percent.

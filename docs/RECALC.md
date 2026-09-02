@@ -57,7 +57,7 @@ When running in Docker with `--workspace-root /data` and a host mount like `-v /
 
 - Fork working files are stored under `/tmp/mcp-forks` inside the container and are ephemeral.
 - To persist a fork back to the host, call `save_fork` with a `target_path` under `/data` (or a relative path).
-- Screenshots from `screenshot_sheet` are written under `/data/screenshots/` (host sees `/path/to/workbooks/screenshots/`).
+- Screenshots from `screenshot_sheet` no longer need LibreOffice: the default backend is the in-process native raster renderer. See [RENDERING.md](./RENDERING.md). Only `backend: "libreoffice"` writes under `/data/screenshots/` (host sees `/path/to/workbooks/screenshots/`); the native backend keeps the bytes in memory and persists them straight into the content-addressed artifact store.
 
 ## Configuration
 

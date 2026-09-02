@@ -204,8 +204,13 @@ async fn live_json_rpc_projects_every_available_canonical_descriptor() -> Result
         tools.len(),
         list_bytes
     );
+    // Budget raised from 71 KiB in 5004: `screenshot_sheet` gained an optional
+    // `backend` input and an additive `renderer` / `fidelity` / `warnings` /
+    // `calculation` output block, which costs about 2.5 KiB of schema across
+    // the whole projection. Structured fidelity warnings are the point of the
+    // ticket; the budget still holds the projection under 72 KiB.
     assert!(
-        list_bytes < 71 * 1024,
+        list_bytes < 72 * 1024,
         "canonical tools/list projection is {list_bytes} bytes"
     );
 

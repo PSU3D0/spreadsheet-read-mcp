@@ -155,6 +155,16 @@ impl SpreadsheetServer {
         self.state.config().tool_timeout()
     }
 
+    /// Adapter response-size ceiling, if configured.
+    pub(crate) fn canonical_response_limit(&self) -> Option<usize> {
+        self.state.config().max_response_bytes()
+    }
+
+    /// Whether the operation passes the configured enabled-tool policy.
+    pub(crate) fn canonical_tool_allowed(&self, tool: &str) -> bool {
+        self.state.config().is_tool_enabled(tool)
+    }
+
     pub(crate) fn ensure_canonical_tool_enabled(&self, tool: &str) -> Result<(), McpError> {
         self.ensure_tool_enabled(tool)
             .map_err(|error| to_mcp_error_for_tool(tool, error))

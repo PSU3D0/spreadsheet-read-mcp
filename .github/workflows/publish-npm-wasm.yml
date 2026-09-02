@@ -1,0 +1,91 @@
+name: Publish npm WASM runtime
+
+on:
+  push:
+    tags:
+      - 'wasm-v*'
+
+jobs:
+  publish-agent-spreadsheet-wasm:
+    name: Publish agent-spreadsheet-wasm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: command -v wasm-pack >/dev/null || cargo install wasm-pack --locked
+
+      - name: Install binaryen
+        run: |
+          set -euo pipefail
+          version=version_123
+          curl --fail --location --silent --show-error \
+            "https://github.com/WebAssembly/binaryen/releases/download/${version}/binaryen-${version}-x86_64-linux.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP"
+          echo "WASM_OPT=$RUNNER_TEMP/binaryen-${version}/bin/wasm-opt" >> "$GITHUB_ENV"
+
+      - name: Build the WASM payload
+        run: npm run build
+        working-directory: npm/agent-spreadsheet-wasm
+
+      - name: Enforce the size budget
+        run: node scripts/check-wasm-size.js
+
+      - name: Run package smoke tests
+        run: npm test
+        working-directory: npm/agent-spreadsheet-wasm
+
+      - name: Set npm package version from tag
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#wasm-v}"
+          CURRENT_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$CURRENT_VERSION" = "$VERSION" ]; then
+            echo "npm package version already matches tag: $VERSION"
+          else
+            npm version "$VERSION" --no-git-tag-version
+          fi
+        working-directory: npm/agent-spreadsheet-wasm
+
+      - name: Determine npm dist-tag
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#wasm-v}"
+          DIST_TAG="latest"
+          if [[ "$VERSION" == *"-alpha."* ]]; then
+            DIST_TAG="alpha"
+          elif [[ "$VERSION" == *"-beta."* ]]; then
+            DIST_TAG="beta"
+          elif [[ "$VERSION" == *"-rc."* ]]; then
+            DIST_TAG="rc"
+          fi
+          echo "DIST_TAG=$DIST_TAG" >> "$GITHUB_ENV"
+          echo "Using npm dist-tag: $DIST_TAG"
+
+      - name: Validate npm package contents
+        run: |
+          set -euo pipefail
+          npm pack --dry-run
+          test -f pkg/agent_spreadsheet_wasm_bg.wasm
+          test -f pkg/agent_spreadsheet_wasm.js
+          test -f pkg/agent_spreadsheet_wasm.d.ts
+        working-directory: npm/agent-spreadsheet-wasm
+
+      - name: Publish npm package
+        run: npm publish --access public --tag "$DIST_TAG"
+        working-directory: npm/agent-spreadsheet-wasm

@@ -1,4 +1,5 @@
 pub mod analysis;
+pub mod artifacts;
 mod canonical_router;
 pub mod caps;
 pub mod cli;
@@ -10,6 +11,7 @@ pub mod errors;
 #[cfg(feature = "recalc")]
 pub mod fork;
 pub mod formula;
+pub mod http_route;
 pub mod model;
 #[cfg(feature = "recalc")]
 pub mod recalc;
@@ -43,6 +45,21 @@ use tokio::{
 use tools::filters::WorkbookFilter;
 
 const HTTP_SERVICE_PATH: &str = "/mcp";
+
+/// Full HTTP application: the MCP streamable-HTTP service at `/mcp` plus the
+/// canonical HTTP route under `/v1`, sharing one process and one `AppState`.
+pub fn http_app(state: Arc<AppState>) -> Router {
+    let service_state = state.clone();
+    let service = StreamableHttpService::new(
+        move || Ok(SpreadsheetServer::from_state(service_state.clone())),
+        LocalSessionManager::default().into(),
+        Default::default(),
+    );
+
+    Router::new()
+        .nest_service(HTTP_SERVICE_PATH, service)
+        .merge(http_route::canonical_http_router(state))
+}
 
 pub async fn run_server(config: ServerConfig) -> Result<()> {
     let config = Arc::new(config);
@@ -91,17 +108,16 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
 
 async fn run_stream_http_transport(config: Arc<ServerConfig>, state: Arc<AppState>) -> Result<()> {
     let bind_addr = config.http_bind_address;
-    let service_state = state.clone();
-    let service = StreamableHttpService::new(
-        move || Ok(SpreadsheetServer::from_state(service_state.clone())),
-        LocalSessionManager::default().into(),
-        Default::default(),
-    );
-
-    let router = Router::new().nest_service(HTTP_SERVICE_PATH, service);
+    let router = http_app(state);
     let listener = TcpListener::bind(bind_addr).await?;
     let actual_addr = listener.local_addr()?;
-    tracing::info!(transport = "http", bind = %actual_addr, path = HTTP_SERVICE_PATH, "listening" );
+    tracing::info!(
+        transport = "http",
+        bind = %actual_addr,
+        path = HTTP_SERVICE_PATH,
+        canonical_path = http_route::CANONICAL_HTTP_PREFIX,
+        "listening"
+    );
 
     let server_future = axum::serve(listener, router).into_future();
     tokio::pin!(server_future);

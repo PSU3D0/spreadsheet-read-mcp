@@ -15,7 +15,11 @@
           "bytes": 68,
           "media_type": "image/png"
         },
-        "duration_ms": 0
+        "duration_ms": 0,
+        "renderer": "native-raster/1",
+        "fidelity": "partial",
+        "warnings": ["number_format_approximated", "formulas_unevaluated"],
+        "calculation": {"state": "clean", "revision_id": "sha256:fixture"}
       }
     }
   },

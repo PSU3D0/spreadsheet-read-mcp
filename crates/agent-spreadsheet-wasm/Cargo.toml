@@ -6,6 +6,14 @@ description = "WASM-facing byte/session API wrapper for agent-spreadsheet"
 license = "Apache-2.0"
 publish = false
 
+# wasm-pack runs `wasm-opt` with these arguments for each profile it can build.
+# The size lane is `--profile wasm-release` (see the workspace `[profile.wasm-release]`).
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
+
+[package.metadata.wasm-pack.profile.wasm-release]
+wasm-opt = ["-Oz", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
@@ -16,6 +24,13 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
 agent-spreadsheet = { path = "../agent-spreadsheet", default-features = false, features = ["recalc-formualizer"] }
+
+[features]
+# The in-process raster renderer. Compiling it in is what makes
+# `screenshot_rendering` available to the byte/session adapter, and what the
+# `screenshot_sheet` interception below is gated on.
+default = ["render"]
+render = ["agent-spreadsheet/render"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"

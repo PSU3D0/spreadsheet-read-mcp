@@ -72,6 +72,10 @@ const EXPECTED_WASM_OPERATIONS = [
   "formula_map",
   "profile_table",
   "sheet_statistics",
+  // 5006: the raster renderer compiles to wasm32, so the byte/session adapters
+  // render too. Bytes leave through readArtifact / the just-bash VFS, never
+  // through the canonical envelope.
+  "screenshot_sheet",
   "write",
   "recalculate",
   "verify_workbook"
