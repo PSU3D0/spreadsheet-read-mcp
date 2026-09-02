@@ -20,6 +20,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
 
       - name: Set up Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -87,5 +88,10 @@ jobs:
         working-directory: npm/agent-spreadsheet-wasm
 
       - name: Publish npm package
+        # Token auth: npm trusted publishing (OIDC) can only be configured on a
+        # package that already exists. Switch back to id-token once the package
+        # has a trusted publisher configured on npmjs.com.
         run: npm publish --access public --tag "$DIST_TAG"
         working-directory: npm/agent-spreadsheet-wasm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
